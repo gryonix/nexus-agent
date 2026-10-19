@@ -75,6 +75,42 @@ pub fn ready() -> bool {
     READY.load(Ordering::Relaxed)
 }
 
+/// The chosen resolvers first, this server's relay after them
+pub fn with_fallback(dns: &[String]) -> Vec<String> {
+    let mut list: Vec<String> = dns.iter().map(|address| address.trim().to_string()).collect();
+    if !list.is_empty() && !names_local(&list) {
+        list.push(ADDRESS.to_string());
+    }
+    list
+}
+
+/// A client configuration whose DNS falls back to the relay
+pub fn config_with_fallback(text: &str) -> String {
+    let mut lines: Vec<String> = Vec::new();
+    let mut openvpn_dns: Option<usize> = None;
+    let mut carries_relay = false;
+    for line in text.lines() {
+        let trimmed = line.trim_start();
+        if let Some(rest) = trimmed.strip_prefix("DNS") {
+            if let Some(value) = rest.trim_start().strip_prefix('=') {
+                let listed: Vec<String> = value.split(',').map(|part| part.trim().to_string()).collect();
+                lines.push(format!("DNS = {}", with_fallback(&listed).join(", ")));
+                continue;
+            }
+        }
+        if let Some(address) = trimmed.strip_prefix("dhcp-option DNS ") {
+            carries_relay |= address.trim() == ADDRESS;
+            openvpn_dns = Some(lines.len());
+        }
+        lines.push(line.to_string());
+    }
+    if let (Some(index), false) = (openvpn_dns, carries_relay) {
+        lines.insert(index + 1, format!("dhcp-option DNS {ADDRESS}"));
+    }
+    let ending = if text.ends_with('\n') { "\n" } else { "" };
+    format!("{}{ending}", lines.join("\n"))
+}
+
 /// Does this DNS list point at the local resolver?
 pub fn names_local(dns: &[String]) -> bool {
     dns.iter().any(|address| address.trim() == ADDRESS)
@@ -404,6 +440,29 @@ mod tests {
         assert!(address.is_private());
         let name = firewall::drop_in_path(LABEL).file_name().unwrap().to_string_lossy().into_owned();
         assert_eq!(name, "gryonixnexus-svc-vpn-dns.nft");
+    }
+
+    #[test]
+    fn the_chosen_resolver_comes_first_and_the_relay_after_it() {
+        let chosen = vec!["1.1.1.1".to_string(), "1.0.0.1".to_string()];
+        assert_eq!(with_fallback(&chosen), vec!["1.1.1.1", "1.0.0.1", "10.53.0.53"]);
+        assert_eq!(with_fallback(&["10.53.0.53".to_string()]), vec!["10.53.0.53"]);
+        assert!(with_fallback(&[]).is_empty());
+    }
+
+    #[test]
+    fn a_wireguard_config_asks_the_relay_only_after_its_own_dns() {
+        let text = "[Interface]\nPrivateKey = x\nDNS = 1.1.1.1, 1.0.0.1\nMTU = 1280\n";
+        assert_eq!(config_with_fallback(text),
+                   "[Interface]\nPrivateKey = x\nDNS = 1.1.1.1, 1.0.0.1, 10.53.0.53\nMTU = 1280\n");
+        let local = "[Interface]\nDNS = 10.53.0.53\n";
+        assert_eq!(config_with_fallback(local), local);
+    }
+
+    #[test]
+    fn an_openvpn_config_gets_the_relay_as_its_last_dns() {
+        let text = "client\ndhcp-option DNS 9.9.9.9\nverb 3";
+        assert_eq!(config_with_fallback(text), "client\ndhcp-option DNS 9.9.9.9\ndhcp-option DNS 10.53.0.53\nverb 3");
     }
 
     #[test]

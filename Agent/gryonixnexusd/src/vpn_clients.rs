@@ -597,11 +597,13 @@ pub async fn client_config(codec: Codec, req: pb::GetVpnClientConfigRequest) -> 
     };
     let found = panel.list(protocol).await.ok().and_then(|clients| clients.into_iter().find(|client| client.id == client_id));
     let name = found.as_ref().map(|client| client.name.clone()).unwrap_or_else(|| client_id.to_string());
+    let dns = found.map(|client| client.dns).unwrap_or_default();
+    let relayed = crate::vpn_dns::ready();
     let response = pb::VpnClientConfig {
-        text,
+        text: if relayed { crate::vpn_dns::config_with_fallback(&text) } else { text },
         filename: format!("{}{}", sanitise_file_name(&name), config_extension(protocol)),
         qr_is_useful: qr_is_useful(protocol),
-        dns: found.map(|client| client.dns).unwrap_or_default(),
+        dns: if relayed { crate::vpn_dns::with_fallback(&dns) } else { dns },
     };
     encode(codec, &response)
 }

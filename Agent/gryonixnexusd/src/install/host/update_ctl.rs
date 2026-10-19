@@ -702,6 +702,21 @@ gd_check_service() {
   fi
 }
 
+# True only when every image is known and none has moved. Unknown
+# answers count as "maybe moved", so a scheduled run still goes ahead.
+gd_is_current() {
+  local svc="$1" img local_digest remote_digest
+  gd_load_service "$svc" || return 1
+  [ -n "$IMAGES" ] || return 1
+  for img in $IMAGES; do
+    local_digest="$(gd_local_digest "$img")"
+    [ -n "$local_digest" ] || return 1
+    remote_digest="$(gd_remote_digest "$img")" || remote_digest=''
+    [ "$local_digest" = "$remote_digest" ] || return 1
+  done
+  return 0
+}
+
 do_check() {
   local target="${1:---all}" svc
   if ! command -v docker >/dev/null 2>&1; then
@@ -947,6 +962,16 @@ do_run() {
       # Each service in its own subshell, and the `||` keeps errexit
       # from firing: an unattended run must not let one broken service
       # cancel the updates of every service after it.
+      # Gone from this host since the schedule was set: nothing to update.
+      if ! ( gd_load_service "$svc" ) >/dev/null 2>&1; then
+        echo "$svc is no longer on this server, skipped"
+        continue
+      fi
+      # Nothing new: no backup and no pull, so the night's backup stays the only one.
+      if ( gd_is_current "$svc" ); then
+        echo "$svc is up to date"
+        continue
+      fi
       ( gd_update_service "$svc" ) || failed="$failed $svc"
     done
     if [ -n "$failed" ]; then
@@ -1068,6 +1093,56 @@ case "$ACTION" in
 esac
 echo 'GRYONIXNEXUS_UPDATE_CTL_DONE'"#;
 
+/// The scheduled-run skip, as it appears in the wrapper
+const CURRENT_CHECK: &str = r#"# True only when every image is known and none has moved. Unknown
+# answers count as "maybe moved", so a scheduled run still goes ahead.
+gd_is_current() {
+  local svc="$1" img local_digest remote_digest
+  gd_load_service "$svc" || return 1
+  [ -n "$IMAGES" ] || return 1
+  for img in $IMAGES; do
+    local_digest="$(gd_local_digest "$img")"
+    [ -n "$local_digest" ] || return 1
+    remote_digest="$(gd_remote_digest "$img")" || remote_digest=''
+    [ "$local_digest" = "$remote_digest" ] || return 1
+  done
+  return 0
+}
+
+"#;
+
+const SCHEDULED_LOOP: &str = "      ( gd_update_service \"$svc\" ) || failed=\"$failed $svc\"";
+
+const SCHEDULED_SKIP: &str = "      # Gone from this host since the schedule was set: nothing to update.
+      if ! ( gd_load_service \"$svc\" ) >/dev/null 2>&1; then
+        echo \"$svc is no longer on this server, skipped\"
+        continue
+      fi
+      # Nothing new: no backup and no pull, so the night's backup stays the only one.
+      if ( gd_is_current \"$svc\" ); then
+        echo \"$svc is up to date\"
+        continue
+      fi
+";
+
+/// An older wrapper with the current-image skip added, or None
+pub fn with_current_check(old: &str) -> Option<String> {
+    if old.contains("gd_is_current") || !old.contains("\ndo_check() {") || !old.contains(SCHEDULED_LOOP) {
+        return None;
+    }
+    let text = old.replacen("\ndo_check() {", &format!("\n{CURRENT_CHECK}do_check() {{"), 1);
+    Some(text.replacen(SCHEDULED_LOOP, &format!("{SCHEDULED_SKIP}{SCHEDULED_LOOP}"), 1))
+}
+
+/// Patches the installed wrapper; true when written
+pub fn refresh_current_check() -> std::io::Result<bool> {
+    let path = std::path::Path::new(SCRIPT_PATH);
+    let Ok(old) = std::fs::read_to_string(path) else { return Ok(false) };
+    let Some(new) = with_current_check(&old) else { return Ok(false) };
+    std::fs::write(path, new)?;
+    Ok(true)
+}
+
 /// A port of `UpdateControlSections.wrapper`.
 pub fn wrapper(input: &HostInput) -> String {
     let (targets, self_managed) = plan(input);
@@ -1178,6 +1253,15 @@ mod tests {
         assert!(is_used(&base_input(&["vaultwarden"])));
         assert!(!is_used(&base_input(&["mailcow"])));
         assert!(!is_used(&base_input(&[])));
+    }
+
+    #[test]
+    fn an_older_wrapper_gains_exactly_the_skip_the_new_one_has() {
+        let new = wrapper(&base_input(&["nextcloud"]));
+        let old = new.replace(CURRENT_CHECK, "").replace(SCHEDULED_SKIP, "");
+        assert!(!old.contains("gd_is_current"), "the old shape still carries the skip");
+        assert_eq!(with_current_check(&old).as_deref(), Some(new.as_str()));
+        assert_eq!(with_current_check(&new), None, "a current wrapper is left alone");
     }
 
     #[test]

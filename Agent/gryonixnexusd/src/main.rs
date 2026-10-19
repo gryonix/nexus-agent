@@ -372,6 +372,11 @@ async fn keep_host_tools() {
         Ok(false) => {}
         Err(err) => tracing::warn!(%err, "could not refresh the admin lockdown"),
     }
+    match install::host::update_ctl::refresh_current_check() {
+        Ok(true) => tracing::info!("scheduled updates skip services with nothing new"),
+        Ok(false) => {}
+        Err(err) => tracing::warn!(%err, "could not refresh the update wrapper"),
+    }
     match install::host::uninstall::refresh_image_reclaim() {
         Ok(true) => tracing::info!("removals now reclaim their images"),
         Ok(false) => {}

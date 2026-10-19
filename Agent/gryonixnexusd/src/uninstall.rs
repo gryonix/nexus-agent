@@ -203,6 +203,7 @@ where
         if service_id == "vpn" {
             let _ = crate::install::vpn::port_share::clear().await;
         }
+        forget_in_schedules(&scheduled_ids(service_id, args.first().copied()));
     }
 
     let mut failure = outcome.err();
@@ -217,6 +218,51 @@ where
     if let Some(why) = failure {
         let _ = sink.fail(&why).await;
     }
+}
+
+const SCHEDULE_CONFIGS: [&str; 2] = ["/etc/gryonixnexus/autoupdate.conf", "/etc/gryonixnexus/autobackup.conf"];
+const VPN_SCHEDULE_IDS: [&str; 5] = ["amnezia-wg", "shadowsocks", "xray-reality", "openvpn", "wireguard-vpn"];
+
+/// The schedule names a removed service may be listed under
+fn scheduled_ids<'a>(service_id: &'a str, label: Option<&'a str>) -> Vec<&'a str> {
+    let mut ids = vec![service_id];
+    ids.extend(label.filter(|label| *label != service_id));
+    if service_id == "vpn" {
+        ids.extend(VPN_SCHEDULE_IDS);
+    }
+    ids
+}
+
+/// Takes a removed service out of both nightly schedules
+fn forget_in_schedules(gone: &[&str]) {
+    for path in SCHEDULE_CONFIGS {
+        let Ok(text) = std::fs::read_to_string(path) else { continue };
+        if let Some(kept) = without_services(&text, gone) {
+            if let Err(err) = std::fs::write(path, kept) {
+                tracing::warn!(%err, path, "could not take a removed service out of the schedule");
+            }
+        }
+    }
+}
+
+/// The config with these ids gone from SERVICES, or None
+fn without_services(text: &str, gone: &[&str]) -> Option<String> {
+    let mut changed = false;
+    let lines: Vec<String> = text
+        .lines()
+        .map(|line| {
+            let Some(rest) = line.strip_prefix("SERVICES=") else { return line.to_string() };
+            let listed: Vec<&str> = rest.trim_matches('\'').split_whitespace().collect();
+            let kept: Vec<&str> = listed.iter().copied().filter(|id| !gone.contains(id)).collect();
+            if kept.len() == listed.len() {
+                return line.to_string();
+            }
+            changed = true;
+            format!("SERVICES='{}'", kept.join(" "))
+        })
+        .collect();
+    let ending = if text.ends_with('\n') { "\n" } else { "" };
+    changed.then(|| format!("{}{ending}", lines.join("\n")))
 }
 
 /// Run the wrapper, streaming every line as PROGRESS
@@ -633,5 +679,21 @@ mod tests {
         );
         assert_eq!(describe_failure(Some(2), "   "), "the uninstall wrapper exited 2");
         assert_eq!(describe_failure(None, ""), "the uninstall wrapper was killed by a signal");
+    }
+
+    #[test]
+    fn a_removed_service_leaves_both_schedules() {
+        let conf = "SCHEDULE=every:1d@04:00\nSERVICES='amnezia-wg nextcloud vaultwarden xray-reality'\n";
+        assert_eq!(without_services(conf, &["vaultwarden"]).as_deref(),
+                   Some("SCHEDULE=every:1d@04:00\nSERVICES='amnezia-wg nextcloud xray-reality'\n"));
+        assert_eq!(without_services(conf, &["immich"]), None, "an unlisted service changes nothing");
+    }
+
+    #[test]
+    fn removing_the_vpn_takes_every_protocol_with_it() {
+        let ids = scheduled_ids("vpn", Some("vpn"));
+        assert!(ids.contains(&"shadowsocks") && ids.contains(&"amnezia-wg"));
+        let conf = "SERVICES='amnezia-wg nextcloud shadowsocks'";
+        assert_eq!(without_services(conf, &ids).as_deref(), Some("SERVICES='nextcloud'"));
     }
 }

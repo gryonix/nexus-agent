@@ -245,6 +245,21 @@ gd_check_service() {
   fi
 }
 
+# True only when every image is known and none has moved. Unknown
+# answers count as "maybe moved", so a scheduled run still goes ahead.
+gd_is_current() {
+  local svc="$1" img local_digest remote_digest
+  gd_load_service "$svc" || return 1
+  [ -n "$IMAGES" ] || return 1
+  for img in $IMAGES; do
+    local_digest="$(gd_local_digest "$img")"
+    [ -n "$local_digest" ] || return 1
+    remote_digest="$(gd_remote_digest "$img")" || remote_digest=''
+    [ "$local_digest" = "$remote_digest" ] || return 1
+  done
+  return 0
+}
+
 do_check() {
   local target="${1:---all}" svc
   if ! command -v docker >/dev/null 2>&1; then
@@ -490,6 +505,16 @@ do_run() {
       # Each service in its own subshell, and the `||` keeps errexit
       # from firing: an unattended run must not let one broken service
       # cancel the updates of every service after it.
+      # Gone from this host since the schedule was set: nothing to update.
+      if ! ( gd_load_service "$svc" ) >/dev/null 2>&1; then
+        echo "$svc is no longer on this server, skipped"
+        continue
+      fi
+      # Nothing new: no backup and no pull, so the night's backup stays the only one.
+      if ( gd_is_current "$svc" ); then
+        echo "$svc is up to date"
+        continue
+      fi
       ( gd_update_service "$svc" ) || failed="$failed $svc"
     done
     if [ -n "$failed" ]; then

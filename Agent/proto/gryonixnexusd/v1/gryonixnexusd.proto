@@ -3692,6 +3692,20 @@ message NotifySettings {
   bool custom_checks = 13;
   // App public keys whose SSH sign-ins stay quiet.
   repeated string quiet_keys = 14;
+  // The phones and computers that get this server's pushes.
+  repeated NotifyDevice registered = 15;
+}
+
+// One device that gets this server's pushes.
+message NotifyDevice {
+  // "apns" or "fcm".
+  string platform = 1;
+  string token = 2;
+  // The device's name as it registered, e.g. "iPhone".
+  string name = 3;
+  string app_version = 4;
+  // Unix seconds of the registration; 0 when older than this field.
+  int64 added_at = 5;
 }
 
 message GetNotifySettingsRequest {}
@@ -3719,6 +3733,8 @@ message RegisterNotifyDeviceRequest {
   repeated string muted = 5;
   // SHA-256 (hex) of a secret only the phone holds; lets the phone remove itself from the relay.
   string device_proof = 6;
+  // The device's name, shown in the list of devices.
+  string name = 7;
 }
 
 message UnregisterNotifyDeviceRequest {
