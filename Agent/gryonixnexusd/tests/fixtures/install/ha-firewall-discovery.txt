@@ -1,0 +1,2 @@
+        ip daddr { 224.0.0.251, 239.255.255.250 } udp dport { 5353, 1900 } accept comment "home devices discovery"
+        ip6 daddr { ff02::fb, ff02::c } udp dport { 5353, 1900 } accept comment "home devices discovery"

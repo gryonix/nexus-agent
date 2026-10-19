@@ -1,0 +1,12 @@
+[Unit]
+Description=gryonixNexus: publishes .local service names over mDNS
+After=network-online.target avahi-daemon.service
+Wants=network-online.target
+
+[Service]
+ExecStart=/usr/local/lib/gryonixnexus/mdns-aliases.sh
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target

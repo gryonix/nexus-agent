@@ -1,0 +1,4 @@
+hostname=home.other-company.net
+upstreamPort=8123
+adminGuard=true
+upstreamHTTPS=false

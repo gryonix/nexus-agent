@@ -1,0 +1,21 @@
+mail.example.com {
+    # gryonixnexus: mailcow
+    @gryonixnexus_open path /SOGo/dav /SOGo/dav/* /.well-known/caldav /.well-known/carddav /principals /principals/* /Microsoft-Server-ActiveSync /Microsoft-Server-ActiveSync/*
+    handle @gryonixnexus_open {
+        reverse_proxy https://127.0.0.1:18443 {
+            header_up Host {host}
+            transport http {
+                tls_insecure_skip_verify
+            }
+        }
+    }
+    handle {
+        import /etc/caddy/gryonixnexus-admin-guard
+        reverse_proxy https://127.0.0.1:18443 {
+            header_up Host {host}
+            transport http {
+                tls_insecure_skip_verify
+            }
+        }
+    }
+}

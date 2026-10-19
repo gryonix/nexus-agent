@@ -1,0 +1,12 @@
+services:
+  homeassistant:
+    image: homeassistant/home-assistant:2026.9.3
+    container_name: homeassistant
+    restart: unless-stopped
+    # Discovery (mDNS, SSDP) only works on the home network itself.
+    network_mode: host
+    volumes:
+      - /opt/home-assistant/config:/config
+      - /etc/localtime:/etc/localtime:ro
+      # Bluetooth devices, through the host's BlueZ.
+      - /run/dbus:/run/dbus:ro

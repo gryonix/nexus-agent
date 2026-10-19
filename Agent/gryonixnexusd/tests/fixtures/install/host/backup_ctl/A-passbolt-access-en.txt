@@ -1,0 +1,898 @@
+#!/bin/bash
+# Managed by gryonixNexus — backup housekeeping for the Server Dashboard.
+# Usage: gryonixnexus-backup-ctl.sh delete <path>
+#        gryonixnexus-backup-ctl.sh set-schedule <off|every:<n><h|d>@<HH:MM>> <retention> [services...]
+#        gryonixnexus-backup-ctl.sh set-passphrase   (passphrase on stdin)
+#        gryonixnexus-backup-ctl.sh run
+#        gryonixnexus-backup-ctl.sh backup <service> [--encrypt|--no-encrypt]
+#                                       (GPG passphrase on stdin when encrypting)
+#        gryonixnexus-backup-ctl.sh estimate <service>
+#        gryonixnexus-backup-ctl.sh set-destination <kind> <host> <port> <user> <path> <bucket> <keep>
+#                                       (credential on stdin, optional)
+#        gryonixnexus-backup-ctl.sh show-destination
+#        gryonixnexus-backup-ctl.sh test-destination
+#        gryonixnexus-backup-ctl.sh set-drives <both|local|drive> <1|0> [uuids...]
+#        gryonixnexus-backup-ctl.sh show-drives
+set -euo pipefail
+
+ACTION="${1:-}"
+CONFIG='/etc/gryonixnexus/autobackup.conf'
+PASSFILE='/etc/gryonixnexus/autobackup.pass'
+DESTCONF='/etc/gryonixnexus/autobackup-dest.conf'
+DESTKEY='/etc/gryonixnexus/autobackup-dest.key'
+DESTPUB='/etc/gryonixnexus/autobackup-dest.key.pub'
+DESTSTATUS='/etc/gryonixnexus/autobackup-dest.status'
+RETENTION=7
+SERVICES='passbolt'
+SCHEDULE=off
+# The control user. Finished archives are chowned to it: the app
+# downloads and shares them, and what keeps other accounts away is the
+# 0750 on the enclosing backup root, not the file's owner.
+OWNER='admin'
+# Encryption state of the CURRENT run. The passphrase lives in a shell
+# variable and reaches gpg down a pipe — never in argv, which is
+# world-readable through /proc.
+GD_ENCRYPT=0
+GD_PASS=""
+
+load_config() {
+  # shellcheck disable=SC1090
+  [ -f "$CONFIG" ] && . "$CONFIG"
+  # A config from an older build may not set every value.
+  : "${SCHEDULE:=off}" "${RETENTION:=7}" "${SERVICES:=passbolt}"
+  case "$RETENTION" in ''|*[!0-9]*|0) RETENTION=1 ;; esac
+}
+
+# Where finished archives are sent, if anywhere. Its own file and its
+# own loader: a host that never chose a destination keeps every default
+# below, which together mean "leave the archive where it is".
+DEST_KIND=none
+DEST_HOST=""
+DEST_PORT=22
+DEST_USER=""
+DEST_PATH=""
+DEST_BUCKET=""
+DEST_KEEP=0
+load_destination() {
+  # shellcheck disable=SC1090
+  [ -f "$DESTCONF" ] && . "$DESTCONF"
+  : "${DEST_KIND:=none}" "${DEST_PORT:=22}" "${DEST_KEEP:=0}"
+}
+
+# **Where a copy of this machine's archives lands so they survive the
+# machine.** Called after every archive this wrapper finishes, by the
+# timer and by the app's own button alike — one body, both callers, the
+# rule this whole file is built on.
+#
+# Failure NEVER fails the backup: the archive on this disk is real and
+# already written, and refusing it because a bucket was unreachable
+# would turn a bad night into no backup at all. What a failure does is
+# get RECORDED, because a copy that silently never leaves is the exact
+# defect this exists to end.
+gd_ship() {
+  local out="$1" service="${2:-check}" error="" ok=0
+  load_destination
+  [ "$DEST_KIND" = "none" ] && return 0
+  # One folder per machine and service, so rotation stays inside it.
+  local machine
+  machine="$(hostname -s 2>/dev/null || echo server)-$(cut -c1-8 /etc/machine-id 2>/dev/null || echo 0)"
+  local folder="${DEST_PATH%/}/$machine/$service"
+  case "$DEST_KIND" in
+    ssh)
+      if [ -z "$DEST_HOST" ] || [ -z "$DEST_USER" ] || [ ! -s "$DESTKEY" ]; then
+        error="the destination is incomplete (host, user or key missing)"
+      else
+        # **A known_hosts this machine can actually write.** Run from the agent's unit,
+        # ssh cannot create /root/.ssh — ProtectHome=yes and
+        # ProtectSystem=full — so `accept-new` pinned nothing and every
+        # shipment carried "Could not create directory /root/.ssh" into
+        # the status file, where it reads as the failure. This path is
+        # inside the agent's ReadWritePaths and is root-owned, so the
+        # timer and the app's button pin the same key in the same file.
+        local known="${DESTCONF%/*}/autobackup-dest.known_hosts"
+        [ -e "$known" ] || ( umask 077 && : > "$known" )
+        # `accept-new`, not `no`: the first sight of the far side is
+        # pinned, and a CHANGED key after that stops the copy — which
+        # is the one moment somebody must be told rather than obeyed.
+        error="$(ssh -i "$DESTKEY" -p "$DEST_PORT" \
+                  -o StrictHostKeyChecking=accept-new \
+                  -o UserKnownHostsFile="$known" \
+                  -o BatchMode=yes -o ConnectTimeout=20 \
+                  "$DEST_USER@$DEST_HOST" "mkdir -p '$folder'" 2>&1)" \
+          && error="$(scp -i "$DESTKEY" -P "$DEST_PORT" \
+                  -o StrictHostKeyChecking=accept-new \
+                  -o UserKnownHostsFile="$known" \
+                  -o BatchMode=yes -o ConnectTimeout=20 \
+                  "$out" "$DEST_USER@$DEST_HOST:$folder/" 2>&1)" \
+          && ok=1
+        # **A warning is not a failure.** ssh writes advice to stderr on
+        # runs that worked, and this field is what the app shows as the
+        # reason the copy did not leave; keeping it would report a
+        # successful shipment as a broken one.
+        [ "$ok" -eq 1 ] && error=""
+        if [ "$ok" -eq 1 ] && [ "$DEST_KEEP" -gt 0 ]; then
+          # Rotation on the FAR side, and only there: what this machine
+          # keeps is RETENTION, and the two are different numbers on
+          # purpose — a phone-sized disk here, a big one there.
+          ssh -i "$DESTKEY" -p "$DEST_PORT" -o StrictHostKeyChecking=accept-new \
+              -o UserKnownHostsFile="$known" \
+              -o BatchMode=yes "$DEST_USER@$DEST_HOST" \
+              "ls -1t '$folder' 2>/dev/null | tail -n +$((DEST_KEEP + 1)) | while read -r old; do rm -rf -- '$folder'/\"\$old\"; done" \
+              >/dev/null 2>&1 || true
+        fi
+      fi
+      ;;
+    s3)
+      if ! command -v rclone >/dev/null 2>&1; then
+        error="rclone is not installed on this server"
+      elif [ ! -s "$DESTKEY" ]; then
+        error="no credentials stored for the bucket"
+      else
+        # The credentials reach rclone as ENVIRONMENT, never argv:
+        # /proc/<pid>/cmdline is world-readable and an access key in it
+        # is an access key given away.
+        error="$(
+          AWS_ACCESS_KEY_ID="$(cut -d: -f1 "$DESTKEY")" \
+          AWS_SECRET_ACCESS_KEY="$(cut -d: -f2- "$DESTKEY")" \
+          RCLONE_CONFIG_GD_TYPE=s3 \
+          RCLONE_CONFIG_GD_PROVIDER=Other \
+          RCLONE_CONFIG_GD_ENV_AUTH=true \
+          RCLONE_CONFIG_GD_ENDPOINT="$DEST_HOST" \
+          rclone copy "$out" "gd:$DEST_BUCKET/$folder/" 2>&1
+        )" && ok=1
+      fi
+      ;;
+    *) error="unknown destination kind: $DEST_KIND" ;;
+  esac
+  {
+    echo "AT=$(date +%s)"
+    echo "OK=$ok"
+    # One line, and the far side's own words: three different repairs
+    # hide behind "it failed". QUOTED, and with quotes of its own
+    # removed — see `do_test_destination` on what reading this file
+    # as shell used to cost.
+    # **Carriage returns too, not just newlines.** ssh ends its own
+    # warnings with CR, and a reader that renders them the way a
+    # terminal does — the agent's does, for progress bars — keeps only
+    # what follows the last one and throws the rest away. The marker line vanished and the app was told the
+    # copy failed, with no reason, while the file had landed.
+    echo "ERROR='$(printf '%s' "$error" | tr '\r\n\t' '   ' | tr -d "'" | cut -c1-400)'"
+  } > "$DESTSTATUS"
+  chmod 644 "$DESTSTATUS"
+  return 0
+}
+
+# The key this server ships WITH, made once and never replaced: the
+# public half is already authorized on the far side, and a new pair
+# would silently stop every copy.
+gd_ensure_dest_key() {
+  [ -s "$DESTKEY" ] && return 0
+  # **The folder first.** A server that never had the agent installed
+  # has no /etc/gryonixnexus, and ssh-keygen into a folder that is not
+  # there failed with its output thrown away: `set-destination` stopped
+  # on the chmod that followed and answered rc 1 with not one word.
+  # The app's own screen showed
+  # "could not save" and nothing else.
+  install -d -m 755 "$(dirname "$DESTKEY")"
+  rm -f "$DESTKEY" "$DESTPUB"
+  if ! ssh-keygen -t ed25519 -N '' -C 'gryonixnexus-backup' -f "$DESTKEY" >/dev/null 2>&1; then
+    echo "could not create the key this server ships backups with" >&2
+    exit 2
+  fi
+  chmod 600 "$DESTKEY"
+  chmod 644 "$DESTPUB" 2>/dev/null || true
+}
+
+do_set_destination() {
+  local kind="${1:-none}" host="${2:-}" port="${3:-22}" user="${4:-}"
+  local path="${5:-}" bucket="${6:-}" keep="${7:-0}"
+  case "$kind" in
+    none|ssh|s3) ;;
+    *) echo "unsupported destination: ${kind}" >&2; exit 2 ;;
+  esac
+  case "$port$keep" in
+    ''|*[!0-9]*) echo "invalid port or keep count" >&2; exit 2 ;;
+  esac
+  case "$host$user$path$bucket" in
+    *[\'\"\\\`\$]*|*$'\n'*|*$'\r'*)
+      echo "the destination may not contain quotes, backslashes, \$, backticks or line breaks" >&2
+      exit 2 ;;
+  esac
+  # A secret on stdin, never argv — the same rule the passphrase
+  # follows one function down.
+  if [ ! -t 0 ]; then
+    local secret
+    secret="$(cat)"
+    if [ -n "$secret" ]; then
+      install -d -m 755 "$(dirname "$DESTKEY")"
+      ( umask 077 && printf '%s' "$secret" > "$DESTKEY" )
+      chmod 600 "$DESTKEY"
+    fi
+  fi
+  [ "$kind" = "ssh" ] && gd_ensure_dest_key
+  install -d -m 755 "$(dirname "$DESTCONF")"
+  cat > "$DESTCONF" <<EOF_DEST
+DEST_KIND=$kind
+DEST_HOST='$host'
+DEST_PORT=$port
+DEST_USER='$user'
+DEST_PATH='$path'
+DEST_BUCKET='$bucket'
+DEST_KEEP=$keep
+EOF_DEST
+  # 0640 and owned by root: it names a host and an account, which is
+  # the owner's business and not every account's on this machine. The
+  # app reads it through this wrapper, which runs as root.
+  chmod 640 "$DESTCONF"
+  # Printed so the app can authorize it on the far side without a
+  # second call — a public key, and nothing else, is safe on stdout.
+  [ -s "$DESTPUB" ] && printf 'GRYONIXNEXUS_DEST_PUBKEY %s\n' "$(cat "$DESTPUB")"
+}
+
+# Everything `show-destination` answers, in one read: the app draws the
+# destination, the public key to authorize and what the last shipment
+# did on a single screen.
+do_show_destination() {
+  load_destination
+  printf 'DEST_KIND=%s\nDEST_HOST=%s\nDEST_PORT=%s\nDEST_USER=%s\nDEST_PATH=%s\nDEST_BUCKET=%s\nDEST_KEEP=%s\n' \
+    "$DEST_KIND" "$DEST_HOST" "$DEST_PORT" "$DEST_USER" "$DEST_PATH" "$DEST_BUCKET" "$DEST_KEEP"
+  [ -s "$DESTPUB" ] && printf 'DEST_PUBKEY=%s\n' "$(cat "$DESTPUB")"
+  [ -s "$DESTSTATUS" ] && cat "$DESTSTATUS"
+  return 0
+}
+
+# One small file, sent the same way a real archive is. The only way to
+# learn a destination is wrong BEFORE the nightly run trusts it.
+do_test_destination() {
+  load_destination
+  if [ "$DEST_KIND" = "none" ]; then
+    echo "GRYONIXNEXUS_DEST_TEST 0 no destination is set"
+    return 0
+  fi
+  local probe
+  probe="$(mktemp /tmp/gryonixnexus-dest-XXXXXX.txt)"
+  date -u +'gryonixNexus destination check %Y-%m-%dT%H:%M:%SZ' > "$probe"
+  gd_ship "$probe" check
+  rm -f "$probe"
+  # Read back out of the status file rather than kept in a variable:
+  # what the app will see later is exactly what it is told now.
+  local ok="0" error=""
+  # **Parsed, never sourced.** This file carries the FAR SIDE's own
+  # words, and reading it with `.` made them shell: a message with
+  # "(ED25519)" in it broke the read outright, and one carrying $(…)
+  # would have run here as root.
+  if [ -f "$DESTSTATUS" ]; then
+    ok="$(sed -n 's/^OK=//p' "$DESTSTATUS" | head -1)"
+    error="$(sed -n "s/^ERROR='\(.*\)'\$/\1/p" "$DESTSTATUS" | head -1)"
+  fi
+  ok="${ok:-0}"
+  echo "GRYONIXNEXUS_DEST_TEST $ok $error"
+}
+
+# USB drives that take a copy of every archive. A host that never
+# chose one keeps every archive here, exactly as before.
+DRIVECONF='/etc/gryonixnexus/backup-drives.conf'
+DRIVESTATUS='/etc/gryonixnexus/backup-drives.status'
+DRIVELAST='/etc/gryonixnexus/backup-drives.last'
+DRIVEROOT='/srv/gryonix-backup'
+DRIVE_MODE=both
+DRIVE_ENCRYPT=1
+DRIVES=""
+GD_DRIVE_ERROR=""
+load_drives() {
+  # shellcheck disable=SC1090
+  [ -f "$DRIVECONF" ] && . "$DRIVECONF"
+  : "${DRIVE_MODE:=both}" "${DRIVE_ENCRYPT:=1}"
+}
+
+# Where fstab mounts one drive, whether or not it is plugged in.
+gd_drive_fstab() {
+  findmnt --fstab -rno TARGET -S "UUID=$1" 2>/dev/null | head -n 1
+}
+
+# The drive's mount point, only when it is mounted and marked.
+gd_drive_target() {
+  local target
+  target="$(gd_drive_fstab "$1")"
+  case "$target" in "$DRIVEROOT"/*) ;; *) return 0 ;; esac
+  # Never a bare folder: writing there fills the system disk.
+  mountpoint -q "$target" || return 0
+  grep -qx "$1" "$target/.gryonix-backup-drive" 2>/dev/null || return 0
+  printf '%s\n' "$target"
+}
+
+# Mounts a drive plugged in after boot, through systemd.
+gd_drive_ready() {
+  local target
+  target="$(gd_drive_target "$1")"
+  if [ -z "$target" ] && [ -b "/dev/disk/by-uuid/$1" ]; then
+    target="$(gd_drive_fstab "$1")"
+    case "$target" in
+      "$DRIVEROOT"/*)
+        systemctl start "$(systemd-escape -p --suffix=mount "$target")" >/dev/null 2>&1 || true ;;
+    esac
+    target="$(gd_drive_target "$1")"
+  fi
+  printf '%s' "$target"
+}
+
+# The drive's name: the last part of its mount point.
+gd_drive_name() {
+  local target
+  target="$(gd_drive_fstab "$1")"
+  if [ -n "$target" ]; then printf '%s' "${target##*/}"; else printf '%s' "$1"; fi
+}
+
+# Why a write to a drive failed.
+gd_drive_why() {
+  local avail
+  case ",$(findmnt -no OPTIONS --target "$1" 2>/dev/null || true)," in
+    *,ro,*) echo "the drive went read-only; check it"; return 0 ;;
+  esac
+  avail="$(df -B1 --output=avail "$1" 2>/dev/null | tail -n 1 | tr -cd '0-9')"
+  if [ "${avail:-0}" -lt 1048576 ]; then
+    echo "the drive is full"
+  else
+    echo "the drive could not be written"
+  fi
+}
+
+# Copies one archive to a drive, encrypting it when asked.
+gd_drive_write() {
+  local src="$1" dest="$2" pass=""
+  GD_DRIVE_ERROR=""
+  if [ "${dest%.gpg}" = "$dest" ] || [ "${src%.gpg}" != "$src" ]; then
+    cp "$src" "$dest" 2>/dev/null && return 0
+    GD_DRIVE_ERROR="$(gd_drive_why "${dest%/*}")"
+    return 1
+  fi
+  pass="$GD_PASS"
+  [ -n "$pass" ] || pass="$(cat "$PASSFILE" 2>/dev/null || true)"
+  if [ -z "$pass" ]; then
+    GD_DRIVE_ERROR="no backup passphrase is stored for encrypted copies"
+    return 1
+  fi
+  printf '%s' "$pass" | gpg --batch --quiet --yes --symmetric \
+       --cipher-algo AES256 --passphrase-fd 0 --pinentry-mode loopback \
+       --output "$dest" "$src" 2>/dev/null && return 0
+  GD_DRIVE_ERROR="$(gd_drive_why "${dest%/*}")"
+  return 1
+}
+
+# Keeps the newest RETENTION copies in one folder.
+gd_drive_rotate() {
+  { ls -1t "$1" 2>/dev/null || true; } | tail -n +$((RETENTION + 1)) \
+    | while IFS= read -r old; do rm -rf -- "${1:?}/$old"; done || true
+}
+
+# What the last drive copy did, read by show-drives.
+gd_drive_status() {
+  install -d -m 755 "${DRIVESTATUS%/*}" 2>/dev/null || true
+  {
+    echo "DRIVE_AT=$(date +%s)"
+    if [ -z "$1" ]; then echo "DRIVE_OK=1"; else echo "DRIVE_OK=0"; fi
+    echo "DRIVE_ERROR='$(printf '%s' "$1" | tr '\r\n\t' '   ' | tr -d "'" | sed 's/^ *//' | cut -c1-400)'"
+  } > "$DRIVESTATUS" 2>/dev/null || true
+  chmod 644 "$DRIVESTATUS" 2>/dev/null || true
+}
+
+# Records when a drive last took a copy.
+gd_drive_seen() {
+  if { grep -v "^$1 " "$DRIVELAST" 2>/dev/null || true; echo "$1 $(date +%s)"; } \
+       > "$DRIVELAST.new" 2>/dev/null; then
+    mv -f "$DRIVELAST.new" "$DRIVELAST" 2>/dev/null || true
+    chmod 644 "$DRIVELAST" 2>/dev/null || true
+  fi
+}
+
+# Writes one copy to one drive; prints where it landed, or why not.
+gd_drive_put() {
+  local out="$1" folder="$2/$3" name="$4"
+  if ! install -d -m 700 "$folder" 2>/dev/null; then
+    echo "the drive could not be written"
+    return 1
+  fi
+  # Leftovers of a copy cut short when the drive was pulled.
+  rm -f "$folder"/.partial-* 2>/dev/null || true
+  if gd_drive_write "$out" "$folder/.partial-$name" \
+     && mv -f "$folder/.partial-$name" "$folder/$name" 2>/dev/null; then
+    sync -f "$folder/$name" 2>/dev/null || true
+    chmod 600 "$folder/$name" 2>/dev/null || true
+    gd_drive_rotate "$folder"
+    printf '%s\n' "$folder/$name"
+    return 0
+  fi
+  rm -f "$folder/.partial-$name" 2>/dev/null || true
+  printf '%s\n' "${GD_DRIVE_ERROR:-the drive could not be written}"
+  return 1
+}
+
+# **A copy of each archive on every chosen USB drive.** A missing
+# or full drive never fails the backup; it is recorded instead.
+gd_drive_copy() {
+  local out="$1" service="$2" name uuid target landed first="" failed=""
+  load_drives
+  if [ -z "$DRIVES" ] || [ "$DRIVE_MODE" = "local" ]; then return 0; fi
+  name="$(basename "$out")"
+  if [ "$DRIVE_ENCRYPT" -eq 1 ] && [ "${name%.gpg}" = "$name" ]; then name="$name.gpg"; fi
+  for uuid in $DRIVES; do
+    target="$(gd_drive_ready "$uuid")"
+    if [ -z "$target" ]; then
+      failed="$failed $(gd_drive_name "$uuid"): not connected;"
+      continue
+    fi
+    if landed="$(gd_drive_put "$out" "$target" "$service" "$name")"; then
+      printf '%s %s %s\n' 'GRYONIXNEXUS_DRIVE_COPY' "$uuid" "$landed"
+      [ -n "$first" ] || first="$landed"
+      gd_drive_seen "$uuid"
+    else
+      failed="$failed ${target##*/}: $landed;"
+    fi
+  done
+  gd_drive_status "$failed"
+  # Drives only: the local archive goes once a drive holds it.
+  if [ "$DRIVE_MODE" = "drive" ] && [ -n "$first" ]; then
+    rm -f "$out"
+    printf '%s %s %s\n' 'GRYONIXNEXUS_BACKUP_DONE' \
+      "$(stat -c %s "$first" 2>/dev/null || echo 0)" "$first"
+  fi
+  return 0
+}
+
+# Copies the newest archive an external tool wrote.
+gd_drive_copy_newest() {
+  local newest
+  newest="$({ ls -1t "$1/$2"-*.tar.gz 2>/dev/null || true; } | head -n 1)"
+  [ -n "$newest" ] || return 0
+  gd_drive_copy "$newest" "$2"
+  # Drives only: the unpacked folder leaves with its archive.
+  if [ ! -e "$newest" ] && [ -d "${newest%.tar.gz}" ]; then rm -rf "${newest%.tar.gz}"; fi
+}
+
+do_set_drives() {
+  local mode="${1:-both}" encrypt="${2:-1}" checked="" uuid
+  shift 2 || true
+  case "$mode" in
+    both|local|drive) ;;
+    *) echo "unsupported drive mode: ${mode}" >&2; exit 2 ;;
+  esac
+  case "$encrypt" in
+    0|1) ;;
+    *) echo "invalid encryption flag: ${encrypt}" >&2; exit 2 ;;
+  esac
+  for uuid in "$@"; do
+    case "$uuid" in
+      ''|*[!0-9A-Fa-f-]*) echo "invalid drive id: ${uuid}" >&2; exit 2 ;;
+    esac
+    checked="$checked $uuid"
+  done
+  install -d -m 755 "$(dirname "$DRIVECONF")"
+  cat > "$DRIVECONF" <<EOF_DRIVES
+DRIVE_MODE=$mode
+DRIVE_ENCRYPT=$encrypt
+DRIVES='${checked# }'
+EOF_DRIVES
+  chmod 644 "$DRIVECONF"
+  # A newly chosen drive counts from now.
+  for uuid in $checked; do
+    grep -q "^$uuid " "$DRIVELAST" 2>/dev/null || gd_drive_seen "$uuid"
+  done
+}
+
+# Settings, each drive's state and the last copy, in one read.
+do_show_drives() {
+  local uuid target size avail
+  load_drives
+  printf 'DRIVE_MODE=%s\nDRIVE_ENCRYPT=%s\nDRIVES=%s\n' "$DRIVE_MODE" "$DRIVE_ENCRYPT" "$DRIVES"
+  if [ -s "$PASSFILE" ]; then echo 'DRIVE_PASS=1'; else echo 'DRIVE_PASS=0'; fi
+  for uuid in $DRIVES; do
+    target="$(gd_drive_target "$uuid")"
+    size=0
+    avail=0
+    if [ -n "$target" ]; then
+      read -r size avail < <(df -B1 --output=size,avail "$target" 2>/dev/null | tail -n 1) || true
+      printf 'DRIVE=%s 1 %s %s %s\n' "$uuid" "${size:-0}" "${avail:-0}" "$target"
+    else
+      printf 'DRIVE=%s 0 0 0 %s\n' "$uuid" "$(gd_drive_fstab "$uuid")"
+    fi
+  done
+  [ -s "$DRIVESTATUS" ] && cat "$DRIVESTATUS"
+  return 0
+}
+
+# --- per-service locking (see LockSections) --------------------------
+
+GD_LOCK_BUSY=75
+
+gd_with_lock() {
+  local id="$1"
+  shift
+  install -d -m 700 '/var/lib/gryonixnexus/locks'
+  local fd
+  exec {fd}>"/var/lib/gryonixnexus/locks/$id.lock"
+  if ! flock -n "$fd"; then
+    echo "$id: another backup or update for this service is already running, skipping" >&2
+    return "$GD_LOCK_BUSY"
+  fi
+  "$@"
+}
+
+# --- helpers shared by every generated service body -----------------
+
+gd_compose_stop() {
+  local project="$1"
+  shift
+  docker compose -p "$project" stop "$@" >/dev/null 2>&1 || true
+}
+
+gd_compose_start() {
+  local project="$1"
+  shift
+  docker compose -p "$project" start "$@" >/dev/null 2>&1 || true
+}
+
+# Container id of one compose service; empty when it is not running.
+gd_container() {
+  docker compose -p "$1" ps -q "$2" 2>/dev/null | head -n 1
+}
+
+# A tar of a live database directory is a corrupt backup, so the
+# database is dumped through its own client instead. The credentials
+# come from the container's OWN environment — compose already put them
+# there — because passing them from here would place the password in
+# the argv of `docker exec`, readable by every account on the host.
+gd_dump_postgres() {
+  local cid
+  cid="$(gd_container "$1" "$2")"
+  if [ -z "$cid" ]; then
+    echo "the $1 database container is not running" >&2
+    return 1
+  fi
+  if ! docker exec "$cid" sh -c \
+       'PGPASSWORD="$POSTGRES_PASSWORD" exec pg_dump --clean --if-exists -U "$POSTGRES_USER" -d "$POSTGRES_DB"' \
+       > "$3"; then
+    echo "the $1 database dump failed" >&2
+    return 1
+  fi
+  [ -s "$3" ] || { echo "the $1 database dump is empty" >&2; return 1; }
+}
+
+# --single-transaction is what makes a dump of a RUNNING InnoDB
+# database trustworthy: one consistent snapshot, no instance-wide lock.
+# mariadb-dump on current images, mysqldump on older ones.
+#
+# A fourth argument names the database explicitly, for a service that
+# keeps several in one engine and whose container therefore sets no
+# MYSQL_DATABASE at all; without it the container's own variable is
+# used, as it always was. Only the NAME travels here — the password is
+# still read inside the container, never put in the argv of docker exec
+# where /proc hands it to every account on the host.
+gd_dump_mysql() {
+  local cid
+  cid="$(gd_container "$1" "$2")"
+  if [ -z "$cid" ]; then
+    echo "the $1 database container is not running" >&2
+    return 1
+  fi
+  if ! docker exec "$cid" sh -c \
+       'if command -v mariadb-dump >/dev/null 2>&1; then D=mariadb-dump; else D=mysqldump; fi; MYSQL_PWD="$MYSQL_ROOT_PASSWORD" exec "$D" --single-transaction --quick -u root "${1:-$MYSQL_DATABASE}"' \
+       sh "${4:-}" > "$3"; then
+    echo "the $1 database dump failed" >&2
+    return 1
+  fi
+  [ -s "$3" ] || { echo "the $1 database dump is empty" >&2; return 1; }
+}
+
+# Keeps the newest RETENTION archives of one service — encrypted and
+# plain together, they are one series. The pipeline is guarded: with
+# fewer archives than RETENTION `ls` finds nothing to list and would
+# fail the whole run under pipefail, which is every first run.
+gd_rotate() {
+  { ls -1t "$1/$2"-*.tar.gz "$1/$2"-*.tar.gz.gpg 2>/dev/null || true; } \
+    | tail -n +$((RETENTION + 1)) | xargs -r rm -f
+}
+
+# Encrypt (or not), put the archive in place, rotate, announce.
+gd_finish() {
+  local name="$1" dir="$2" plain="$3" work="$4" out=""
+  if [ ! -s "$plain" ]; then
+    rm -rf "$work"
+    echo "the $name archive is empty" >&2
+    return 1
+  fi
+  if [ "$GD_ENCRYPT" -eq 1 ]; then
+    out="$dir/$(basename "$plain").gpg"
+    if ! printf '%s' "$GD_PASS" | gpg --batch --quiet --yes --symmetric \
+         --cipher-algo AES256 --passphrase-fd 0 --pinentry-mode loopback \
+         --output "$out" "$plain"; then
+      rm -rf "$work"
+      echo "could not encrypt the $name backup" >&2
+      return 1
+    fi
+  else
+    out="$dir/$(basename "$plain")"
+    mv "$plain" "$out"
+  fi
+  # The plain archive never outlives the encrypted one.
+  rm -rf "$work"
+  chmod 600 "$out"
+  chown "$OWNER" "$out" 2>/dev/null || true
+  gd_rotate "$dir" "$name"
+  # A streamed command carries no exit status back to the app, so the
+  # archive announces itself: marker, size in bytes, path.
+  printf '%s %s %s\n' 'GRYONIXNEXUS_BACKUP_DONE' \
+    "$(stat -c %s "$out" 2>/dev/null || echo 0)" "$out"
+  # And then it leaves the machine, if a destination was chosen. After
+  # the marker on purpose: the archive exists and is announced whatever
+  # the far side does.
+  gd_ship "$out" "$name"
+  # A copy on each USB drive, after the far side.
+  gd_drive_copy "$out" "$name"
+}
+
+# --- per-service bodies (generated from each service's BackupSpec) ---
+
+backup_passbolt() {
+  local stamp work plain rc=0
+  install -d -m 750 '/opt/backups/passbolt'
+  stamp="$(date +%Y%m%d-%H%M%S)"
+  work="$(mktemp -d '/opt/backups/passbolt/.work-XXXXXX')"
+  plain="$work/passbolt-$stamp.tar.gz"
+  install -d -m 700 "$work/gryonixnexus-db"
+  if [ ! -d '/opt/passbolt/secrets' ]; then
+    rm -rf "$work"
+    echo "passbolt has no data at /opt/passbolt/secrets" >&2
+    return 1
+  fi
+  gd_dump_mysql 'passbolt' 'db' "$work/gryonixnexus-db/passbolt.sql" || rc=1
+  if [ "$rc" -eq 0 ]; then
+    tar --numeric-owner -czf "$plain" \
+        -C '/opt/passbolt' 'secrets' \
+        -C "$work" 'gryonixnexus-db' || rc=1
+  fi
+  if [ "$rc" -ne 0 ]; then
+    rm -rf "$work"
+    echo "passbolt backup failed" >&2
+    return 1
+  fi
+  gd_finish 'passbolt' '/opt/backups/passbolt' "$plain" "$work"
+}
+
+# The ONE dispatch both callers go through: the timer's `run` and the
+# app's `backup`. Two copies of these bodies is exactly the drift this
+# wrapper exists to prevent.
+gd_run_service() {
+  case "$1" in
+    passbolt) gd_with_lock 'backup-passbolt' backup_passbolt ;;
+    *) echo "unsupported service: $1" >&2; return 2 ;;
+  esac
+}
+
+# Whether a run of this service encrypts unless the caller says
+# otherwise. Secret stores yes; bulk media no — GPG over a photo
+# library costs hours of CPU on a Raspberry Pi.
+gd_default_encrypt() {
+  case "$1" in
+    passbolt) echo 1 ;;
+    *) echo 0 ;;
+  esac
+}
+
+do_delete() {
+  local path="${1:-}"
+  # The path must sit inside a backup directory this deployment owns.
+  # Without the check a whitelisted wrapper would delete ANY file.
+  case "$path" in
+    *..*) echo "invalid path: ${path}" >&2; exit 2 ;;
+  esac
+  case "$path" in
+    "/opt/backups/passbolt"/*) ;;
+    "$DRIVEROOT"/*/*/*) ;;
+    *) echo "path outside the backup directories: ${path}" >&2; exit 2 ;;
+  esac
+  [ -e "$path" ] || { echo "no such backup: ${path}" >&2; exit 2; }
+  rm -rf "$path"
+}
+
+do_run() {
+  load_config
+  local failed=""
+  for svc in $SERVICES; do
+    # Each service runs in its own subshell, and the `||` keeps errexit
+    # from firing on a failure: an unattended run must not let one
+    # broken service cancel the backups of every service after it.
+    (
+      GD_ENCRYPT="$(gd_default_encrypt "$svc")"
+      GD_PASS=""
+      if [ "$GD_ENCRYPT" -eq 1 ]; then
+        # Unattended, so there is nobody to ask: the stored passphrase
+        # is the only source. Without it the service refuses rather
+        # than quietly writing its secrets out in the clear.
+        if [ ! -s "$PASSFILE" ]; then
+          echo "no backup passphrase stored for $svc" >&2
+          exit 1
+        fi
+        GD_PASS="$(cat "$PASSFILE")"
+      fi
+      gd_run_service "$svc"
+    ) || failed="$failed $svc"
+  done
+  if [ -n "$failed" ]; then
+    echo "backup failed for:$failed" >&2
+    exit 1
+  fi
+}
+
+# One service, on demand. Same bodies the timer runs; the only
+# difference is where the passphrase comes from.
+do_backup() {
+  local svc="${1:-}"
+  shift || true
+  load_config
+  GD_ENCRYPT="$(gd_default_encrypt "$svc")"
+  for arg in "$@"; do
+    case "$arg" in
+      --encrypt) GD_ENCRYPT=1 ;;
+      --no-encrypt) GD_ENCRYPT=0 ;;
+      *) echo "unsupported option: ${arg}" >&2; exit 2 ;;
+    esac
+  done
+  if [ "$GD_ENCRYPT" -eq 1 ]; then
+    # On stdin, never argv. A terminal means nobody piped anything in,
+    # and reading would hang forever.
+    if [ ! -t 0 ]; then GD_PASS="$(cat)"; fi
+    # No passphrase given: fall back to the stored one, so an
+    # encrypted run is possible without re-typing it.
+    if [ -z "$GD_PASS" ] && [ -s "$PASSFILE" ]; then GD_PASS="$(cat "$PASSFILE")"; fi
+    if [ -z "$GD_PASS" ]; then
+      echo "an encrypted backup needs a passphrase on stdin" >&2
+      exit 2
+    fi
+  fi
+  gd_run_service "$svc"
+}
+
+# What a backup of this service would cost, in bytes, and what the
+# backup filesystem still has free. Read-only, and the only reason the
+# app can warn BEFORE starting an hours-long run.
+do_estimate() {
+  local svc="${1:-}" dir="" total=0 free="" sz=""
+  local -a paths=()
+  case "$svc" in
+    passbolt) dir='/opt/backups/passbolt'; paths=('/opt/passbolt/secrets' '/opt/passbolt/db') ;;
+    *) echo "unsupported service: ${svc}" >&2; exit 2 ;;
+  esac
+  install -d -m 750 "$dir"
+  local p
+  for p in "${paths[@]}"; do
+    [ -e "$p" ] || continue
+    sz="$(du -sb "$p" 2>/dev/null | cut -f1)" || sz=""
+    total=$((total + ${sz:-0}))
+  done
+  free="$(df -B1 --output=avail "$dir" 2>/dev/null | tail -n 1 | tr -cd '0-9')"
+  printf '%s %s %s\n' 'GRYONIXNEXUS_BACKUP_ESTIMATE' "$total" "${free:-0}"
+}
+
+do_set_schedule() {
+  # <schedule> is `off` or `every:<n><unit>@<HH:MM>` — the interval and
+  # the time of day the user picked. Parsed here rather than taking a
+  # raw OnCalendar expression: the wrapper is whitelisted in sudoers,
+  # so it must not accept arbitrary systemd input from the client.
+  local schedule="${1:-off}" retention="${2:-7}"
+  shift 2 || true
+  local services="$*"
+  local oncal=""
+  case "$schedule" in
+    off) ;;
+    every:*)
+      local spec="${schedule#every:}"
+      local every="${spec%@*}" at="${spec#*@}"
+      local n="${every%[hd]}" unit="${every##*[0-9]}"
+      case "$n" in
+        ''|*[!0-9]*) echo "invalid interval: ${every}" >&2; exit 2 ;;
+      esac
+      [ "$n" -ge 1 ] || { echo "invalid interval: ${every}" >&2; exit 2; }
+      case "$at" in
+        [0-2][0-9]:[0-5][0-9]) ;;
+        *) echo "invalid time: ${at}" >&2; exit 2 ;;
+      esac
+      [ "${at%%:*}" -le 23 ] || { echo "invalid time: ${at}" >&2; exit 2; }
+      case "$unit" in
+        h)
+          # Every n hours, aligned to the chosen minute.
+          if [ "$n" -ge 24 ]; then
+            oncal="*-*-* ${at}:00"
+          else
+            oncal="*-*-* 00/${n}:${at#*:}:00"
+          fi
+          ;;
+        d)
+          # Every n days at the chosen time. systemd has no "every n
+          # days" for n > 1, so those run daily-aligned on a day step.
+          if [ "$n" -le 1 ]; then
+            oncal="*-*-* ${at}:00"
+          else
+            oncal="*-*-01/${n} ${at}:00"
+          fi
+          ;;
+        *) echo "invalid interval unit: ${every}" >&2; exit 2 ;;
+      esac
+      ;;
+    *) echo "unsupported schedule: ${schedule}" >&2; exit 2 ;;
+  esac
+  case "$retention" in
+    ''|*[!0-9]*) echo "invalid retention: ${retention}" >&2; exit 2 ;;
+  esac
+  [ "$retention" -ge 1 ] || { echo "invalid retention: ${retention}" >&2; exit 2; }
+  # Only services this wrapper knows about may end up in the config.
+  local checked=""
+  for svc in $services; do
+    for known in passbolt; do
+      if [ "$svc" = "$known" ]; then checked="$checked $svc"; fi
+    done
+  done
+  install -d -m 755 "$(dirname "$CONFIG")"
+  cat > "$CONFIG" <<EOF_CONF
+SCHEDULE=$schedule
+RETENTION=$retention
+SERVICES='${checked# }'
+EOF_CONF
+  # World-readable on purpose: it holds no secrets (the passphrase is
+  # a separate 0600 file) and the app reads it without sudo.
+  chmod 644 "$CONFIG"
+  if [ "$schedule" = "off" ]; then
+    systemctl disable --now 'gryonixnexus-autobackup.timer' >/dev/null 2>&1 || true
+  else
+    mkdir -p /etc/systemd/system
+    cat > /etc/systemd/system/gryonixnexus-autobackup.timer <<EOF_TIMER
+[Unit]
+Description=gryonixNexus scheduled backups
+[Timer]
+OnCalendar=$oncal
+# Servers are not up 24/7 — a missed window must still run.
+Persistent=true
+# Small jitter only: the user picked a specific time, so the run must
+# not wander an hour away from it.
+RandomizedDelaySec=5m
+[Install]
+WantedBy=timers.target
+EOF_TIMER
+    systemctl daemon-reload
+    # A bad OnCalendar would leave the timer permanently inactive —
+    # catch it here, while the app is still listening. Only when the
+    # tool is actually present: its ABSENCE must not reject a schedule
+    # that is fine (minimal images ship without systemd-analyze).
+    if command -v systemd-analyze >/dev/null 2>&1; then
+      if ! systemd-analyze calendar "$oncal" >/dev/null 2>&1; then
+        echo "invalid schedule expression: ${oncal}" >&2; exit 2
+      fi
+    fi
+    systemctl enable --now 'gryonixnexus-autobackup.timer' >/dev/null 2>&1 || true
+  fi
+}
+
+do_set_passphrase() {
+  install -d -m 755 "$(dirname '/etc/gryonixnexus/autobackup.pass')"
+  # From stdin, never argv: argv is world-readable in /proc.
+  local pass
+  pass="$(cat)"
+  if [ -z "$pass" ]; then echo "an empty passphrase is refused" >&2; exit 2; fi
+  ( umask 077 && printf '%s' "$pass" > '/etc/gryonixnexus/autobackup.pass' )
+  chmod 600 '/etc/gryonixnexus/autobackup.pass'
+}
+
+case "$ACTION" in
+  delete) do_delete "${2:-}" ;;
+  run) do_run ;;
+  backup) shift; do_backup "$@" ;;
+  estimate) do_estimate "${2:-}" ;;
+  set-schedule) shift; do_set_schedule "$@" ;;
+  set-passphrase) do_set_passphrase ;;
+  set-destination) shift; do_set_destination "$@" ;;
+  show-destination) do_show_destination ;;
+  test-destination) do_test_destination ;;
+  set-drives) shift; do_set_drives "$@" ;;
+  show-drives) do_show_drives ;;
+  *) echo "unsupported action: ${ACTION}" >&2; exit 2 ;;
+esac
+echo 'GRYONIXNEXUS_BACKUP_CTL_DONE'

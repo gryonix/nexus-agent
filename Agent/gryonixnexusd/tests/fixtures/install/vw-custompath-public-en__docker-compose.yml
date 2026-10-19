@@ -1,0 +1,14 @@
+services:
+  vaultwarden:
+    image: vaultwarden/server:latest
+    container_name: vw
+    restart: unless-stopped
+    environment:
+      DOMAIN: "https://vault.example.com"
+      SIGNUPS_ALLOWED: "false"
+      ADMIN_TOKEN: ${ADMIN_TOKEN}
+      IP_HEADER: X-Forwarded-For
+    volumes:
+      - /srv/vault/data:/data
+    ports:
+      - "127.0.0.1:8082:80"

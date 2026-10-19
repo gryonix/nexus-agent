@@ -1,0 +1,4 @@
+hostname=home.home.local
+upstreamPort=8123
+adminGuard=true
+upstreamHTTPS=false

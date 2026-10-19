@@ -1,0 +1,10 @@
+mqtt:
+  server: mqtt://127.0.0.1:1883
+  user: zigbee2mqtt
+  password: __MQTT_PASSWORD__
+serial:
+  port: /dev/serial/by-id/usb-ITead_Sonoff_Zigbee_3.0_USB_Dongle_Plus-if00-port0
+frontend:
+  enabled: true
+  host: 127.0.0.1
+  port: 8103

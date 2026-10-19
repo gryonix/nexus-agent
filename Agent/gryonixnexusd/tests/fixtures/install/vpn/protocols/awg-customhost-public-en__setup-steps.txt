@@ -1,0 +1,39 @@
+log "AmneziaWG VPN: starting"
+install -d /opt/awgvpn
+cat > /opt/awgvpn/gryonixnexus-update.sh <<'EOF_AWGVPN_UPDATE'
+#!/bin/bash
+# Managed by gryonixNexus — AmneziaWG VPN (amnezia-wg-easy) update for the Server Dashboard.
+set -euo pipefail
+cd /opt/awgvpn
+docker compose -p awgvpn pull -q
+docker compose -p awgvpn up -d
+EOF_AWGVPN_UPDATE
+chmod 750 /opt/awgvpn/gryonixnexus-update.sh
+cd /opt/awgvpn
+# First run only: generate the panel password on this server and hash
+# it with the image's node and bcryptjs; it goes in on stdin.
+if [ ! -f .env ]; then
+  AWGVPN_PASSWORD="$(openssl rand -hex 12)"
+  timeout 300 docker pull -q ghcr.io/deckersu/amnezia-wg-easy:14 >/dev/null || true
+  AWGVPN_OUT="$(printf '%s' "$AWGVPN_PASSWORD" | timeout 60 docker run --rm -i --entrypoint node ghcr.io/deckersu/amnezia-wg-easy:14 -e 'let p="";process.stdin.on("data",d=>p+=d).on("end",()=>console.log(require("bcryptjs").hashSync(p,12)))' 2>/dev/null)" || AWGVPN_OUT=""
+  AWGVPN_HASH="$(printf '%s' "$AWGVPN_OUT" | head -n1 | tr -d "'")"
+  case "$AWGVPN_HASH" in '$2'*) ;; *) AWGVPN_HASH="" ;; esac
+  if [ -n "$AWGVPN_HASH" ]; then
+    printf 'ADMIN_PASSWORD=%s\nPASSWORD_HASH=%s\n' "$AWGVPN_PASSWORD" "$AWGVPN_HASH" > .env
+  else
+    # No hash: the stock panel starts without a password. It binds
+    # loopback only and nothing proxies it — clients are managed from
+    # the unified VPN panel — so this is a degraded but working VPN,
+    # which beats an installation that never finishes.
+    log "AmneziaWG: could not hash a panel password — its built-in panel stays open on localhost only. The VPN itself works; manage clients at vpn.<domain>."
+    printf 'ADMIN_PASSWORD=%s\nPASSWORD_HASH=\n' "$AWGVPN_PASSWORD" > .env
+  fi
+fi
+# docker compose interpolates $ inside .env values, so the bcrypt
+# hash must carry $$ or it reaches the container mangled (the WARN
+# "variable is not set" flood). Idempotent: runs of $ collapse to $$,
+# an already escaped hash is left as is; also repairs pre-fix installs.
+sed -i '/^PASSWORD_HASH=/s/\$\{1,\}/$$/g' .env
+chmod 600 .env
+docker compose -p awgvpn pull -q
+docker compose -p awgvpn up -d

@@ -1,0 +1,35 @@
+services:
+  litellm:
+    image: ghcr.io/berriai/litellm:v1.100.0
+    container_name: litellm
+    restart: unless-stopped
+    depends_on:
+      - database
+    command: ["--config", "/app/config.yaml", "--port", "4000"]
+    environment:
+      LITELLM_MASTER_KEY: ${LITELLM_MASTER_KEY}
+      DATABASE_URL: postgresql://litellm:${DB_PASSWORD}@database:5432/litellm
+    # The provider keys, rendered by the agent from its own store.
+    # A separate file from .env because nothing on the device ever
+    # writes it and nothing here ever reads it back.
+    env_file:
+      - /etc/gryonixnexus/litellm-keys.env
+    volumes:
+      - /opt/litellm/config.yaml:/app/config.yaml:ro
+    ports:
+      - "127.0.0.1:8098:4000"
+    networks:
+      - default
+      - gryonixnexus-ai
+  database:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: litellm
+      POSTGRES_USER: litellm
+      POSTGRES_PASSWORD: ${DB_PASSWORD}
+    volumes:
+      - /opt/litellm/postgres:/var/lib/postgresql/data
+networks:
+  gryonixnexus-ai:
+    external: true

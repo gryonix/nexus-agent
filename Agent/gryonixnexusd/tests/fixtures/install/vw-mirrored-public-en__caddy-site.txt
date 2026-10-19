@@ -1,0 +1,11 @@
+vault.example.com, vault.example.org, vault.example.net {
+    # gryonixnexus: vaultwarden
+    @gryonixnexus_open path /api/* /identity/* /notifications/* /icons/* /attachments/* /.well-known/* /alive /app-id.json
+    handle @gryonixnexus_open {
+        reverse_proxy 127.0.0.1:8082
+    }
+    handle {
+        import /etc/caddy/gryonixnexus-admin-guard
+        reverse_proxy 127.0.0.1:8082
+    }
+}

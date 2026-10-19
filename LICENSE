@@ -1,0 +1,85 @@
+gryonix Source-Available License 1.0
+
+Copyright (c) 2026 Danyil Grypak. All rights reserved.
+
+1. Definitions
+
+"Licensor" means Danyil Grypak.
+
+"Software" means the source code, object code, documentation and other
+material in this repository, in every version published here on or after
+2 October 2026.
+
+"Official Build" means a build of the Software that the Licensor distributes,
+for example through the App Store, Google Play or the Licensor's own website,
+together with everything such a build installs, builds or runs on your devices
+and servers as part of its normal operation.
+
+"Contribution" means a change to the Software that you submit to the Licensor
+under CONTRIBUTING.md.
+
+2. What you may do without a license
+
+(a) Read the Software, and view and fork it on GitHub as GitHub's Terms of
+    Service allow.
+(b) Download the Software to read it, to review its security, or to report a
+    problem to the Licensor.
+(c) Copy, modify, compile and run the Software privately, only to prepare,
+    test and submit a Contribution. A build made for this purpose may not be
+    used for anything else, and may not be shared with anyone other than the
+    Licensor.
+(d) Quote short excerpts for commentary, review or discussion, with
+    attribution.
+
+3. What needs a commercial license
+
+Everything not allowed by section 2 needs a separate written license from the
+Licensor. This includes, for personal and for business purposes alike:
+
+(a) compiling, building or packaging the Software, except as section 2(c)
+    allows;
+(b) installing, running or using the Software, or any build or modified
+    version of it that is not an Official Build;
+(c) copying, publishing, distributing, selling, renting, sublicensing or
+    hosting the Software or any build of it, or offering it as a service;
+(d) making or distributing modified versions or derivative works, except a
+    Contribution;
+(e) removing or bypassing any license check, payment or activation in the
+    Software.
+
+To buy a license, write to license@gryonix.com.
+
+4. Official Builds
+
+Official Builds are governed by the terms under which the Licensor distributes
+them, not by this file. Nothing here limits what those terms allow.
+
+5. Third-party components
+
+Some parts of the Software are written by others and carry their own licenses,
+listed in THIRD-PARTY.md, in the Licenses folders, or in the files themselves.
+Those licenses govern those parts, and nothing in this file takes away a right
+they grant.
+
+6. Earlier versions
+
+Versions of the Software published before 2 October 2026 under an earlier
+license remain available under that license. This license applies to every
+version published on or after that date.
+
+7. Names
+
+This license grants no right to use the names gryonix, gryonixNexus,
+gryonixVPN, gryonixPush or gryonixMail, or the Licensor's logos, except to
+describe where code came from.
+
+8. Ending of permission
+
+If you do anything that needs a license under section 3 without one, the
+permissions in section 2 end for you automatically.
+
+9. No warranty, no liability
+
+The Software is provided "as is", without warranty of any kind, express or
+implied. To the extent the law allows, the Licensor is not liable for any
+claim, damage or other liability arising from the Software or its use.
