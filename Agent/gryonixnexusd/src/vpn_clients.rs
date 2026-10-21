@@ -642,6 +642,10 @@ pub async fn set_default_dns(codec: Codec, req: pb::VpnDns) -> Resp {
     match panel.set_default_dns(&req.dns).await {
         Ok(dns) => {
             crate::vpn_dns::prepare_for(&dns);
+            if let Err(why) = crate::vpn_dns_priority::choose(&dns) {
+                tracing::warn!(%why, "could not put the chosen DNS first in the order");
+            }
+            crate::vpn_dns::refresh().await;
             encode(codec, &with_local(dns).await)
         }
         Err(refusal) => refusal.response(),
@@ -658,6 +662,11 @@ pub async fn set_dns_priority(codec: Codec, req: pb::VpnDnsPriority) -> Resp {
         Ok(order) => order,
         Err(why) => return connect_error(StatusCode::BAD_REQUEST, "invalid_argument", &why),
     };
+    if let Some(chosen) = chosen_dns().await {
+        if let Err(why) = crate::vpn_dns_priority::check(&order, &chosen) {
+            return connect_error(StatusCode::BAD_REQUEST, "invalid_argument", &why);
+        }
+    }
     if let Err(why) = crate::vpn_dns_priority::save(&order) {
         return connect_error(StatusCode::INTERNAL_SERVER_ERROR, "internal", &why);
     }
@@ -665,7 +674,23 @@ pub async fn set_dns_priority(codec: Codec, req: pb::VpnDnsPriority) -> Resp {
     encode(codec, &priority_answer().await)
 }
 
+/// The DNS chosen for devices as an order entry
+pub async fn chosen_dns() -> Option<String> {
+    if let Some(chosen) = crate::vpn_dns_priority::chosen() {
+        return Some(chosen);
+    }
+    let dns = Panel::open().await.ok()?.default_dns().await.ok()?;
+    match crate::vpn_dns_priority::choose(&dns) {
+        Ok(chosen) => Some(chosen),
+        Err(why) => {
+            tracing::warn!(%why, "could not remember the chosen DNS");
+            None
+        }
+    }
+}
+
 async fn priority_answer() -> pb::VpnDnsPriority {
+    chosen_dns().await;
     let (local_available, reachable) = crate::vpn_dns::reachability().await;
     pb::VpnDnsPriority { resolvers: crate::vpn_dns_priority::load(), local_available, reachable }
 }

@@ -201,6 +201,9 @@ fn resolvers() -> Arc<Resolvers> {
 
 /// Re-reads the order and where `local` leads
 pub async fn refresh() {
+    if crate::vpn_clients::services_path().exists() {
+        crate::vpn_clients::chosen_dns().await;
+    }
     resolvers().set(current_order(local_resolver().await));
 }
 
