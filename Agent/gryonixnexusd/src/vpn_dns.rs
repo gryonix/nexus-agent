@@ -1,10 +1,10 @@
 //! This server's AdGuard Home or Pi-hole as DNS for VPN devices.
 //!
-//! Devices ask one constant address. Every protocol container sends it
-//! to the host, where nftables turns it into the relay's local port.
-//! Nothing about it is reachable from the internet.
+//! Devices ask one constant address; nftables turns it into the relay's
+//! local port. While that resolver leads, every VPN container's DNS goes
+//! there too. Nothing about it is reachable from the internet.
 
-use std::net::SocketAddr;
+use std::net::{Ipv4Addr, SocketAddr};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, OnceLock};
 use std::time::Duration;
@@ -40,10 +40,27 @@ pub const BRIDGE_LABEL: &str = "vpn-dns-bridge";
 /// Docker bridges only: the default one and compose networks
 const BRIDGES: [&str; 2] = ["docker0", "br-*"];
 
-/// Bridges reach the relay through the address; nothing else does
-pub fn drop_in() -> String {
+/// The containers that carry VPN devices' traffic
+const VPN_CONTAINERS: [&str; 5] = [
+    crate::install::vpn::panel::CONTAINER,
+    crate::install::vpn::protocols::amnezia::CONTAINER,
+    crate::install::vpn::protocols::openvpn::CONTAINER,
+    crate::install::vpn::protocols::xray::CONTAINER,
+    crate::install::vpn::protocols::shadowsocks::CONTAINER,
+];
+
+/// Bridges reach the relay through the address, these sources always
+pub fn drop_in_for(intercepted: &[Ipv4Addr]) -> String {
     let mut redirects = String::new();
     let mut accepts = String::new();
+    if !intercepted.is_empty() {
+        let sources = intercepted.iter().map(Ipv4Addr::to_string).collect::<Vec<_>>().join(", ");
+        for proto in ["udp", "tcp"] {
+            redirects.push_str(&format!(
+                "\x20       ip saddr {{ {sources} }} {proto} dport 53 redirect to :{RELAY_PORT}\n"
+            ));
+        }
+    }
     for bridge in BRIDGES {
         for proto in ["udp", "tcp"] {
             redirects.push_str(&format!(
@@ -190,7 +207,11 @@ async fn reconcile(bound: bool) -> bool {
     refresh().await;
     allow_through_xray().await;
     let bound = bound || start(RELAY_PORT, resolvers()).await;
-    let applied = bound && apply().await;
+    let intercepted = if bound { intercepted_sources().await } else { Vec::new() };
+    if !intercepted.is_empty() {
+        prepare_for(&[ADDRESS.to_string()]);
+    }
+    let applied = bound && apply(&intercepted).await;
     READY.store(applied, Ordering::Relaxed);
     bound
 }
@@ -306,8 +327,39 @@ pub fn bridge_drop_in() -> String {
         .collect()
 }
 
-async fn apply() -> bool {
-    match firewall::apply_rules(LABEL, &drop_in()).await {
+/// VPN containers, while this deployment's own resolver leads
+async fn intercepted_sources() -> Vec<Ipv4Addr> {
+    let leads = priority::load().first().map(String::as_str) == Some(priority::LOCAL);
+    if !leads || local_resolver().await.is_none() {
+        return Vec::new();
+    }
+    let format = "{{range .NetworkSettings.Networks}}{{.IPAddress}} {{end}}";
+    let Ok(output) = tokio::process::Command::new(crate::install::execute::docker_bin())
+        .args(["inspect", "--format", format])
+        .args(VPN_CONTAINERS)
+        .stderr(std::process::Stdio::null())
+        .output()
+        .await
+    else {
+        return Vec::new();
+    };
+    container_addresses(&String::from_utf8_lossy(&output.stdout))
+}
+
+/// Private IPv4 addresses, once each, in order
+pub fn container_addresses(text: &str) -> Vec<Ipv4Addr> {
+    let mut found: Vec<Ipv4Addr> = text
+        .split_whitespace()
+        .filter_map(|word| word.parse::<Ipv4Addr>().ok())
+        .filter(|address| address.is_private())
+        .collect();
+    found.sort();
+    found.dedup();
+    found
+}
+
+async fn apply(intercepted: &[Ipv4Addr]) -> bool {
+    match firewall::apply_rules(LABEL, &drop_in_for(intercepted)).await {
         Ok(firewall::Outcome::Applied) => true,
         Ok(_) => false,
         Err(err) => {
@@ -393,7 +445,7 @@ mod tests {
 
     #[test]
     fn the_drop_in_redirects_only_bridge_traffic_to_the_address() {
-        let text = drop_in();
+        let text = drop_in_for(&[]);
         assert!(text.starts_with("# Managed by gryonixNexus"));
         assert!(text.contains("table inet gryonixnexus_vpn_dns\ndelete table inet gryonixnexus_vpn_dns\n"));
         assert!(text.contains("priority dstnat - 10;"), "before docker's own DNAT: {text}");
@@ -410,6 +462,26 @@ mod tests {
         }
         assert_eq!(text.matches("accept comment").count(), 4, "nothing opens without a bridge: {text}");
         assert!(!text.contains("dnat to"), "a plain host stays a single host: {text}");
+    }
+
+    #[test]
+    fn vpn_containers_lose_every_other_resolver() {
+        let sources = ["172.18.0.2".parse().unwrap(), "172.20.0.3".parse().unwrap()];
+        let text = drop_in_for(&sources);
+        for proto in ["udp", "tcp"] {
+            let rule = format!("ip saddr {{ 172.18.0.2, 172.20.0.3 }} {proto} dport 53 redirect to :10053\n");
+            assert!(text.contains(&rule), "{text}");
+        }
+        assert!(text.contains("iifname \"docker0\" ip daddr 10.53.0.53 udp dport 53"), "the address still works: {text}");
+        assert_eq!(text.matches("accept comment").count(), 4, "no port opens for it: {text}");
+        assert!(!drop_in_for(&[]).contains("ip saddr"), "nothing is caught without sources");
+    }
+
+    #[test]
+    fn container_addresses_are_private_ipv4_once_each() {
+        let found = container_addresses("172.20.0.3 172.18.0.2 \n\n172.18.0.2 203.0.113.5 <no value>\n");
+        assert_eq!(found, vec!["172.18.0.2".parse::<Ipv4Addr>().unwrap(), "172.20.0.3".parse().unwrap()]);
+        assert!(container_addresses("").is_empty());
     }
 
     #[test]

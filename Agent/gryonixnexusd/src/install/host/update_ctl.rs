@@ -570,6 +570,99 @@ gd_self_managed_note() {
   printf '%s: updated by its own updater, not by this wrapper\n' "$1"
 }
 
+# --- mailcow, through its own updater --------------------------------
+
+# mailcow's update.sh pulls, migrates and restarts its stack itself, so
+# its images are never swapped here: the script runs instead, the way
+# mailcow documents an unattended update. stdin is /dev/null on
+# purpose: an open pipe with nobody writing parks the run forever at
+# the first question update.sh asks, and the update then never ends.
+MAILCOW_PROJECT='mailcowdockerized'
+
+# The directory the stack was started from, read off its own
+# containers, so a mailcow installed anywhere is found.
+gd_mailcow_dir() {
+  local cid dir=''
+  cid="$({ docker compose -p "$MAILCOW_PROJECT" ps -aq 2>/dev/null | head -n 1; } || true)"
+  if [ -n "$cid" ]; then
+    dir="$(docker inspect -f '{{index .Config.Labels "com.docker.compose.project.working_dir"}}' "$cid" 2>/dev/null || true)"
+  fi
+  [ -n "$dir" ] || dir='/opt/mailcow-dockerized'
+  [ -f "$dir/update.sh" ] || return 1
+  printf '%s' "$dir"
+}
+
+# `update.sh --check` exits 0 when new code is available and 3 when
+# there is none; anything else is no answer.
+gd_mailcow_state() {
+  local dir rc=0
+  if ! dir="$(gd_mailcow_dir)"; then printf 'not_installed'; return 0; fi
+  ( cd "$dir" && timeout 120 bash ./update.sh --check ) < /dev/null > /dev/null 2>&1 || rc=$?
+  case "$rc" in
+    0) printf 'available' ;;
+    3) printf 'current' ;;
+    *) printf 'check_failed' ;;
+  esac
+}
+
+# The check line for a service with its own updater.
+gd_self_check() {
+  local state
+  if [ "$1" != 'mailcow' ]; then gd_self_managed_note "$1"; return 0; fi
+  state="$(gd_mailcow_state)"
+  case "$state" in
+    available) printf '%s %s %s\n' 'GRYONIXNEXUS_UPDATE_AVAILABLE' mailcow 'mailcow-dockerized' ;;
+    current) printf '%s %s\n' 'GRYONIXNEXUS_UPDATE_CURRENT' mailcow ;;
+    *) printf '%s %s %s\n' 'GRYONIXNEXUS_UPDATE_UNKNOWN' mailcow "$state" ;;
+  esac
+}
+
+# The update itself, once the lock is held: a backup first, as for
+# every other service, then update.sh, then the same health wait.
+# There is no rollback: update.sh migrates data, and only the backup
+# taken here can undo that.
+gd_mailcow_update_locked() {
+  local dir rc=0 tries=0 health=''
+  if ! dir="$(gd_mailcow_dir)"; then
+    echo "mailcow's update.sh was not found, so mailcow was not updated" >&2
+    gd_record "$(printf '%s %s %s' 'GRYONIXNEXUS_UPDATE_FAILED' mailcow 'update.sh was not found')"
+    return 1
+  fi
+  if [ ! -x "$BACKUP_CTL" ]; then
+    echo "the backup helper is missing, so mailcow was not updated" >&2
+    gd_record "$(printf '%s %s %s' 'GRYONIXNEXUS_UPDATE_FAILED' mailcow 'the backup helper is missing')"
+    return 1
+  fi
+  echo "backing up mailcow before updating it"
+  if ! "$BACKUP_CTL" backup mailcow < /dev/null; then
+    echo "the backup of mailcow failed, so the update was not applied" >&2
+    gd_record "$(printf '%s %s %s' 'GRYONIXNEXUS_UPDATE_FAILED' mailcow 'the backup failed')"
+    return 1
+  fi
+  # update.sh replaces itself first and exits 2 asking to be run
+  # again. Twice is that; a third exit 2 is a real failure.
+  while : ; do
+    rc=0
+    ( cd "$dir" && timeout 3600 bash ./update.sh --force --skip-ping-check ) < /dev/null || rc=$?
+    if [ "$rc" -eq 2 ] && [ "$tries" -lt 2 ]; then
+      tries=$((tries + 1))
+      echo "mailcow's update.sh updated itself, running it again"
+      continue
+    fi
+    break
+  done
+  if [ "$rc" -ne 0 ]; then
+    gd_record "$(printf '%s %s %s' 'GRYONIXNEXUS_UPDATE_FAILED' mailcow "update.sh exited with $rc")"
+    return 1
+  fi
+  # mailcow starts more containers than most stacks, and slower.
+  if ! health="$(gd_wait_healthy "$MAILCOW_PROJECT" "$((HEALTH_TIMEOUT * 2))")"; then
+    gd_record "$(printf '%s %s %s' 'GRYONIXNEXUS_UPDATE_FAILED' mailcow "${health:-unhealthy}")"
+    return 1
+  fi
+  gd_record "$(printf '%s %s' 'GRYONIXNEXUS_UPDATE_DONE' mailcow)"
+}
+
 # --- the registry ----------------------------------------------------
 
 # The digest `docker pull` recorded for THIS reference — not the image
@@ -728,11 +821,11 @@ do_check() {
   fi
   if [ "$target" = "--all" ]; then
     for svc in $KNOWN; do gd_check_service "$svc"; done
-    for svc in $SELF_MANAGED; do gd_self_managed_note "$svc"; done
+    for svc in $SELF_MANAGED; do gd_self_check "$svc"; done
     return 0
   fi
   gd_valid_label "$target" || exit 2
-  if gd_is_self_managed "$target"; then gd_self_managed_note "$target"; return 0; fi
+  if gd_is_self_managed "$target"; then gd_self_check "$target"; return 0; fi
   gd_check_service "$target" || exit 2
 }
 
@@ -842,14 +935,17 @@ gd_update_service() {
   # keeps self-managed and unknown ids out of SERVICES — so a record
   # here could only ever describe a button press whose answer the person
   # who pressed it is already reading.
-  if gd_is_self_managed "$svc"; then
+  if gd_is_self_managed "$svc" && [ "$svc" != 'mailcow' ]; then
     echo "$svc ships its own updater, so this wrapper does not swap its images" >&2
     return 2
   fi
-  gd_load_service "$svc" || return 2
-
-  local rc=0
-  gd_with_lock "update-$svc" gd_update_service_locked "$svc" || rc=$?
+  local rc=0 body=gd_update_service_locked
+  if [ "$svc" = 'mailcow' ] && gd_is_self_managed mailcow; then
+    body=gd_mailcow_update_locked
+  else
+    gd_load_service "$svc" || return 2
+  fi
+  gd_with_lock "update-$svc" "$body" "$svc" || rc=$?
   if [ "$rc" -eq "$GD_LOCK_BUSY" ]; then
     # UNLIKE the refusals above, this IS recorded: the service was
     # eligible to run and did not, which is exactly the failure mode
@@ -962,6 +1058,15 @@ do_run() {
       # Each service in its own subshell, and the `||` keeps errexit
       # from firing: an unattended run must not let one broken service
       # cancel the updates of every service after it.
+      # mailcow answers through its own updater, not image digests.
+      if [ "$svc" = 'mailcow' ] && gd_is_self_managed mailcow; then
+        if [ "$(gd_mailcow_state)" = 'current' ]; then
+          echo "mailcow is up to date"
+        else
+          ( gd_update_service mailcow ) || failed="$failed mailcow"
+        fi
+        continue
+      fi
       # Gone from this host since the schedule was set: nothing to update.
       if ! ( gd_load_service "$svc" ) >/dev/null 2>&1; then
         echo "$svc is no longer on this server, skipped"
@@ -1032,7 +1137,8 @@ do_set_schedule() {
     *) echo "unsupported schedule: ${schedule}" >&2; exit 2 ;;
   esac
   # Only services this wrapper can actually update may end up in the
-  # config — a self-managed one ticked in the app is dropped HERE rather
+  # config — a self-managed one other than mailcow, which this wrapper
+  # updates through update.sh, ticked in the app is dropped HERE rather
   # than accepted and skipped later, because the app reads this file
   # back and the switch has to show what the server will really do.
   local checked=""
@@ -1043,6 +1149,7 @@ do_set_schedule() {
     # comparison literal: a caller sending `*` matches nothing.
     case " $KNOWN " in
       *" $svc "*) checked="$checked $svc" ;;
+      *) if [ "$svc" = 'mailcow' ] && gd_is_self_managed mailcow; then checked="$checked $svc"; fi ;;
     esac
   done
   install -d -m 755 "$(dirname "$CONFIG")"
@@ -1139,6 +1246,191 @@ pub fn refresh_current_check() -> std::io::Result<bool> {
     let path = std::path::Path::new(SCRIPT_PATH);
     let Ok(old) = std::fs::read_to_string(path) else { return Ok(false) };
     let Some(new) = with_current_check(&old) else { return Ok(false) };
+    std::fs::write(path, new)?;
+    Ok(true)
+}
+
+/// What mailcow's own-updater support changes in an older wrapper
+const MAILCOW_EDITS: [(&str, &str); 6] = [
+    (r#"gd_self_managed_note() {
+  printf '%s: updated by its own updater, not by this wrapper\n' "$1"
+}
+"#, r#"gd_self_managed_note() {
+  printf '%s: updated by its own updater, not by this wrapper\n' "$1"
+}
+
+# --- mailcow, through its own updater --------------------------------
+
+# mailcow's update.sh pulls, migrates and restarts its stack itself, so
+# its images are never swapped here: the script runs instead, the way
+# mailcow documents an unattended update. stdin is /dev/null on
+# purpose: an open pipe with nobody writing parks the run forever at
+# the first question update.sh asks, and the update then never ends.
+MAILCOW_PROJECT='mailcowdockerized'
+
+# The directory the stack was started from, read off its own
+# containers, so a mailcow installed anywhere is found.
+gd_mailcow_dir() {
+  local cid dir=''
+  cid="$({ docker compose -p "$MAILCOW_PROJECT" ps -aq 2>/dev/null | head -n 1; } || true)"
+  if [ -n "$cid" ]; then
+    dir="$(docker inspect -f '{{index .Config.Labels "com.docker.compose.project.working_dir"}}' "$cid" 2>/dev/null || true)"
+  fi
+  [ -n "$dir" ] || dir='/opt/mailcow-dockerized'
+  [ -f "$dir/update.sh" ] || return 1
+  printf '%s' "$dir"
+}
+
+# `update.sh --check` exits 0 when new code is available and 3 when
+# there is none; anything else is no answer.
+gd_mailcow_state() {
+  local dir rc=0
+  if ! dir="$(gd_mailcow_dir)"; then printf 'not_installed'; return 0; fi
+  ( cd "$dir" && timeout 120 bash ./update.sh --check ) < /dev/null > /dev/null 2>&1 || rc=$?
+  case "$rc" in
+    0) printf 'available' ;;
+    3) printf 'current' ;;
+    *) printf 'check_failed' ;;
+  esac
+}
+
+# The check line for a service with its own updater.
+gd_self_check() {
+  local state
+  if [ "$1" != 'mailcow' ]; then gd_self_managed_note "$1"; return 0; fi
+  state="$(gd_mailcow_state)"
+  case "$state" in
+    available) printf '%s %s %s\n' 'GRYONIXNEXUS_UPDATE_AVAILABLE' mailcow 'mailcow-dockerized' ;;
+    current) printf '%s %s\n' 'GRYONIXNEXUS_UPDATE_CURRENT' mailcow ;;
+    *) printf '%s %s %s\n' 'GRYONIXNEXUS_UPDATE_UNKNOWN' mailcow "$state" ;;
+  esac
+}
+
+# The update itself, once the lock is held: a backup first, as for
+# every other service, then update.sh, then the same health wait.
+# There is no rollback: update.sh migrates data, and only the backup
+# taken here can undo that.
+gd_mailcow_update_locked() {
+  local dir rc=0 tries=0 health=''
+  if ! dir="$(gd_mailcow_dir)"; then
+    echo "mailcow's update.sh was not found, so mailcow was not updated" >&2
+    gd_record "$(printf '%s %s %s' 'GRYONIXNEXUS_UPDATE_FAILED' mailcow 'update.sh was not found')"
+    return 1
+  fi
+  if [ ! -x "$BACKUP_CTL" ]; then
+    echo "the backup helper is missing, so mailcow was not updated" >&2
+    gd_record "$(printf '%s %s %s' 'GRYONIXNEXUS_UPDATE_FAILED' mailcow 'the backup helper is missing')"
+    return 1
+  fi
+  echo "backing up mailcow before updating it"
+  if ! "$BACKUP_CTL" backup mailcow < /dev/null; then
+    echo "the backup of mailcow failed, so the update was not applied" >&2
+    gd_record "$(printf '%s %s %s' 'GRYONIXNEXUS_UPDATE_FAILED' mailcow 'the backup failed')"
+    return 1
+  fi
+  # update.sh replaces itself first and exits 2 asking to be run
+  # again. Twice is that; a third exit 2 is a real failure.
+  while : ; do
+    rc=0
+    ( cd "$dir" && timeout 3600 bash ./update.sh --force --skip-ping-check ) < /dev/null || rc=$?
+    if [ "$rc" -eq 2 ] && [ "$tries" -lt 2 ]; then
+      tries=$((tries + 1))
+      echo "mailcow's update.sh updated itself, running it again"
+      continue
+    fi
+    break
+  done
+  if [ "$rc" -ne 0 ]; then
+    gd_record "$(printf '%s %s %s' 'GRYONIXNEXUS_UPDATE_FAILED' mailcow "update.sh exited with $rc")"
+    return 1
+  fi
+  # mailcow starts more containers than most stacks, and slower.
+  if ! health="$(gd_wait_healthy "$MAILCOW_PROJECT" "$((HEALTH_TIMEOUT * 2))")"; then
+    gd_record "$(printf '%s %s %s' 'GRYONIXNEXUS_UPDATE_FAILED' mailcow "${health:-unhealthy}")"
+    return 1
+  fi
+  gd_record "$(printf '%s %s' 'GRYONIXNEXUS_UPDATE_DONE' mailcow)"
+}
+"#),
+    (r#"  if gd_is_self_managed "$svc"; then
+    echo "$svc ships its own updater, so this wrapper does not swap its images" >&2
+    return 2
+  fi
+  gd_load_service "$svc" || return 2
+
+  local rc=0
+  gd_with_lock "update-$svc" gd_update_service_locked "$svc" || rc=$?
+"#, r#"  if gd_is_self_managed "$svc" && [ "$svc" != 'mailcow' ]; then
+    echo "$svc ships its own updater, so this wrapper does not swap its images" >&2
+    return 2
+  fi
+  local rc=0 body=gd_update_service_locked
+  if [ "$svc" = 'mailcow' ] && gd_is_self_managed mailcow; then
+    body=gd_mailcow_update_locked
+  else
+    gd_load_service "$svc" || return 2
+  fi
+  gd_with_lock "update-$svc" "$body" "$svc" || rc=$?
+"#),
+    (r#"    for svc in $SELF_MANAGED; do gd_self_managed_note "$svc"; done
+    return 0
+  fi
+  gd_valid_label "$target" || exit 2
+  if gd_is_self_managed "$target"; then gd_self_managed_note "$target"; return 0; fi
+"#, r#"    for svc in $SELF_MANAGED; do gd_self_check "$svc"; done
+    return 0
+  fi
+  gd_valid_label "$target" || exit 2
+  if gd_is_self_managed "$target"; then gd_self_check "$target"; return 0; fi
+"#),
+    (r#"      # Gone from this host since the schedule was set: nothing to update.
+      if ! ( gd_load_service "$svc" ) >/dev/null 2>&1; then
+"#, r#"      # mailcow answers through its own updater, not image digests.
+      if [ "$svc" = 'mailcow' ] && gd_is_self_managed mailcow; then
+        if [ "$(gd_mailcow_state)" = 'current' ]; then
+          echo "mailcow is up to date"
+        else
+          ( gd_update_service mailcow ) || failed="$failed mailcow"
+        fi
+        continue
+      fi
+      # Gone from this host since the schedule was set: nothing to update.
+      if ! ( gd_load_service "$svc" ) >/dev/null 2>&1; then
+"#),
+    (r#"  # config — a self-managed one ticked in the app is dropped HERE rather
+"#, r#"  # config — a self-managed one other than mailcow, which this wrapper
+  # updates through update.sh, ticked in the app is dropped HERE rather
+"#),
+    (r#"    case " $KNOWN " in
+      *" $svc "*) checked="$checked $svc" ;;
+    esac
+"#, r#"    case " $KNOWN " in
+      *" $svc "*) checked="$checked $svc" ;;
+      *) if [ "$svc" = 'mailcow' ] && gd_is_self_managed mailcow; then checked="$checked $svc"; fi ;;
+    esac
+"#),
+];
+
+/// An older wrapper that updates mailcow too, or None
+pub fn with_mailcow_updater(old: &str) -> Option<String> {
+    if old.contains("gd_mailcow_update_locked") {
+        return None;
+    }
+    let mut text = old.to_string();
+    for (before, after) in MAILCOW_EDITS {
+        if text.matches(before).count() != 1 {
+            return None;
+        }
+        text = text.replacen(before, after, 1);
+    }
+    Some(text)
+}
+
+/// Patches the installed wrapper for mailcow; true when written
+pub fn refresh_mailcow_updater() -> std::io::Result<bool> {
+    let path = std::path::Path::new(SCRIPT_PATH);
+    let Ok(old) = std::fs::read_to_string(path) else { return Ok(false) };
+    let Some(new) = with_mailcow_updater(&old) else { return Ok(false) };
     std::fs::write(path, new)?;
     Ok(true)
 }
@@ -1262,6 +1554,23 @@ mod tests {
         assert!(!old.contains("gd_is_current"), "the old shape still carries the skip");
         assert_eq!(with_current_check(&old).as_deref(), Some(new.as_str()));
         assert_eq!(with_current_check(&new), None, "a current wrapper is left alone");
+    }
+
+    #[test]
+    fn an_older_wrapper_gains_exactly_the_mailcow_updater() {
+        let new = wrapper(&base_input(&["mailcow", "vaultwarden"]));
+        let old = MAILCOW_EDITS.iter().rev().fold(new.clone(), |text, (before, after)| text.replacen(after, before, 1));
+        assert!(!old.contains("gd_mailcow_update_locked"), "the old shape still updates mailcow");
+        assert_eq!(with_mailcow_updater(&old).as_deref(), Some(new.as_str()));
+        assert_eq!(with_mailcow_updater(&new), None, "a current wrapper is left alone");
+    }
+
+    #[test]
+    fn mailcow_runs_update_sh_with_stdin_closed() {
+        let text = wrapper(&base_input(&["mailcow"]));
+        assert!(text.contains("bash ./update.sh --force --skip-ping-check ) < /dev/null"));
+        assert!(text.contains("bash ./update.sh --check ) < /dev/null"));
+        assert!(text.contains("body=gd_mailcow_update_locked"));
     }
 
     #[test]

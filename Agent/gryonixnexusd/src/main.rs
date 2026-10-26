@@ -377,6 +377,11 @@ async fn keep_host_tools() {
         Ok(false) => {}
         Err(err) => tracing::warn!(%err, "could not refresh the update wrapper"),
     }
+    match install::host::update_ctl::refresh_mailcow_updater() {
+        Ok(true) => tracing::info!("mailcow updates through its own updater"),
+        Ok(false) => {}
+        Err(err) => tracing::warn!(%err, "could not refresh the update wrapper for mailcow"),
+    }
     match install::host::uninstall::refresh_image_reclaim() {
         Ok(true) => tracing::info!("removals now reclaim their images"),
         Ok(false) => {}

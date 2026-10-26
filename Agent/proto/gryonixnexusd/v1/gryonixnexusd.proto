@@ -3735,6 +3735,8 @@ message RegisterNotifyDeviceRequest {
   string device_proof = 6;
   // The device's name, shown in the list of devices.
   string name = 7;
+  // The sound chosen per kind of alert, e.g. "backups" -> "chime"; "none" is silent.
+  map<string, string> sounds = 8;
 }
 
 message UnregisterNotifyDeviceRequest {
