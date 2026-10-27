@@ -37,6 +37,7 @@ mod move_transfer;
 mod move_upstream;
 mod health_watch;
 mod live;
+mod live_build;
 mod live_tunnel;
 mod live_system;
 mod notify;
