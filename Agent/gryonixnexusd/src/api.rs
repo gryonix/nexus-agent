@@ -556,6 +556,10 @@ async fn route_security(path: &str, codec: Codec, bytes: Bytes) -> anyhow::Resul
             let req: pb::ListSshUsersRequest = codec.decode(&bytes)?;
             Ok(security::list_ssh_users(codec, req).await)
         }).map(Some),
+        "/gryonixnexusd.v1.Security/AuthorizeAppKey" => ({
+            let req: pb::AuthorizeAppKeyRequest = codec.decode(&bytes)?;
+            Ok(security::authorize_app_key(codec, req).await)
+        }).map(Some),
         "/gryonixnexusd.v1.Security/SetSshKeyOnlyUsers" => ({
             let req: pb::SetSshKeyOnlyUsersRequest = codec.decode(&bytes)?;
             Ok(security::set_ssh_key_only_users(codec, req).await)

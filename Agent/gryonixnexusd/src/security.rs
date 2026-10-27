@@ -275,6 +275,23 @@ pub async fn set_ssh_key_only_users(codec: Codec, req: pb::SetSshKeyOnlyUsersReq
     encode(codec, &users_answer(&req.login_user, &req.app_public_key, detail).await)
 }
 
+/// Puts the app's key on one listed account
+pub async fn authorize_app_key(codec: Codec, req: pb::AuthorizeAppKeyRequest) -> Resp {
+    let accounts = match ssh_password::list_users(&req.app_public_key).await {
+        Ok(accounts) => accounts,
+        Err(why) => return connect_error(StatusCode::INTERNAL_SERVER_ERROR, "failed_precondition", &why),
+    };
+    if !accounts.iter().any(|account| account.name == req.user) {
+        return connect_error(StatusCode::BAD_REQUEST, "invalid_argument", "no such login account on this host");
+    }
+    let detail = match crate::device_keys::authorize_user(&req.user, &req.app_public_key).await {
+        Ok(true) => format!("the app's key is on {} now", req.user),
+        Ok(false) => format!("the app's key was already on {}", req.user),
+        Err(why) => return connect_error(StatusCode::INTERNAL_SERVER_ERROR, "internal", &why),
+    };
+    encode(codec, &users_answer(&req.login_user, &req.app_public_key, detail).await)
+}
+
 /// The accounts and the host-wide reading, in one answer.
 async fn users_answer(login_user: &str, app_public_key: &str, detail: String) -> pb::SshUsers {
     let host = match ssh_password::read_state(login_user, app_public_key).await {

@@ -396,6 +396,10 @@ service Security {
   // account still open and a `detail` that says why.
   rpc SetSshKeyOnlyUsers(SetSshKeyOnlyUsersRequest) returns (SshUsers);
 
+  // Puts the app's key on one login account, so the terminal can sign in
+  // as it. The answer is the accounts re-read from the host.
+  rpc AuthorizeAppKey(AuthorizeAppKeyRequest) returns (SshUsers);
+
   // Run the host's intrusion defence the way every other service on the box can
   // be run: start it, stop it, restart it, bring it up to date, put it back, or
   // take it off.
@@ -2435,6 +2439,13 @@ message SetSshKeyOnlyUsersRequest {
   repeated string users = 2;
   string login_user = 3;
   string app_public_key = 4;
+}
+
+message AuthorizeAppKeyRequest {
+  // One of the accounts `ListSshUsers` names; anything else is refused.
+  string user = 1;
+  string login_user = 2;
+  string app_public_key = 3;
 }
 
 // ─────────────────────────── Uninstall types ───────────────────────────
