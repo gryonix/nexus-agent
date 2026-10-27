@@ -366,6 +366,10 @@ async fn keep_host_tools(store: &Arc<Mutex<state::Store>>) {
         Ok(false) => {}
         Err(err) => tracing::warn!(%err, "could not rebuild the webmail sites"),
     }
+    let tuned = install::vpn::mtu::refresh().await;
+    if !tuned.is_empty() {
+        tracing::info!(interfaces = ?tuned, "VPN interfaces set to MTU {}", install::vpn::mtu::MTU);
+    }
     let language = install::execute::language_from_code(&notify::load(store).language);
     match install::execute::refresh_mesh_root_page(language).await {
         Ok(true) => tracing::info!("the mesh address shows a page now"),

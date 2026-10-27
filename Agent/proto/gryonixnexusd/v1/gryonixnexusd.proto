@@ -2766,6 +2766,33 @@ service Vpn {
   // machine of the deployment, and unpacked there before installing.
   rpc ExportVpnState(ExportVpnStateRequest) returns (VpnState);
   rpc ImportVpnState(ImportVpnStateRequest) returns (ImportVpnStateResponse);
+
+  // What decides the tunnels' speed on this host: each interface's MTU,
+  // kernel or userspace, the CPU, and UDP packets the host dropped.
+  rpc GetVpnSpeedFacts(GetVpnSpeedFactsRequest) returns (VpnSpeedFacts);
+}
+
+message GetVpnSpeedFactsRequest {}
+
+message VpnInterfaceFacts {
+  // `wireguard` or `amneziawg`, as the panel names them.
+  string protocol = 1;
+  string interface = 2;
+  uint32 mtu = 3;
+  // The tunnel runs in the kernel; false is a userspace program.
+  bool kernel = 4;
+}
+
+message VpnSpeedFacts {
+  repeated VpnInterfaceFacts interfaces = 1;
+  uint32 cpu_cores = 2;
+  // One-minute load average.
+  double load = 3;
+  // UDP packets the host dropped since it started, by reason.
+  uint64 udp_receive_errors = 4;
+  uint64 udp_buffer_errors = 5;
+  // The MTU phones are given.
+  uint32 client_mtu = 6;
 }
 
 // The protocol a request is about, as the PANEL names it — `wireguard`,

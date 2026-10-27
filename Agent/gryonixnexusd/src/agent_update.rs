@@ -543,6 +543,13 @@ async fn build_release(
         return None;
     }
 
+    if let Some(signed) = prebuilt(&agent_dir, &update.manifest.version).await {
+        sink.progress("checking the signed binary starts").await;
+        if smoke_test(&signed, &update.manifest.version).await.is_ok() {
+            return Some(signed);
+        }
+    }
+
     sink.progress("building — this can take a few minutes").await;
     if let Err(err) = build_in_docker(&agent_dir).await {
         sink.failed(&err).await;
@@ -579,6 +586,63 @@ async fn download(url: &str) -> Result<Vec<u8>, String> {
         return Err(format!("curl exited {}", output.status));
     }
     Ok(output.stdout)
+}
+
+/// One signed binary listed in `binaries.txt`
+#[derive(Debug, PartialEq, Eq)]
+struct Prebuilt {
+    url: String,
+    sha256: String,
+    signature: String,
+}
+
+/// The line for this version and machine, if listed
+fn prebuilt_line(list: &str, version: &str, arch: &str) -> Option<Prebuilt> {
+    list.lines().find_map(|line| {
+        let parts: Vec<&str> = line.split_whitespace().collect();
+        (parts.len() == 6 && parts[0] == "binary" && parts[1] == version && parts[2] == arch).then(|| Prebuilt {
+            url: parts[3].to_string(),
+            sha256: parts[4].to_string(),
+            signature: parts[5].to_string(),
+        })
+    })
+}
+
+fn binary_payload(version: &str, arch: &str, sha256: &str) -> Vec<u8> {
+    format!("gryonixnexusd-binary\n{version}\n{arch}\n{sha256}\n").into_bytes()
+}
+
+/// The bytes, when their checksum and release signature hold
+fn verified_binary(bytes: &[u8], listed: &Prebuilt, version: &str, arch: &str) -> Result<(), String> {
+    use base64::Engine;
+    if sha256_hex(bytes) != listed.sha256 {
+        return Err("the binary's checksum does not match".to_string());
+    }
+    let sig: [u8; 64] = base64::engine::general_purpose::STANDARD
+        .decode(&listed.signature)
+        .ok()
+        .and_then(|raw| raw.try_into().ok())
+        .ok_or("the binary's signature is malformed")?;
+    signing_public_key()
+        .verify(&binary_payload(version, arch, &listed.sha256), &Signature::from_bytes(&sig))
+        .map_err(|_| "the binary is not signed by the release key".to_string())
+}
+
+/// The signed binary for this machine, when listed
+async fn prebuilt(agent_dir: &std::path::Path, version: &str) -> Option<std::path::PathBuf> {
+    let arch = std::env::consts::ARCH;
+    let list = std::fs::read_to_string(agent_dir.join("binaries.txt")).ok()?;
+    let listed = prebuilt_line(&list, version, arch)?;
+    let bytes = download(&listed.url).await.ok()?;
+    if let Err(why) = verified_binary(&bytes, &listed, version, arch) {
+        tracing::warn!(%why, "the signed binary was refused; building from source");
+        return None;
+    }
+    let dir = agent_dir.join("gryonixnexusd").join("target").join("release");
+    std::fs::create_dir_all(&dir).ok()?;
+    let path = dir.join("gryonixnexusd");
+    crate::util::write_file_atomic(&path, &bytes, 0o755).ok()?;
+    Some(path)
 }
 
 fn sha256_hex(bytes: &[u8]) -> String {
@@ -697,6 +761,33 @@ mod tests {
     use std::sync::Mutex;
 
     static ENV_LOCK: Mutex<()> = Mutex::new(());
+
+    #[test]
+    fn a_listed_binary_is_found_for_its_version_and_machine() {
+        let list = "# Signed agent binaries\nbinary 26.10.28 aarch64 https://example.net/a abc sig1\nbinary 26.10.28 x86_64 https://example.net/x def sig2\n";
+        assert_eq!(prebuilt_line(list, "26.10.28", "x86_64").map(|p| p.url), Some("https://example.net/x".to_string()));
+        assert!(prebuilt_line(list, "26.10.27", "x86_64").is_none());
+        assert!(prebuilt_line(list, "26.10.28", "riscv64").is_none());
+    }
+
+    #[test]
+    fn only_a_binary_signed_for_its_version_and_machine_is_taken() {
+        use base64::Engine;
+        use ed25519_dalek::Signer;
+        let bytes = b"a binary";
+        let sha = sha256_hex(bytes);
+        let sign = |version: &str, arch: &str| {
+            base64::engine::general_purpose::STANDARD.encode(test_signing_key().sign(&binary_payload(version, arch, &sha)).to_bytes())
+        };
+        let listed = Prebuilt { url: String::new(), sha256: sha.clone(), signature: sign("26.10.28", "aarch64") };
+        let _guard = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        std::env::set_var(SIGNING_PUBLIC_KEY_ENV, TEST_PUBLIC_KEY_HEX);
+        assert!(verified_binary(bytes, &listed, "26.10.28", "aarch64").is_ok());
+        assert!(verified_binary(bytes, &listed, "26.10.28", "x86_64").is_err(), "another machine's signature");
+        assert!(verified_binary(bytes, &listed, "26.10.29", "aarch64").is_err(), "another version's signature");
+        assert!(verified_binary(b"changed", &listed, "26.10.28", "aarch64").is_err(), "changed bytes");
+        std::env::remove_var(SIGNING_PUBLIC_KEY_ENV);
+    }
 
     fn sandbox(name: &str) -> std::path::PathBuf {
         let dir = std::env::temp_dir().join(format!("gryonixnexusd-agent-update-test-{name}-{}", std::process::id()));

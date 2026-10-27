@@ -4149,7 +4149,7 @@ async fn install_immich_steps(input: &Input, sink: &EventSink) -> Result<(), Str
     Ok(())
 }
 
-async fn run_docker_capture(args: &[String], timeout: Duration) -> Result<(bool, String), String> {
+pub(crate) async fn run_docker_capture(args: &[String], timeout: Duration) -> Result<(bool, String), String> {
     let output = tokio::time::timeout(
         timeout,
         tokio::process::Command::new(docker_bin())

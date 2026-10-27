@@ -596,12 +596,14 @@ def wg_up(st):
     conf = f"""[Interface]
 Address = {wg_addresses(server_ip, net.prefixlen, 64)}
 ListenPort = {WG_PORT}
+MTU = {CLIENT_MTU}
 PrivateKey = {st['priv']}
 {peers}"""
     os.makedirs("/etc/wireguard", exist_ok=True)
     with open(WG_CONF, "w") as f: f.write(conf)
     os.chmod(WG_CONF, 0o600)
     if wg_synced():
+        wg_set_mtu()
         wg_apply_nat(wan)
         wg_refuse_ipv6()
         return True
@@ -615,9 +617,17 @@ PrivateKey = {st['priv']}
                          f"{(r.stderr or '').strip()}\n")
         sys.stderr.flush()
         return False
+    wg_set_mtu()
     wg_apply_nat(wan)
     wg_refuse_ipv6()
     return True
+
+def wg_set_mtu():
+    # The server sends no packet larger than the phone's MTU
+    r = subprocess.run(["ip", "link", "set", WG_IF, "mtu", str(CLIENT_MTU)], capture_output=True, text=True)
+    if r.returncode != 0:
+        sys.stderr.write(f"ip link set {WG_IF} mtu failed: {(r.stderr or '').strip()}\n")
+        sys.stderr.flush()
 
 def wg_refuse_ipv6():
     # Nothing routes IPv6 out; an instant refusal beats a silent drop

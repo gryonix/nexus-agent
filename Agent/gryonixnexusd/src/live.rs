@@ -133,7 +133,7 @@ fn strip_ansi(text: &str) -> String {
 
 /// The app's ContentState, key for key
 pub fn content_state(text: &str, progress: Option<f64>, finished: bool, failure: Option<&str>) -> Value {
-    let mut state = json!({ "progressText": text, "isFinished": finished });
+    let mut state = json!({ "progressText": text, "isFinished": finished, "updatedAt": notify::now() - APPLE_EPOCH });
     if let Some(progress) = progress.filter(|_| !finished) {
         state["progress"] = json!(progress);
     }
@@ -248,11 +248,17 @@ pub fn start_body(job_id: &str, kind: i32, title: &str, text: &str, config: &not
             "canStop": true,
             "jobID": job_id,
             "serverID": config.server_id,
+            "symbol": job_symbol(kind),
         },
         "state": content_state(text, None, false, None),
         "alert": { "title": title, "body": notify::host() },
         "stale_at": notify::now() + STALE_AFTER,
     })
+}
+
+/// The card's symbol: the agent's own for its updates
+fn job_symbol(kind: i32) -> Option<&'static str> {
+    (pb::JobKind::try_from(kind).ok() == Some(pb::JobKind::AgentUpdate)).then_some("cpu")
 }
 
 /// The kind name a phone may switch off
@@ -505,10 +511,16 @@ mod tests {
 
     #[test]
     fn the_state_matches_the_app() {
-        let running = content_state("Pulling", Some(0.5), false, None);
+        let mut running = content_state("Pulling", Some(0.5), false, None);
+        let stamped = running["updatedAt"].as_i64().expect("an update time");
+        assert!((stamped - (notify::now() - APPLE_EPOCH)).abs() < 5, "seconds since 2001, as the app reads dates");
+        running.as_object_mut().unwrap().remove("updatedAt");
         assert_eq!(running, json!({ "progressText": "Pulling", "isFinished": false, "progress": 0.5 }));
-        let failed = content_state("Pulling", Some(0.5), true, Some("disk full"));
+        let mut failed = content_state("Pulling", Some(0.5), true, Some("disk full"));
+        failed.as_object_mut().unwrap().remove("updatedAt");
         assert_eq!(failed, json!({ "progressText": "Pulling", "isFinished": true, "errorMessage": "disk full" }));
+        assert_eq!(job_symbol(pb::JobKind::AgentUpdate as i32), Some("cpu"));
+        assert_eq!(job_symbol(pb::JobKind::Backup as i32), None);
     }
 
     #[test]
