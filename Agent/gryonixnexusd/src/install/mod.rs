@@ -22,6 +22,7 @@ pub mod caddy_check;
 #[cfg(test)]
 mod caddy_check_tests;
 pub mod caddy_upstream;
+pub mod open_sites;
 pub mod context;
 pub mod hostnames;
 pub mod execute;

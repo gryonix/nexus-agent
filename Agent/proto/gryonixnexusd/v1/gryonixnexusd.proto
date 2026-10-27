@@ -333,6 +333,14 @@ service Lockdown {
   // wrapper's validation is authoritative, and echoing the request would show
   // the owner a guard that is not the one actually in effect.
   rpc SetLockdown(SetLockdownRequest) returns (LockdownState);
+
+  // The paths each site answers past the guard — the APIs apps use.
+  // Read from the Caddyfile itself, so it is what Caddy serves.
+  rpc GetOpenAPI(GetOpenAPIRequest) returns (OpenAPIState);
+
+  // Replaces one service's open paths and rewrites its sites. The answer is
+  // the state read back from the Caddyfile afterwards.
+  rpc SetOpenAPI(SetOpenAPIRequest) returns (OpenAPIState);
 }
 
 // The host's own intrusion defence — CrowdSec and its nftables bouncer.
@@ -2239,6 +2247,26 @@ message SetLockdownRequest {
   // charset check is treated the same as an empty list — see SetLockdown's
   // doc comment on the service above.
   repeated string hosts = 2;
+}
+
+message GetOpenAPIRequest {}
+
+// One service's sites and the paths they answer to everyone.
+message OpenAPISite {
+  string service_id = 1;
+  repeated string paths = 2;
+  // False when the site's shape is not one the agent can rewrite.
+  bool editable = 3;
+}
+
+message OpenAPIState {
+  repeated OpenAPISite sites = 1;
+}
+
+message SetOpenAPIRequest {
+  string service_id = 1;
+  // Empty closes every API of the service.
+  repeated string paths = 2;
 }
 
 // ─────────────────────────── Security types ────────────────────────────

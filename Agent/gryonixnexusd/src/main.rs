@@ -31,6 +31,7 @@ mod mesh;
 mod metrics;
 mod models;
 mod mods;
+mod open_api;
 mod move_run;
 mod move_transfer;
 mod move_upstream;
@@ -184,9 +185,10 @@ fn spawn_background_work(store: &Arc<Mutex<state::Store>>) {
     tokio::task::spawn_blocking(backup_drive::upgrade_fstab);
     tokio::task::spawn_blocking(install::host::backup_ctl_store::refresh_on_startup);
     agent_update::spawn();
-    tokio::spawn(async {
+    let tools_store = store.clone();
+    tokio::spawn(async move {
         loop {
-            keep_host_tools().await;
+            keep_host_tools(&tools_store).await;
             tokio::time::sleep(std::time::Duration::from_secs(600)).await;
         }
     });
@@ -331,7 +333,7 @@ mod tests {
     }
 }
 
-async fn keep_host_tools() {
+async fn keep_host_tools(store: &Arc<Mutex<state::Store>>) {
     cert_watch::retry_missing().await;
     match system_ctl::install_if_needed() {
         Ok(true) => tracing::info!("wrote the system updater"),
@@ -362,6 +364,12 @@ async fn keep_host_tools() {
         Ok(true) => tracing::info!("rebuilt the mail sites: calendars and contacts sync without the VPN"),
         Ok(false) => {}
         Err(err) => tracing::warn!(%err, "could not rebuild the webmail sites"),
+    }
+    let language = install::execute::language_from_code(&notify::load(store).language);
+    match install::execute::refresh_mesh_root_page(language).await {
+        Ok(true) => tracing::info!("the mesh address shows a page now"),
+        Ok(false) => {}
+        Err(err) => tracing::warn!(%err, "could not add the mesh page"),
     }
     match install::execute::refresh_mail_autoconfig_site().await {
         Ok(true) => tracing::info!("mail apps can now configure themselves"),

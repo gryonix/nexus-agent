@@ -15,6 +15,9 @@ const SPACING: Duration = Duration::from_secs(15);
 /// How often a step may spend the urgent budget
 const URGENT_SPACING: Duration = Duration::from_secs(60);
 const STALE_AFTER: i64 = 300;
+/// A silent job's card is refreshed before it goes stale
+const HEARTBEAT: Duration = Duration::from_secs(240);
+const HEARTBEAT_CHECK: Duration = Duration::from_secs(30);
 const LINGER: i64 = 30;
 const FAILED_LINGER: i64 = 120;
 /// The app's time to claim a job before server cards
@@ -33,6 +36,8 @@ struct Watch {
     last_sent: Option<Instant>,
     flush_planned: bool,
     last_urgent: Option<Instant>,
+    /// When the agent began following the job
+    since: Instant,
 }
 
 fn watches() -> &'static Mutex<HashMap<String, Watch>> {
@@ -47,6 +52,29 @@ fn store() -> &'static OnceLock<Arc<Mutex<Store>>> {
 
 pub fn init(shared: Arc<Mutex<Store>>) {
     let _ = store().set(shared);
+    let Ok(runtime) = tokio::runtime::Handle::try_current() else { return };
+    runtime.spawn(async {
+        loop {
+            tokio::time::sleep(HEARTBEAT_CHECK).await;
+            silent_bodies().into_iter().for_each(send);
+        }
+    });
+}
+
+/// The same state again for cards whose job went quiet
+fn silent_bodies() -> Vec<Value> {
+    let mut all = watches().lock().unwrap();
+    let mut bodies = Vec::new();
+    for (job_id, watch) in all.iter_mut() {
+        let quiet_since = watch.last_sent.unwrap_or(watch.since);
+        if !watch.is_shown() || watch.flush_planned || quiet_since.elapsed() < HEARTBEAT {
+            continue;
+        }
+        watch.last_sent = Some(Instant::now());
+        let body = body_of(watch, false);
+        bodies.extend(watch.addressed(job_id, &body));
+    }
+    bodies
 }
 
 // MARK: reading the journal
@@ -145,7 +173,18 @@ impl Watch {
     }
 
     fn new(token: &str, job_cards: bool, title: &str, text: String) -> Watch {
-        Watch { token: token.to_string(), job_cards, title: title.to_string(), text, progress: None, step: None, last_sent: None, flush_planned: false, last_urgent: None }
+        Watch {
+            token: token.to_string(),
+            job_cards,
+            title: title.to_string(),
+            text,
+            progress: None,
+            step: None,
+            last_sent: None,
+            flush_planned: false,
+            last_urgent: None,
+            since: Instant::now(),
+        }
     }
 
     /// One body per destination: the job's cards, the app's own
@@ -344,6 +383,10 @@ fn update_body(watch: &mut Watch) -> Value {
     if urgent {
         watch.last_urgent = Some(Instant::now());
     }
+    body_of(watch, urgent)
+}
+
+fn body_of(watch: &Watch, urgent: bool) -> Value {
     let mut state = content_state(&watch.text, watch.progress, false, None);
     if let Some((done, total)) = watch.step {
         state["step"] = json!(done);
@@ -582,6 +625,43 @@ mod tests {
     fn the_sample_card_counts_in_the_owners_language() {
         assert_eq!(check_step(2, true), "Шаг 2 из 6");
         assert_eq!(check_step(6, false), "Step 6 of 6");
+    }
+
+    #[test]
+    fn a_quiet_job_refreshes_its_card_without_spending_the_urgent_budget() {
+        let mut quiet = Watch::new("quiet-card", false, "Backing up · immich", "Copying".into());
+        quiet.last_sent = Some(Instant::now() - HEARTBEAT);
+        let mut fresh = Watch::new("fresh-card", false, "Backing up · immich", "Copying".into());
+        fresh.last_sent = Some(Instant::now());
+        let mut never_sent = Watch::new("never-sent-card", false, "Backing up · immich", "Copying".into());
+        never_sent.since = Instant::now() - HEARTBEAT;
+        {
+            let mut all = watches().lock().unwrap();
+            all.insert("job-quiet".into(), quiet);
+            all.insert("job-fresh".into(), fresh);
+            all.insert("job-never-sent".into(), never_sent);
+        }
+        let ours = |bodies: Vec<Value>| -> Vec<String> {
+            let mut tokens: Vec<String> = bodies.iter().filter_map(|b| b["token"].as_str()).filter(|t| t.ends_with("-card")).map(String::from).collect();
+            tokens.sort();
+            tokens
+        };
+        let bodies = silent_bodies();
+        let quiet_body = bodies.iter().find(|b| b["token"] == "quiet-card").unwrap().clone();
+        assert_eq!(ours(bodies), vec!["never-sent-card", "quiet-card"], "only quiet cards are refreshed");
+        assert_eq!(quiet_body["urgent"], false);
+        assert_eq!(quiet_body["state"]["progressText"], "Copying");
+        assert!(ours(silent_bodies()).is_empty(), "once per heartbeat");
+        let mut all = watches().lock().unwrap();
+        assert!(all.get("job-quiet").unwrap().last_urgent.is_none());
+        for job in ["job-quiet", "job-fresh", "job-never-sent"] {
+            all.remove(job);
+        }
+    }
+
+    #[test]
+    fn a_card_is_refreshed_before_it_goes_stale() {
+        assert!(((HEARTBEAT + HEARTBEAT_CHECK).as_secs() as i64) < STALE_AFTER);
     }
 
     #[test]

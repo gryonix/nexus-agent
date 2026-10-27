@@ -498,6 +498,14 @@ async fn route_update(path: &str, codec: Codec, bytes: Bytes) -> anyhow::Result<
             let req: pb::SetLockdownRequest = codec.decode(&bytes)?;
             Ok(lockdown::set_lockdown(codec, req).await)
         }).map(Some),
+        "/gryonixnexusd.v1.Lockdown/GetOpenAPI" => ({
+            let req: pb::GetOpenApiRequest = codec.decode(&bytes)?;
+            Ok(crate::open_api::get_open_api(codec, req).await)
+        }).map(Some),
+        "/gryonixnexusd.v1.Lockdown/SetOpenAPI" => ({
+            let req: pb::SetOpenApiRequest = codec.decode(&bytes)?;
+            Ok(crate::open_api::set_open_api(codec, req).await)
+        }).map(Some),
         "/gryonixnexusd.v1.Security/GetSecurityStatus" => ({
             let req: pb::GetSecurityStatusRequest = codec.decode(&bytes)?;
             Ok(security::get_security_status(codec, req).await)

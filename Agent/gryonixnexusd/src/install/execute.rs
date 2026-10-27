@@ -607,7 +607,7 @@ pub fn patch_doh_insecure(yaml: &str) -> (String, Option<DohSpelling>) {
 
 // ─────────────────────────── language ───────────────────────────
 
-fn language_from_code(code: &str) -> Language {
+pub fn language_from_code(code: &str) -> Language {
     match code {
         "de" => Language::De,
         "fr" => Language::Fr,
@@ -6343,7 +6343,7 @@ fn write_caddy_site_locked(names: &[String], site: &str) -> Result<(), String> {
             arm_setup_guard(&guarded)?;
         }
     }
-    let merged = caddy::merge_site(&existing, names, site);
+    let merged = crate::open_api::reapplied(&caddy::merge_site(&existing, names, site));
     if !existing.is_empty() {
         std::fs::write(CADDYFILE_PREVIOUS, &existing)
             .map_err(|err| format!("could not keep a copy of {CADDYFILE_PATH}: {err}"))?;
@@ -6445,7 +6445,9 @@ async fn open_home_doors(sink: &EventSink) {
 pub async fn refresh_portal_split_sites() -> Result<bool, String> {
     let changed = with_caddyfile_lock(|| -> Result<Option<(String, String)>, String> {
         let Ok(existing) = std::fs::read_to_string(CADDYFILE_PATH) else { return Ok(None) };
-        let upgraded = caddy::with_current_global_options(&caddy::with_current_portal_split(&existing));
+        let upgraded = crate::open_api::reapplied(&caddy::with_current_global_options(
+            &caddy::with_current_portal_split(&existing),
+        ));
         if upgraded == existing {
             return Ok(None);
         }
@@ -6458,6 +6460,54 @@ pub async fn refresh_portal_split_sites() -> Result<bool, String> {
     }
     restore_caddyfile_if_unchanged(&existing, &upgraded)?;
     Err("Caddy refused the rebuilt sites, so the old ones stay".to_string())
+}
+
+/// Gives older mesh sites a page at their root
+pub async fn refresh_mesh_root_page(language: Language) -> Result<bool, String> {
+    let changed = with_caddyfile_lock(|| -> Result<Option<(String, String)>, String> {
+        let Ok(existing) = std::fs::read_to_string(CADDYFILE_PATH) else { return Ok(None) };
+        let upgraded = super::headscale::with_root_pages(&existing, language);
+        if upgraded == existing {
+            return Ok(None);
+        }
+        std::fs::write(CADDYFILE_PATH, &upgraded).map_err(|err| format!("could not write {CADDYFILE_PATH}: {err}"))?;
+        Ok(Some((existing, upgraded)))
+    })?;
+    let Some((existing, upgraded)) = changed else { return Ok(false) };
+    if caddy_refusal().await.is_none() && run_quiet(&systemctl_bin(), &["reload", "caddy"]).await.is_ok() {
+        return Ok(true);
+    }
+    restore_caddyfile_if_unchanged(&existing, &upgraded)?;
+    Err("Caddy refused the mesh page, so the old site stays".to_string())
+}
+
+/// Rewrites one service's sites with these paths open
+pub async fn apply_open_paths(owner: &str, open: &[String]) -> Result<(), String> {
+    with_caddyfile_lock(|| -> Result<(), String> {
+        let existing = std::fs::read_to_string(CADDYFILE_PATH)
+            .map_err(|err| format!("could not read {CADDYFILE_PATH}: {err}"))?;
+        let rewritten = super::open_sites::with_open_paths(&existing, owner, open)
+            .ok_or_else(|| format!("the sites of {owner} are not in a shape the agent can change"))?;
+        std::fs::write(CADDYFILE_PREVIOUS, &existing)
+            .map_err(|err| format!("could not keep a copy of {CADDYFILE_PATH}: {err}"))?;
+        write_replacing(Path::new(CADDYFILE_PATH), &rewritten)
+    })?;
+    if let Some(why) = caddy_refusal().await {
+        restore_previous_caddyfile();
+        return Err(format!("Caddy refused the change, so the previous sites stay. Caddy said: {why}"));
+    }
+    if run_quiet(&systemctl_bin(), &["reload", "caddy"]).await.is_err() {
+        restore_previous_caddyfile();
+        let _ = run_quiet(&systemctl_bin(), &["reload", "caddy"]).await;
+        return Err("Caddy did not take the change, so the previous sites stay".to_string());
+    }
+    let _ = std::fs::remove_file(CADDYFILE_PREVIOUS);
+    Ok(())
+}
+
+/// The Caddyfile as it stands, empty when missing
+pub fn current_caddyfile() -> String {
+    std::fs::read_to_string(CADDYFILE_PATH).unwrap_or_default()
 }
 
 fn restore_caddyfile_if_unchanged(old: &str, written: &str) -> Result<(), String> {
