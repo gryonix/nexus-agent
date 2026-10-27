@@ -17,6 +17,8 @@ const URGENT_SPACING: Duration = Duration::from_secs(60);
 const STALE_AFTER: i64 = 300;
 const LINGER: i64 = 30;
 const FAILED_LINGER: i64 = 120;
+/// The app's time to claim a job before server cards
+pub const START_GRACE: Duration = Duration::from_secs(8);
 
 struct Watch {
     /// The card the app started itself, if any
@@ -126,14 +128,22 @@ fn headline(failed: bool, russian: bool) -> &'static str {
 
 pub fn watch(job_id: &str, token: &str, title: &str) {
     let mut all = watches().lock().unwrap();
-    if let Some(cards) = all.get_mut(job_id).filter(|w| w.job_cards) {
-        cards.token = token.to_string();
+    let Some(known) = all.get_mut(job_id) else {
+        all.insert(job_id.to_string(), Watch::new(token, false, title, String::new()));
         return;
+    };
+    known.token = token.to_string();
+    if !known.job_cards && !title.is_empty() {
+        known.title = title.to_string();
     }
-    all.insert(job_id.to_string(), Watch::new(token, false, title, String::new()));
 }
 
 impl Watch {
+    /// Whether any card shows this job
+    fn is_shown(&self) -> bool {
+        self.job_cards || !self.token.is_empty()
+    }
+
     fn new(token: &str, job_cards: bool, title: &str, text: String) -> Watch {
         Watch { token: token.to_string(), job_cards, title: title.to_string(), text, progress: None, step: None, last_sent: None, flush_planned: false, last_urgent: None }
     }
@@ -154,17 +164,34 @@ impl Watch {
     }
 }
 
-/// Starts the job's card on every iPhone of the server
+/// Starts server cards unless the app claims the job
 pub fn job_began(kind: i32, subject: &str, job_id: &str) {
     let Some(config) = config().filter(relay_ready) else { return };
     let russian = config.russian();
     let title = format!("{} · {}", notify::run_name(kind, russian), subject);
     let text = if russian { "Запуск…" } else { "Starting…" }.to_string();
-    let body = start_body(job_id, kind, &title, &text, &config);
-    let mut watch = Watch::new("", true, &title, text);
+    watches().lock().unwrap().entry(job_id.to_string()).or_insert_with(|| Watch::new("", false, &title, text));
+    let Ok(runtime) = tokio::runtime::Handle::try_current() else { return };
+    let job_id = job_id.to_string();
+    runtime.spawn(async move {
+        tokio::time::sleep(START_GRACE).await;
+        match claim_unwatched(&job_id, kind, &config) {
+            Some(body) => {
+                tracing::info!(job = %job_id, "no app card follows the job; starting server cards");
+                send_to(START_PATH, body);
+            }
+            None => tracing::info!(job = %job_id, "the app's card follows the job"),
+        }
+    });
+}
+
+/// The start request, when no app card follows the job
+fn claim_unwatched(job_id: &str, kind: i32, config: &notify::Config) -> Option<Value> {
+    let mut all = watches().lock().unwrap();
+    let watch = all.get_mut(job_id).filter(|w| w.token.is_empty())?;
+    watch.job_cards = true;
     watch.last_sent = Some(Instant::now());
-    watches().lock().unwrap().insert(job_id.to_string(), watch);
-    send_to(START_PATH, body);
+    Some(start_body(job_id, kind, &watch.title, &watch.text, config))
 }
 
 /// Unix seconds at Apple's reference date
@@ -233,7 +260,7 @@ pub fn line(job_id: &str, text: &str) {
 
 /// The job ended: the island opens with the outcome
 pub fn finished(job_id: &str, failure: Option<&str>) -> bool {
-    let Some(watch) = watches().lock().unwrap().remove(job_id) else { return false };
+    let Some(watch) = watches().lock().unwrap().remove(job_id).filter(Watch::is_shown) else { return false };
     let russian = config().is_some_and(|c| c.language.starts_with("ru"));
     let (shown, closing) = ending_bodies(&watch, failure, russian, notify::now());
     watch.addressed(job_id, &shown).into_iter().for_each(send);
@@ -466,6 +493,34 @@ mod tests {
         let (failed_shown, failed) = ending_bodies(&watch, Some("disk full"), false, 1000);
         assert!(failed.get("dismiss_at").is_none(), "a failure stays on the lock screen");
         assert_eq!(failed_shown["stale_at"], 1000 + FAILED_LINGER + STALE_AFTER);
+    }
+
+    #[test]
+    fn a_job_the_app_claims_gets_no_server_cards() {
+        let config = notify::Config::default();
+        watches().lock().unwrap().insert("job-claimed".into(), Watch::new("", false, "Update · immich", "Starting…".into()));
+        watch("job-claimed", "app-card", "Updating immich");
+        assert!(claim_unwatched("job-claimed", pb::JobKind::Update as i32, &config).is_none());
+        let kept = watches().lock().unwrap().remove("job-claimed").unwrap();
+        assert_eq!((kept.token.as_str(), kept.title.as_str(), kept.job_cards), ("app-card", "Updating immich", false));
+    }
+
+    #[test]
+    fn an_unclaimed_job_starts_server_cards_with_its_latest_line() {
+        let config = notify::Config::default();
+        watches().lock().unwrap().insert("job-unclaimed".into(), Watch::new("", false, "Update · immich", "Starting…".into()));
+        line("job-unclaimed", "Pulling images\n");
+        let body = claim_unwatched("job-unclaimed", pb::JobKind::Update as i32, &config).unwrap();
+        assert_eq!(body["state"]["progressText"], "Pulling images");
+        let claimed = watches().lock().unwrap().remove("job-unclaimed").unwrap();
+        assert!(claimed.job_cards);
+    }
+
+    #[test]
+    fn a_job_no_card_showed_is_not_called_shown() {
+        watches().lock().unwrap().insert("job-unseen".into(), Watch::new("", false, "Update", String::new()));
+        assert!(!finished("job-unseen", None), "a short job ended before any card opened");
+        assert!(watches().lock().unwrap().get("job-unseen").is_none());
     }
 
     #[test]

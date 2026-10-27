@@ -611,6 +611,9 @@ pub async fn watch_live(codec: Codec, store: Arc<Mutex<Store>>, req: pb::WatchLi
     let ready = crate::live::relay_ready(&load(&store));
     if ready {
         crate::live::watch(&req.job_id, &req.token, &req.title.chars().take(120).collect::<String>());
+        if req.job_id == crate::live_system::JOB {
+            crate::live_system::follow();
+        }
         // An already finished job still closes the island.
         if let Some(failure) = crate::jobs::job(&req.job_id).as_ref().and_then(ending_of) {
             crate::live::finished(&req.job_id, failure);
