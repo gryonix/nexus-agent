@@ -152,6 +152,9 @@ service Backup {
   // of them are used, where archives go and whether the copies are encrypted.
   rpc SetBackupDrives(SetBackupDrivesRequest) returns (BackupSchedulePolicy);
 
+  // Which parts regular and pre-update backups copy.
+  rpc SetBackupParts(SetBackupPartsRequest) returns (BackupSchedulePolicy);
+
   // Copies one archive from a drive into the service's staging folder, so
   // the ordinary restore path can read it. Answers with the staged path.
   rpc FetchDriveBackup(FetchDriveBackupRequest) returns (BackupArchive);
@@ -1993,6 +1996,28 @@ message BackupSchedulePolicy {
 
   // USB drives that take a copy too. Absent on hosts whose wrapper predates them.
   BackupDrives drives = 9;
+
+  // What backups copy. Absent on hosts whose wrapper predates it.
+  BackupPartChoice parts = 10;
+}
+
+// One set of parts a backup copies.
+message BackupParts {
+  // Photos, documents, mail and other user files.
+  bool files = 1;
+  bool settings = 2;
+  bool databases = 3;
+}
+
+message BackupPartChoice {
+  // Scheduled runs and the backup button.
+  BackupParts regular = 1;
+  // The backup an update takes first.
+  BackupParts before_update = 2;
+}
+
+message SetBackupPartsRequest {
+  BackupPartChoice parts = 1;
 }
 
 message SetBackupScheduleRequest {

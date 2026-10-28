@@ -88,6 +88,9 @@ fn free_bytes() -> i64 {
     crate::move_transfer::free_bytes(std::path::Path::new("/")).unwrap_or(0)
 }
 
+/// Fingerprint of the Amnezia PPA signing key
+const AMNEZIA_KEY: &str = "75C9DD72C799870E310542E24166F2C257290828";
+
 /// Installs the module and moves AmneziaWG onto it
 pub fn enable_script(suite: &str) -> String {
     format!(
@@ -102,8 +105,11 @@ NEW="$(missing "linux-headers-$(uname -r)" dkms build-essential curl ca-certific
 echo "INSTALLED $NEW"
 step 2/4 "adding the Amnezia package source"
 install -d -m 0755 /etc/apt/keyrings
-curl -fsSL 'https://launchpad.net/api/1.0/~amnezia/+archive/ubuntu/ppa?ws.op=getSigningKeyData' \
-  | sed -e 's/^"//' -e 's/"$//' -e 's/\\n/\n/g' > /etc/apt/keyrings/amnezia-ppa.asc
+KEY=/etc/apt/keyrings/amnezia-ppa.asc
+curl -fsSL 'https://keyserver.ubuntu.com/pks/lookup?op=get&options=mr&search=0x{AMNEZIA_KEY}' > "$KEY" \
+  || curl -fsSL 'https://api.launchpad.net/devel/~amnezia/+archive/ubuntu/ppa?ws.op=getSigningKeyData' \
+  | sed -e 's/^"//' -e 's/"$//' -e 's/\\n/\n/g' > "$KEY"
+grep -q 'BEGIN PGP PUBLIC KEY BLOCK' "$KEY" || {{ echo "the Amnezia signing key could not be downloaded" >&2; exit 1; }}
 echo "deb [signed-by=/etc/apt/keyrings/amnezia-ppa.asc] https://ppa.launchpadcontent.net/amnezia/ppa/ubuntu {suite} main" \
   > /etc/apt/sources.list.d/gryonixnexus-amnezia.list
 apt-get update -qq
@@ -390,6 +396,14 @@ mod tests {
     fn the_ppa_suite_follows_the_system() {
         assert_eq!(suite(UBUNTU), "noble");
         assert_eq!(suite(DEBIAN), "focal");
+    }
+
+    #[test]
+    fn the_signing_key_is_fetched_by_fingerprint_and_checked() {
+        let script = enable_script("focal");
+        assert!(script.contains("keyserver.ubuntu.com/pks/lookup?op=get&options=mr&search=0x75C9DD72C799870E310542E24166F2C257290828"));
+        assert!(script.contains("api.launchpad.net/devel/~amnezia"));
+        assert!(script.contains("grep -q 'BEGIN PGP PUBLIC KEY BLOCK'"), "an empty key must stop the run");
     }
 
     #[test]

@@ -176,7 +176,7 @@ gd_mailcow_update_locked() {
     return 1
   fi
   echo "backing up mailcow before updating it"
-  if ! "$BACKUP_CTL" backup mailcow < /dev/null; then
+  if ! "$BACKUP_CTL" backup mailcow --before-update < /dev/null; then
     echo "the backup of mailcow failed, so the update was not applied" >&2
     gd_record "$(printf '%s %s %s' 'GRYONIXNEXUS_UPDATE_FAILED' mailcow 'the backup failed')"
     return 1
@@ -521,7 +521,7 @@ gd_update_service_locked() {
     # nobody writing would park it forever; closed, it falls back to the
     # stored passphrase and refuses if there is none — which is the
     # right answer for an unattended run over a secret store.
-    if ! "$BACKUP_CTL" backup "$BACKUP_TARGET" < /dev/null; then
+    if ! "$BACKUP_CTL" backup "$BACKUP_TARGET" --before-update < /dev/null; then
       echo "the backup of $svc failed, so the update was not applied" >&2
       gd_record "$(printf '%s %s %s' 'GRYONIXNEXUS_UPDATE_FAILED' "$svc" 'the backup failed')"
       return 1

@@ -70,6 +70,21 @@ fn split_data_path(data_path: &str) -> (String, String) {
     (parent, slot)
 }
 
+/// Which part a service's data directory counts as
+fn data_part(id: &str) -> &'static str {
+    match id {
+        "immich" | "nextcloud" | "photoprism" | "seafile" | "docker-mailserver" | "mailu" | "gitlab"
+        | "forgejo" | "minecraft-java" | "minecraft-bedrock" | "anythingllm" | "open-webui" | "qdrant" => "files",
+        _ => "settings",
+    }
+}
+
+/// Ends a body early when its parts are off
+fn skip_unless(parts: &[&str], id: &str) -> String {
+    let test = parts.iter().map(|p| format!("! gd_part '{p}'")).collect::<Vec<_>>().join(" && ");
+    format!("  if {test}; then\n    echo \"nothing chosen to back up for {id}\"\n    return 0\n  fi")
+}
+
 fn archive_body(
     id: &str,
     backup_dir: &str,
@@ -79,17 +94,25 @@ fn archive_body(
     quiesce: &[&str],
     excludes: &[String],
 ) -> String {
+    let part = data_part(id);
+    let skip_parts: Vec<&str> = if databases.is_empty() { vec![part] } else { vec![part, "databases"] };
+    let (data_parent, data_slot) = split_data_path(data_path);
     let mut lines: Vec<String> = vec![
         "  local stamp work plain rc=0".to_string(),
+        "  local -a pack=()".to_string(),
+        skip_unless(&skip_parts, id),
         format!("  install -d -m 750 '{backup_dir}'"),
         "  stamp=\"$(date +%Y%m%d-%H%M%S)\"".to_string(),
         format!("  work=\"$(mktemp -d '{backup_dir}/.work-XXXXXX')\""),
         format!("  plain=\"$work/{id}-$stamp.tar.gz\""),
         format!("  install -d -m 700 \"$work/{DUMP_DIRECTORY_NAME}\""),
-        format!("  if [ ! -d '{data_path}' ]; then"),
-        "    rm -rf \"$work\"".to_string(),
-        format!("    echo \"{id} has no data at {data_path}\" >&2"),
-        "    return 1".to_string(),
+        format!("  if gd_part '{part}'; then"),
+        format!("    if [ ! -d '{data_path}' ]; then"),
+        "      rm -rf \"$work\"".to_string(),
+        format!("      echo \"{id} has no data at {data_path}\" >&2"),
+        "      return 1".to_string(),
+        "    fi".to_string(),
+        format!("    pack+=(-C '{data_parent}' '{data_slot}')"),
         "  fi".to_string(),
     ];
 
@@ -100,25 +123,11 @@ fn archive_body(
         lines.push(format!("  gd_compose_stop '{compose_project}' {quoted}"));
     }
 
-    for db in databases {
-        let helper = match db.engine {
-            Engine::Postgres => "gd_dump_postgres",
-            Engine::Mysql => "gd_dump_mysql",
-        };
-        let named = db.database_name.map(|n| format!(" '{n}'")).unwrap_or_default();
-        let service = db.service;
-        let file_name = db.file_name;
-        lines.push(format!(
-            "  {helper} '{compose_project}' '{service}' \"$work/{DUMP_DIRECTORY_NAME}/{file_name}\"{named} || rc=1"
-        ));
-    }
+    lines.extend(dump_lines(compose_project, databases));
 
     let excludes_str: String = excludes.iter().map(|e| format!(" --exclude '{e}'")).collect();
-    let (data_parent, data_slot) = split_data_path(data_path);
     lines.push("  if [ \"$rc\" -eq 0 ]; then".to_string());
-    lines.push(format!("    tar --numeric-owner -czf \"$plain\"{excludes_str} \\"));
-    lines.push(format!("        -C '{data_parent}' '{data_slot}' \\"));
-    lines.push(format!("        -C \"$work\" '{DUMP_DIRECTORY_NAME}' || rc=1"));
+    lines.push(format!("    tar --numeric-owner -czf \"$plain\"{excludes_str} \"${{pack[@]}}\" || rc=1"));
     lines.push("  fi".to_string());
 
     if !quiesce.is_empty() {
@@ -136,9 +145,32 @@ fn archive_body(
     lines.join("\n")
 }
 
+/// Dumps each database when the databases part is on
+fn dump_lines(compose_project: &str, databases: &[Database]) -> Vec<String> {
+    if databases.is_empty() {
+        return Vec::new();
+    }
+    let mut lines = vec!["  if gd_part 'databases'; then".to_string()];
+    for db in databases {
+        let helper = match db.engine {
+            Engine::Postgres => "gd_dump_postgres",
+            Engine::Mysql => "gd_dump_mysql",
+        };
+        let named = db.database_name.map(|n| format!(" '{n}'")).unwrap_or_default();
+        let service = db.service;
+        let file_name = db.file_name;
+        lines.push(format!(
+            "    {helper} '{compose_project}' '{service}' \"$work/{DUMP_DIRECTORY_NAME}/{file_name}\"{named} || rc=1"
+        ));
+    }
+    lines.push(format!("    pack+=(-C \"$work\" '{DUMP_DIRECTORY_NAME}')"));
+    lines.push("  fi".to_string());
+    lines
+}
+
 fn vaultwarden_body(container: &str, data_path: &str, backup_dir: &str) -> String {
-    let mut s = String::new();
-    s.push_str("  local stamp plain\n");
+    let mut s = skip_unless(&["databases"], "vaultwarden");
+    s.push_str("\n  local stamp plain\n");
     s.push_str("  stamp=\"$(date +%Y%m%d-%H%M%S)\"\n");
     s.push_str("  plain='");
     s.push_str(backup_dir);
@@ -247,7 +279,10 @@ fn build_targets_1(input: &HostInput, result: &mut Vec<Target>) {
             backup_dir: "/opt/backups/mailcow".to_string(),
             encrypts_by_default: false,
             size_paths: vec![path.clone(), "/var/lib/docker/volumes/mailcowdockerized_*".to_string()],
-            body: format!("  '{path}/bot-backup.sh'\n  gd_drive_copy_newest '/opt/backups/mailcow' 'mailcow'"),
+            body: format!(
+                "{}\n  '{path}/bot-backup.sh'\n  gd_drive_copy_newest '/opt/backups/mailcow' 'mailcow'",
+                skip_unless(&["files"], "mailcow")
+            ),
         });
     }
 
@@ -867,7 +902,7 @@ pub fn script(input: &HostInput) -> String {
 #        gryonixnexus-backup-ctl.sh set-schedule <off|every:<n><h|d>@<HH:MM>> <retention> [services...]
 #        gryonixnexus-backup-ctl.sh set-passphrase   (passphrase on stdin)
 #        gryonixnexus-backup-ctl.sh run
-#        gryonixnexus-backup-ctl.sh backup <service> [--encrypt|--no-encrypt]
+#        gryonixnexus-backup-ctl.sh backup <service> [--encrypt|--no-encrypt] [--before-update]
 #                                       (GPG passphrase on stdin when encrypting)
 #        gryonixnexus-backup-ctl.sh estimate <service>
 #        gryonixnexus-backup-ctl.sh set-destination <kind> <host> <port> <user> <path> <bucket> <keep>
@@ -876,6 +911,8 @@ pub fn script(input: &HostInput) -> String {
 #        gryonixnexus-backup-ctl.sh test-destination
 #        gryonixnexus-backup-ctl.sh set-drives <both|local|drive> <1|0> [uuids...]
 #        gryonixnexus-backup-ctl.sh show-drives
+#        gryonixnexus-backup-ctl.sh set-parts <backup|update> [files] [settings] [databases]
+#        gryonixnexus-backup-ctl.sh show-parts
 set -euo pipefail
 
 ACTION="${1:-}"
@@ -897,6 +934,22 @@ OWNER='@@GD_OWNER@@'
 # world-readable through /proc.
 GD_ENCRYPT=0
 GD_PASS=""
+
+# Which parts a run copies: regular runs and pre-update runs apart.
+PARTSCONF='/etc/gryonixnexus/backup-parts.conf'
+BACKUP_PARTS='files settings databases'
+UPDATE_PARTS='settings databases'
+GD_PARTS="$BACKUP_PARTS"
+load_parts() {
+  # shellcheck disable=SC1090
+  if [ -f "$PARTSCONF" ]; then . "$PARTSCONF"; fi
+  GD_PARTS="$BACKUP_PARTS"
+  if [ "${1:-}" = update ]; then GD_PARTS="$UPDATE_PARTS"; fi
+}
+gd_part() {
+  case " $GD_PARTS " in *" $1 "*) return 0 ;; esac
+  return 1
+}
 
 load_config() {
   # shellcheck disable=SC1090
@@ -1522,6 +1575,7 @@ do_delete() {
 
 do_run() {
   load_config
+  load_parts
   local failed=""
   for svc in $SERVICES; do
     # Each service runs in its own subshell, and the `||` keeps errexit
@@ -1554,15 +1608,18 @@ do_run() {
 do_backup() {
   local svc="${1:-}"
   shift || true
+  local scope=backup
   load_config
   GD_ENCRYPT="$(gd_default_encrypt "$svc")"
   for arg in "$@"; do
     case "$arg" in
       --encrypt) GD_ENCRYPT=1 ;;
       --no-encrypt) GD_ENCRYPT=0 ;;
+      --before-update) scope=update ;;
       *) echo "unsupported option: ${arg}" >&2; exit 2 ;;
     esac
   done
+  load_parts "$scope"
   if [ "$GD_ENCRYPT" -eq 1 ]; then
     # On stdin, never argv. A terminal means nobody piped anything in,
     # and reading would hang forever.
@@ -1697,6 +1754,31 @@ EOF_TIMER
   fi
 }
 
+do_set_parts() {
+  local scope="${1:-}" part checked=""
+  shift || true
+  case "$scope" in
+    backup|update) ;;
+    *) echo "unsupported parts scope: ${scope}" >&2; exit 2 ;;
+  esac
+  for part in "$@"; do
+    case "$part" in
+      files|settings|databases) checked="$checked $part" ;;
+      *) echo "unsupported part: ${part}" >&2; exit 2 ;;
+    esac
+  done
+  load_parts
+  if [ "$scope" = update ]; then UPDATE_PARTS="${checked# }"; else BACKUP_PARTS="${checked# }"; fi
+  install -d -m 755 "$(dirname "$PARTSCONF")"
+  printf "BACKUP_PARTS='%s'\nUPDATE_PARTS='%s'\n" "$BACKUP_PARTS" "$UPDATE_PARTS" > "$PARTSCONF"
+  chmod 644 "$PARTSCONF"
+}
+
+do_show_parts() {
+  load_parts
+  printf "BACKUP_PARTS='%s'\nUPDATE_PARTS='%s'\n" "$BACKUP_PARTS" "$UPDATE_PARTS"
+}
+
 do_set_passphrase() {
   install -d -m 755 "$(dirname '/etc/gryonixnexus/autobackup.pass')"
   # From stdin, never argv: argv is world-readable in /proc.
@@ -1719,6 +1801,8 @@ case "$ACTION" in
   test-destination) do_test_destination ;;
   set-drives) shift; do_set_drives "$@" ;;
   show-drives) do_show_drives ;;
+  set-parts) shift; do_set_parts "$@" ;;
+  show-parts) do_show_parts ;;
   *) echo "unsupported action: ${ACTION}" >&2; exit 2 ;;
 esac
 echo 'GRYONIXNEXUS_BACKUP_CTL_DONE'"#####;

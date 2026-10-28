@@ -199,6 +199,19 @@ async fn execute(
     Ok(Outcome::Updated)
 }
 
+/// The plan without the parts an update's backup leaves out
+fn chosen_parts(plan: &pb::ContainerBackupPlan, parts: &pb::BackupParts) -> pb::ContainerBackupPlan {
+    let mut chosen = plan.clone();
+    if !parts.files {
+        chosen.paths.clear();
+        chosen.volumes.clear();
+    }
+    if !parts.databases {
+        chosen.databases.clear();
+    }
+    chosen
+}
+
 async fn back_up_first(
     key: &str,
     kind: GroupKind,
@@ -206,6 +219,11 @@ async fn back_up_first(
     details: &[pb::ContainerDetail],
     sink: &UpdateSink,
 ) -> Result<(), String> {
+    let plan = &chosen_parts(plan, &crate::backup::update_parts());
+    if plan_names_nothing(plan) {
+        let _ = sink.progress("agent", "nothing chosen to back up before this update".to_string()).await;
+        return Ok(());
+    }
     match crate::container_backup_run::run_for_update(key, kind, plan, details, &sink.tx, &sink.encoder()).await {
         Ok(archive) => {
             let _ = sink.progress("agent", format!("backed up to {}", archive.path)).await;
@@ -472,6 +490,20 @@ impl UpdateSink {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_update_without_files_keeps_only_the_dumps() {
+        let parts = pb::BackupParts { files: false, settings: true, databases: true };
+        let chosen = chosen_parts(&plan(&["/srv/app"], &["app_data"], 1), &parts);
+        assert!(chosen.paths.is_empty() && chosen.volumes.is_empty());
+        assert_eq!(chosen.databases.len(), 1);
+    }
+
+    #[test]
+    fn an_update_without_databases_or_files_archives_nothing() {
+        let chosen = chosen_parts(&plan(&["/srv/app"], &[], 1), &pb::BackupParts::default());
+        assert!(plan_names_nothing(&chosen));
+    }
 
     fn plan(paths: &[&str], volumes: &[&str], databases: usize) -> pb::ContainerBackupPlan {
         pb::ContainerBackupPlan {

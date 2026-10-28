@@ -238,16 +238,20 @@ restore_mailu() {
   gd_compose_stop 'mailu' 'front' 'admin' 'imap' 'smtp' 'antispam' 'webmail' 'redis' 'resolver'
   # The old data is moved aside, never deleted: if the move back
   # fails it is the only way home.
-  previous='/opt/mailu'".pre-restore-$STAMP"
-  if [ -d '/opt/mailu' ]; then mv '/opt/mailu' "$previous"; saved=1; fi
-  if mv "$stage/mailu" '/opt/mailu'; then
-    if [ "$saved" -eq 1 ]; then echo "previous data kept at ${previous}"; fi
+  if [ ! -d "$stage/mailu" ]; then
+    echo "the archive carries no mailu, it is left as it is"
   else
-    echo "restore failed, rolling back to the previous data" >&2
-    rm -rf '/opt/mailu'
-    if [ "$saved" -eq 1 ]; then mv "$previous" '/opt/mailu'; fi
-    gd_compose_start_all 'mailu'
-    exit 1
+    previous='/opt/mailu'".pre-restore-$STAMP"
+    if [ -d '/opt/mailu' ]; then mv '/opt/mailu' "$previous"; saved=1; fi
+    if mv "$stage/mailu" '/opt/mailu'; then
+      if [ "$saved" -eq 1 ]; then echo "previous data kept at ${previous}"; fi
+    else
+      echo "restore failed, rolling back to the previous data" >&2
+      rm -rf '/opt/mailu'
+      if [ "$saved" -eq 1 ]; then mv "$previous" '/opt/mailu'; fi
+      gd_compose_start_all 'mailu'
+      exit 1
+    fi
   fi
   # Up again on every path, restored or not.
   gd_compose_start_all 'mailu'

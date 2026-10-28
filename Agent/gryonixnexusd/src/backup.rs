@@ -359,7 +359,67 @@ pub(crate) fn read_backup_schedule() -> pb::BackupSchedulePolicy {
         last_shipment_error: destination.last_error,
         last_shipment_ok: destination.last_ok,
         drives: wrapper_knows_drives().then(|| crate::backup_drive::read_drives(&config_dir())),
+        parts: wrapper_knows_parts().then(read_parts),
     }
+}
+
+/// The wrapper's own defaults, for a host that never chose
+const DEFAULT_BACKUP_PARTS: &str = "files settings databases";
+const DEFAULT_UPDATE_PARTS: &str = "settings databases";
+
+fn parts_from_words(words: &str) -> pb::BackupParts {
+    let has = |part: &str| words.split_whitespace().any(|word| word == part);
+    pb::BackupParts { files: has("files"), settings: has("settings"), databases: has("databases") }
+}
+
+fn parts_words(parts: &pb::BackupParts) -> Vec<&'static str> {
+    [(parts.files, "files"), (parts.settings, "settings"), (parts.databases, "databases")]
+        .into_iter()
+        .filter_map(|(on, word)| on.then_some(word))
+        .collect()
+}
+
+/// Which parts each kind of run copies, off disk
+fn read_parts() -> pb::BackupPartChoice {
+    let text = std::fs::read_to_string(config_dir().join("backup-parts.conf")).unwrap_or_default();
+    parse_parts(&text)
+}
+
+fn parse_parts(text: &str) -> pb::BackupPartChoice {
+    let mut regular = DEFAULT_BACKUP_PARTS.to_string();
+    let mut before_update = DEFAULT_UPDATE_PARTS.to_string();
+    for line in text.lines() {
+        if let Some(value) = shell_value(line, "BACKUP_PARTS") {
+            regular = value.to_string();
+        } else if let Some(value) = shell_value(line, "UPDATE_PARTS") {
+            before_update = value.to_string();
+        }
+    }
+    pb::BackupPartChoice {
+        regular: Some(parts_from_words(&regular)),
+        before_update: Some(parts_from_words(&before_update)),
+    }
+}
+
+/// The parts an update's backup copies, for the container path
+pub(crate) fn update_parts() -> pb::BackupParts {
+    read_parts().before_update.unwrap_or_default()
+}
+
+pub async fn set_backup_parts(codec: Codec, req: pb::SetBackupPartsRequest) -> Resp {
+    if !wrapper_path().exists() {
+        return Rejection::NoWrapper.response();
+    }
+    let choice = req.parts.unwrap_or_default();
+    for (scope, parts) in [("backup", choice.regular), ("update", choice.before_update)] {
+        let Some(parts) = parts else { continue };
+        let mut args = vec!["set-parts", scope];
+        args.extend(parts_words(&parts));
+        if let Err(why) = run_wrapper(&args, None, QUICK_TIMEOUT_SECS).await {
+            return wrapper_failed(&why);
+        }
+    }
+    encode(codec, &read_backup_schedule())
 }
 
 struct StoredDestination {
@@ -780,6 +840,11 @@ fn wrapper_failed(detail: &str) -> Resp {
         );
     }
     connect_error(StatusCode::INTERNAL_SERVER_ERROR, "internal", detail)
+}
+
+/// Whether the installed wrapper has the parts verbs
+fn wrapper_knows_parts() -> bool {
+    std::fs::read_to_string(wrapper_path()).is_ok_and(|text| text.contains("set-parts)"))
 }
 
 /// Whether the installed wrapper has the USB drive verbs
@@ -1293,6 +1358,29 @@ mod tests {
         std::env::remove_var("GRYONIXNEXUSD_BACKUP_WRAPPER");
         std::env::remove_var("GRYONIXNEXUSD_BACKUP_CONFIG");
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn parts_read_the_wrappers_defaults_when_nothing_was_chosen() {
+        let choice = parse_parts("");
+        let regular = choice.regular.unwrap();
+        let update = choice.before_update.unwrap();
+        assert!(regular.files && regular.settings && regular.databases);
+        assert!(!update.files && update.settings && update.databases);
+    }
+
+    #[test]
+    fn parts_read_an_empty_choice_as_nothing() {
+        let choice = parse_parts("BACKUP_PARTS='databases'\nUPDATE_PARTS=''\n");
+        let regular = choice.regular.unwrap();
+        assert!(!regular.files && !regular.settings && regular.databases);
+        assert_eq!(choice.before_update.unwrap(), pb::BackupParts::default());
+    }
+
+    #[test]
+    fn parts_turn_into_the_wrappers_words_in_order() {
+        let parts = pb::BackupParts { files: true, settings: false, databases: true };
+        assert_eq!(parts_words(&parts), vec!["files", "databases"]);
     }
 
     #[test]

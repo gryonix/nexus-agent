@@ -448,6 +448,10 @@ async fn route_vault(path: &str, codec: Codec, bytes: Bytes, store: Arc<Mutex<St
             let req: pb::SetBackupDrivesRequest = codec.decode(&bytes)?;
             Ok(backup_drive::set_backup_drives(codec, req).await)
         }).map(Some),
+        "/gryonixnexusd.v1.Backup/SetBackupParts" => ({
+            let req: pb::SetBackupPartsRequest = codec.decode(&bytes)?;
+            Ok(backup::set_backup_parts(codec, req).await)
+        }).map(Some),
         "/gryonixnexusd.v1.Backup/FetchDriveBackup" => ({
             let req: pb::FetchDriveBackupRequest = codec.decode(&bytes)?;
             Ok(backup_drive::fetch_drive_backup(codec, req).await)
