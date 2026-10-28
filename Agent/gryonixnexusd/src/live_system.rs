@@ -9,6 +9,8 @@ const LOG: &str = "/var/log/gryonixnexus-system-update.log";
 const EXIT_MARK: &str = "GRYONIXNEXUS_SYSTEM_EXIT:";
 const EVERY: Duration = Duration::from_secs(3);
 const LONGEST: Duration = Duration::from_secs(3 * 3600);
+/// A log this fresh belongs to the run being watched
+const RECENT: Duration = Duration::from_secs(15 * 60);
 
 static FOLLOWING: AtomicBool = AtomicBool::new(false);
 
@@ -25,7 +27,8 @@ pub fn follow() {
         FOLLOWING.store(false, Ordering::SeqCst);
         return;
     };
-    let since = SystemTime::now() - Duration::from_secs(2);
+    // A run ended before the hand-over still closes its card
+    let since = SystemTime::now() - RECENT;
     runtime.spawn(async move {
         read_until_done(&log_path(), since).await;
         FOLLOWING.store(false, Ordering::SeqCst);
@@ -35,8 +38,11 @@ pub fn follow() {
 async fn read_until_done(path: &str, since: SystemTime) {
     let deadline = Instant::now() + LONGEST;
     let mut shown = String::new();
+    let mut first = true;
     while Instant::now() < deadline {
-        tokio::time::sleep(EVERY).await;
+        if !std::mem::take(&mut first) {
+            tokio::time::sleep(EVERY).await;
+        }
         let Some(text) = fresh_log(path, since) else { continue };
         if let Some(code) = exit_code(&text) {
             crate::live::finished(JOB, failure(code).as_deref());

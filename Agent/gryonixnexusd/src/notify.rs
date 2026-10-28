@@ -346,6 +346,18 @@ pub async fn deliver(config: &mut Config, alert: &Alert) -> Sent {
     }
 }
 
+/// A wordless event the phones turn into widget readings
+pub async fn deliver_quiet(config: &mut Config, body: &[u8]) -> Sent {
+    if config.registered_at != config.relay_url {
+        let sent = register(config).await;
+        if sent != Sent::Ok {
+            return sent;
+        }
+    }
+    let path = format!("/v1/servers/{}/events", config.server_id);
+    relay_call_known(config, "POST", &path, body).await
+}
+
 // MARK: checks
 
 /// One check run: sends changes, remembers current problems
@@ -369,6 +381,7 @@ pub async fn run_checks(store: &Arc<Mutex<Store>>) {
     if all_sent || config.channel() == pb::NotifyChannel::Off {
         config.active = found;
     }
+    crate::widget_feed::push(&mut config).await;
     config.last_check_at = now();
     let mut latest = load(store);
     latest.active = config.active;

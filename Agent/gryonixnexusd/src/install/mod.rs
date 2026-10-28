@@ -35,6 +35,7 @@ pub mod firewall;
 pub mod home_network;
 pub mod firewall_base;
 pub mod firewall_relay;
+pub mod mark_restore;
 pub mod relay_routes;
 pub mod ports;
 pub mod forgejo;

@@ -183,10 +183,15 @@ fn walk_bouncers(metrics: &Value) -> impl Iterator<Item = (&str, &Value)> {
 
 /// Assemble the status from the host
 pub async fn get_security_status(codec: Codec, _req: pb::GetSecurityStatusRequest) -> Resp {
+    encode(codec, &status().await)
+}
+
+/// CrowdSec's state, read from its units and `cscli`
+pub async fn status() -> pb::SecurityStatus {
     let mut status = pb::SecurityStatus::default();
 
     if !present() {
-        return encode(codec, &status);
+        return status;
     }
     status.present = true;
 
@@ -222,7 +227,7 @@ pub async fn get_security_status(codec: Codec, _req: pb::GetSecurityStatusReques
         }
     }
 
-    encode(codec, &status)
+    status
 }
 
 // ─────────────────────── SSH password login ────────────────────────────
