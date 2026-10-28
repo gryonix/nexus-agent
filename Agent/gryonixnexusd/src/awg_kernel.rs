@@ -168,8 +168,15 @@ if ! docker exec {CONTAINER} ip link show wg0 >/dev/null 2>&1; then
   echo "wg0 did not come up on the module" >&2
   exit 4
 fi
-if docker exec {CONTAINER} pgrep amneziawg-go >/dev/null 2>&1; then echo "still a program" >&2; exit 3; fi"#
+if docker exec {CONTAINER} pgrep amneziawg-go >/dev/null 2>&1; then echo "still a program" >&2; exit 3; fi
+{mtu}"#,
+        mtu = mtu_line(),
     )
+}
+
+/// Puts the phones' MTU back on wg0 after a start
+fn mtu_line() -> String {
+    format!("docker exec {CONTAINER} ip link set wg0 mtu {} || true", crate::install::vpn::mtu::MTU)
 }
 
 /// Puts the tools back into a recreated container
@@ -191,8 +198,14 @@ rm -f /etc/apt/sources.list.d/gryonixnexus-amnezia.list /etc/apt/keyrings/amnezi
 [ -n "{packages}" ] && apt-get purge -y -qq {packages} >/dev/null 2>&1 || true
 apt-get autoremove -y -qq >/dev/null 2>&1 || true
 docker start {CONTAINER} >/dev/null
+for _ in $(seq 30); do
+  docker exec {CONTAINER} ip link show wg0 >/dev/null 2>&1 && break
+  sleep 1
+done
+{mtu}
 echo "{DONE_OFF}"
-"#
+"#,
+        mtu = mtu_line(),
     )
 }
 
@@ -496,6 +509,8 @@ mod tests {
         assert!(script.contains("cp /usr/bin/awg /usr/bin/awg.image"), "the image's own tool is kept");
         assert!(script.contains("docker logs --tail 4 awgvpn"), "a failed restart says why");
         assert!(disable_script(&[]).contains("cp /usr/bin/awg.image /usr/bin/awg"));
+        assert!(script.contains("ip link set wg0 mtu 1280"), "the restart keeps the phones' MTU");
+        assert!(disable_script(&[]).contains("ip link set wg0 mtu 1280"));
     }
 
     #[test]
