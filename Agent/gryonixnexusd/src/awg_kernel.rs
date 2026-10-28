@@ -98,12 +98,12 @@ pub fn enable_script(suite: &str) -> String {
 export DEBIAN_FRONTEND=noninteractive
 step() {{ echo "STEP $*"; }}
 missing() {{ for p in "$@"; do dpkg -s "$p" >/dev/null 2>&1 || printf '%s ' "$p"; done; }}
-step 1/4 "installing kernel headers and build tools"
+step 1/5 "installing kernel headers and build tools"
 apt-get update -qq
 NEW="$(missing "linux-headers-$(uname -r)" dkms build-essential curl ca-certificates)"
 [ -z "$NEW" ] || apt-get install -y -qq $NEW >/dev/null
 echo "INSTALLED $NEW"
-step 2/4 "adding the Amnezia package source"
+step 2/5 "adding the Amnezia package source"
 install -d -m 0755 /etc/apt/keyrings
 KEY=/etc/apt/keyrings/amnezia-ppa.asc
 curl -fsSL 'https://keyserver.ubuntu.com/pks/lookup?op=get&options=mr&search=0x{AMNEZIA_KEY}' > "$KEY" \
@@ -113,23 +113,68 @@ grep -q 'BEGIN PGP PUBLIC KEY BLOCK' "$KEY" || {{ echo "the Amnezia signing key 
 echo "deb [signed-by=/etc/apt/keyrings/amnezia-ppa.asc] https://ppa.launchpadcontent.net/amnezia/ppa/ubuntu {suite} main" \
   > /etc/apt/sources.list.d/gryonixnexus-amnezia.list
 apt-get update -qq
-step 3/4 "building the AmneziaWG module"
+step 3/5 "building the AmneziaWG module"
 NEW="$(missing amneziawg)"
 [ -z "$NEW" ] || apt-get install -y -qq $NEW >/dev/null
 echo "INSTALLED $NEW"
 modprobe amneziawg
 [ -d /sys/module/amneziawg ]
-step 4/4 "restarting AmneziaWG on the module"
-docker restart {CONTAINER} >/dev/null
+step 4/5 "matching AmneziaWG's tools to the module"
+{tools}
+step 5/5 "restarting AmneziaWG on the module"
+{restart}
+echo "{DONE_ON}"
+"#,
+        tools = tools_lines(),
+        restart = restart_lines(),
+    )
+}
+
+/// The amneziawg-tools release built into the container
+const TOOLS_TAG: &str = "v3.1.20260812";
+/// Marks a container carrying those tools
+const TOOLS_MARK: &str = "/usr/bin/.gryonix-awg-tools";
+const DONE_TOOLS: &str = "DONE tools";
+
+/// Builds tools that speak the module's netlink inside the container
+fn tools_lines() -> String {
+    format!(
+        r#"curl -fsSL 'https://github.com/amnezia-vpn/amneziawg-tools/archive/refs/tags/{TOOLS_TAG}.tar.gz' -o /tmp/gryonix-awg-tools.tar.gz
+docker cp /tmp/gryonix-awg-tools.tar.gz {CONTAINER}:/tmp/awg-tools.tar.gz
+rm -f /tmp/gryonix-awg-tools.tar.gz
+docker exec {CONTAINER} sh -euc '
+  apk add --no-cache --virtual .gryonix-awg build-base linux-headers >/dev/null
+  rm -rf /tmp/amneziawg-tools-*
+  tar -xzf /tmp/awg-tools.tar.gz -C /tmp
+  make -C /tmp/amneziawg-tools-*/src -j2 wg >/dev/null
+  [ -e /usr/bin/awg.image ] || cp /usr/bin/awg /usr/bin/awg.image
+  install -m 0755 /tmp/amneziawg-tools-*/src/wg /usr/bin/awg
+  echo {TOOLS_TAG} > {TOOLS_MARK}
+  apk del .gryonix-awg >/dev/null
+  rm -rf /tmp/amneziawg-tools-* /tmp/awg-tools.tar.gz'"#
+    )
+}
+
+/// Restarts the container and checks wg0 runs on the module
+fn restart_lines() -> String {
+    format!(
+        r#"docker restart {CONTAINER} >/dev/null
 for _ in $(seq 30); do
   docker exec {CONTAINER} ip link show wg0 >/dev/null 2>&1 && break
   sleep 1
 done
-docker exec {CONTAINER} ip link show wg0 >/dev/null
-if docker exec {CONTAINER} pgrep amneziawg-go >/dev/null 2>&1; then echo "still a program" >&2; exit 3; fi
-echo "{DONE_ON}"
-"#
+if ! docker exec {CONTAINER} ip link show wg0 >/dev/null 2>&1; then
+  docker logs --tail 4 {CONTAINER} 2>&1 | tail -n 2
+  echo "wg0 did not come up on the module" >&2
+  exit 4
+fi
+if docker exec {CONTAINER} pgrep amneziawg-go >/dev/null 2>&1; then echo "still a program" >&2; exit 3; fi"#
     )
+}
+
+/// Puts the tools back into a recreated container
+pub fn tools_script() -> String {
+    format!("set -eu\necho \"STEP 1/2 matching AmneziaWG's tools to the module\"\n{}\necho \"STEP 2/2 restarting AmneziaWG on the module\"\n{}\necho \"{DONE_TOOLS}\"\n", tools_lines(), restart_lines())
 }
 
 /// The script that puts AmneziaWG back on the program
@@ -139,6 +184,7 @@ pub fn disable_script(installed: &[String]) -> String {
         r#"set -u
 export DEBIAN_FRONTEND=noninteractive
 echo "STEP moving AmneziaWG back to the program"
+docker exec {CONTAINER} sh -c '[ ! -e /usr/bin/awg.image ] || cp /usr/bin/awg.image /usr/bin/awg; rm -f {TOOLS_MARK}' 2>/dev/null || true
 docker stop {CONTAINER} >/dev/null 2>&1 || true
 modprobe -r amneziawg 2>/dev/null || true
 rm -f /etc/apt/sources.list.d/gryonixnexus-amnezia.list /etc/apt/keyrings/amnezia-ppa.asc
@@ -346,20 +392,63 @@ pub async fn refresh() {
         switch(state.wanted.unwrap_or(true));
         return;
     }
+    if state.status == "on" && !busy() && module_loaded() && container_running().await && !tools_current().await {
+        tracing::info!("putting AmneziaWG's tools back into a recreated container");
+        keep_tools();
+        return;
+    }
     if state.wanted.is_some() || WORKING.load(Ordering::SeqCst) || module_loaded() {
         return;
     }
-    let running = tokio::process::Command::new("docker")
-        .args(["inspect", "-f", "{{.State.Running}}", CONTAINER])
-        .stdin(Stdio::null())
-        .output()
-        .await
-        .is_ok_and(|output| String::from_utf8_lossy(&output.stdout).trim() == "true");
+    let running = container_running().await;
     let os = std::fs::read_to_string("/etc/os-release").unwrap_or_default();
     if running && supported(&os) && free_bytes() >= NEEDED_FREE_BYTES {
         tracing::info!("putting AmneziaWG into the kernel");
         switch(true);
     }
+}
+
+async fn container_running() -> bool {
+    tokio::process::Command::new("docker")
+        .args(["inspect", "-f", "{{.State.Running}}", CONTAINER])
+        .stdin(Stdio::null())
+        .output()
+        .await
+        .is_ok_and(|output| String::from_utf8_lossy(&output.stdout).trim() == "true")
+}
+
+/// The container carries the tools this agent builds
+async fn tools_current() -> bool {
+    tokio::process::Command::new("docker")
+        .args(["exec", CONTAINER, "cat", TOOLS_MARK])
+        .stdin(Stdio::null())
+        .output()
+        .await
+        .is_ok_and(|output| String::from_utf8_lossy(&output.stdout).trim() == TOOLS_TAG)
+}
+
+/// Rebuilds the tools, or goes back to the program
+fn keep_tools() {
+    if WORKING.swap(true, Ordering::SeqCst) {
+        return;
+    }
+    let Ok(runtime) = tokio::runtime::Handle::try_current() else {
+        WORKING.store(false, Ordering::SeqCst);
+        return;
+    };
+    runtime.spawn(async move {
+        let (ok, output) = run(&tools_script(), DONE_TOOLS).await;
+        if !ok {
+            let mut state = load();
+            let step = last_step(&output);
+            let _ = run(&disable_script(&state.installed), DONE_OFF).await;
+            state.installed.clear();
+            state.status = "failed".to_string();
+            state.note = format!("{step}: {}", tail(&output));
+            save(&state);
+        }
+        WORKING.store(false, Ordering::SeqCst);
+    });
 }
 
 /// Socket buffers a one-core server drops UDP packets without
@@ -396,6 +485,25 @@ mod tests {
     fn the_ppa_suite_follows_the_system() {
         assert_eq!(suite(UBUNTU), "noble");
         assert_eq!(suite(DEBIAN), "focal");
+    }
+
+    #[test]
+    fn the_container_gets_tools_that_speak_the_modules_netlink() {
+        let script = enable_script("focal");
+        let tools = script.find("amneziawg-tools/archive/refs/tags/v3.1.20260812.tar.gz").unwrap();
+        let restart = script.find("docker restart awgvpn").unwrap();
+        assert!(tools < restart, "the tools go in before the container restarts on the module");
+        assert!(script.contains("cp /usr/bin/awg /usr/bin/awg.image"), "the image's own tool is kept");
+        assert!(script.contains("docker logs --tail 4 awgvpn"), "a failed restart says why");
+        assert!(disable_script(&[]).contains("cp /usr/bin/awg.image /usr/bin/awg"));
+    }
+
+    #[test]
+    fn a_recreated_container_gets_the_tools_and_a_restart() {
+        let script = tools_script();
+        assert!(script.contains("STEP 1/2"));
+        assert!(script.contains("docker restart awgvpn"));
+        assert!(script.trim_end().ends_with("echo \"DONE tools\""));
     }
 
     #[test]
