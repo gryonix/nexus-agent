@@ -789,6 +789,12 @@ async fn route_vpn(path: &str, codec: Codec, bytes: Bytes) -> anyhow::Result<Opt
             let facts = crate::install::vpn::mtu::speed_facts().await;
             Ok(codec.encode(&facts).unwrap_or_else(|err| connect_error(hyper::StatusCode::INTERNAL_SERVER_ERROR, "internal", &err.to_string())))
         }).map(Some),
+        "/gryonixnexusd.v1.Vpn/SetAmneziaKernel" => ({
+            let req: pb::SetAmneziaKernelRequest = codec.decode(&bytes)?;
+            crate::awg_kernel::switch(req.enabled);
+            let facts = crate::install::vpn::mtu::speed_facts().await;
+            Ok(codec.encode(&facts).unwrap_or_else(|err| connect_error(hyper::StatusCode::INTERNAL_SERVER_ERROR, "internal", &err.to_string())))
+        }).map(Some),
         "/gryonixnexusd.v1.Vpn/GetVpnDns" => ({
             let req: pb::GetVpnDnsRequest = codec.decode(&bytes)?;
             Ok(vpn_clients::default_dns(codec, req).await)

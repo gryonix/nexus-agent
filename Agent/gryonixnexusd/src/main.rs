@@ -3,6 +3,7 @@
 mod agent_removal;
 mod agent_update;
 mod api;
+mod awg_kernel;
 mod backup;
 mod backup_drive;
 mod drive_watch;
@@ -37,7 +38,6 @@ mod move_transfer;
 mod move_upstream;
 mod health_watch;
 mod live;
-mod live_build;
 mod live_tunnel;
 mod live_system;
 mod notify;
@@ -366,6 +366,10 @@ async fn keep_host_tools(store: &Arc<Mutex<state::Store>>) {
         Ok(false) => {}
         Err(err) => tracing::warn!(%err, "could not rebuild the webmail sites"),
     }
+    if awg_kernel::refresh_udp_buffers().await {
+        tracing::info!("raised the UDP socket buffers for the VPN");
+    }
+    awg_kernel::refresh().await;
     let tuned = install::vpn::mtu::refresh().await;
     if !tuned.is_empty() {
         tracing::info!(interfaces = ?tuned, "VPN interfaces set to MTU {}", install::vpn::mtu::MTU);

@@ -205,6 +205,9 @@ impl Watch {
 
 /// Starts server cards unless the app claims the job
 pub fn job_began(kind: i32, subject: &str, job_id: &str) {
+    if !shows_card(kind) {
+        return;
+    }
     let Some(config) = config().filter(relay_ready) else { return };
     let russian = config.russian();
     let title = format!("{} · {}", notify::run_name(kind, russian), subject);
@@ -233,6 +236,11 @@ fn claim_unwatched(job_id: &str, kind: i32, config: &notify::Config) -> Option<V
     Some(start_body(job_id, kind, &watch.title, &watch.text, config))
 }
 
+/// The agent's own updates get no card
+fn shows_card(kind: i32) -> bool {
+    pb::JobKind::try_from(kind).ok() != Some(pb::JobKind::AgentUpdate)
+}
+
 /// Unix seconds at Apple's reference date
 const APPLE_EPOCH: i64 = 978_307_200;
 
@@ -248,17 +256,11 @@ pub fn start_body(job_id: &str, kind: i32, title: &str, text: &str, config: &not
             "canStop": true,
             "jobID": job_id,
             "serverID": config.server_id,
-            "symbol": job_symbol(kind),
         },
         "state": content_state(text, None, false, None),
         "alert": { "title": title, "body": notify::host() },
         "stale_at": notify::now() + STALE_AFTER,
     })
-}
-
-/// The card's symbol: the agent's own for its updates
-fn job_symbol(kind: i32) -> Option<&'static str> {
-    (pb::JobKind::try_from(kind).ok() == Some(pb::JobKind::AgentUpdate)).then_some("cpu")
 }
 
 /// The kind name a phone may switch off
@@ -519,8 +521,8 @@ mod tests {
         let mut failed = content_state("Pulling", Some(0.5), true, Some("disk full"));
         failed.as_object_mut().unwrap().remove("updatedAt");
         assert_eq!(failed, json!({ "progressText": "Pulling", "isFinished": true, "errorMessage": "disk full" }));
-        assert_eq!(job_symbol(pb::JobKind::AgentUpdate as i32), Some("cpu"));
-        assert_eq!(job_symbol(pb::JobKind::Backup as i32), None);
+        assert!(!shows_card(pb::JobKind::AgentUpdate as i32));
+        assert!(shows_card(pb::JobKind::Backup as i32));
     }
 
     #[test]

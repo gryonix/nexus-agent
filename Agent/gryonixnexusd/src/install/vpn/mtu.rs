@@ -40,6 +40,33 @@ pub async fn refresh() -> Vec<String> {
     changed
 }
 
+/// The link, with details where `ip` supports them
+async fn link_details(container: &str, interface: &str) -> Option<String> {
+    for args in [&["ip", "-d", "link", "show", interface][..], &["ip", "link", "show", interface][..]] {
+        if let Ok((true, text)) = super::super::execute::run_docker_capture(&exec(container, args), TIMEOUT).await {
+            return Some(text);
+        }
+    }
+    None
+}
+
+/// Kernel or program, by link, process and module
+async fn runs_in_kernel(container: &str, protocol: &str, details: &str) -> bool {
+    if is_kernel(details) {
+        return true;
+    }
+    if details.split_whitespace().any(|word| word == "tun") {
+        return false;
+    }
+    let program = if protocol == "amneziawg" { "amneziawg-go" } else { "wireguard-go" };
+    let running = super::super::execute::run_docker_capture(&exec(container, &["pgrep", program]), TIMEOUT).await;
+    if matches!(running, Ok((true, _))) {
+        return false;
+    }
+    let module = if protocol == "amneziawg" { "/sys/module/amneziawg" } else { "/sys/module/wireguard" };
+    std::path::Path::new(module).exists()
+}
+
 /// The tunnel runs in the kernel, not as a program
 pub fn is_kernel(details: &str) -> bool {
     details.split_whitespace().any(|word| word == "wireguard" || word == "amneziawg")
@@ -62,13 +89,12 @@ pub fn load_of(loadavg: &str) -> f64 {
 pub async fn speed_facts() -> crate::pb::VpnSpeedFacts {
     let mut interfaces = Vec::new();
     for ((container, interface), (_, protocol)) in INTERFACES.iter().zip(PROTOCOLS) {
-        let shown = super::super::execute::run_docker_capture(&exec(container, &["ip", "-d", "link", "show", interface]), TIMEOUT).await;
-        let Ok((true, text)) = shown else { continue };
+        let Some(text) = link_details(container, interface).await else { continue };
         interfaces.push(crate::pb::VpnInterfaceFacts {
             protocol: protocol.to_string(),
             interface: interface.to_string(),
             mtu: mtu_of(&text).unwrap_or(0),
-            kernel: is_kernel(&text),
+            kernel: runs_in_kernel(container, protocol, &text).await,
         });
     }
     let snmp = std::fs::read_to_string("/proc/net/snmp").unwrap_or_default();
@@ -79,6 +105,26 @@ pub async fn speed_facts() -> crate::pb::VpnSpeedFacts {
         udp_receive_errors: udp_counter(&snmp, "InErrors"),
         udp_buffer_errors: udp_counter(&snmp, "RcvbufErrors"),
         client_mtu: MTU,
+        ..kernel_facts()
+    }
+}
+
+/// The AmneziaWG module's switch, as the facts carry it
+fn kernel_facts() -> crate::pb::VpnSpeedFacts {
+    let state = crate::awg_kernel::load();
+    let os = std::fs::read_to_string("/etc/os-release").unwrap_or_default();
+    let free = crate::move_transfer::free_bytes(std::path::Path::new("/")).unwrap_or(0);
+    let status = if state.status.is_empty() {
+        if crate::awg_kernel::module_loaded() { "on" } else { "off" }.to_string()
+    } else {
+        state.status
+    };
+    crate::pb::VpnSpeedFacts {
+        amnezia_kernel_status: status,
+        amnezia_kernel_note: state.note,
+        amnezia_kernel_possible: crate::awg_kernel::supported(&os)
+            && (crate::awg_kernel::module_loaded() || free >= crate::awg_kernel::NEEDED_FREE_BYTES),
+        ..Default::default()
     }
 }
 

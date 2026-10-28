@@ -462,7 +462,6 @@ pub fn job_started(kind: i32, subject: &str, job_id: &str) {
 
 pub fn spawn(store: Arc<Mutex<Store>>) {
     crate::live::init(store.clone());
-    crate::live_build::resume();
     crate::ssh_watch::spawn(store.clone());
     tokio::spawn(async move {
         tokio::time::sleep(FIRST_CHECK).await;
@@ -614,9 +613,6 @@ pub async fn watch_live(codec: Codec, store: Arc<Mutex<Store>>, req: pb::WatchLi
         crate::live::watch(&req.job_id, &req.token, &req.title.chars().take(120).collect::<String>());
         if req.job_id == crate::live_system::JOB {
             crate::live_system::follow();
-        }
-        if req.job_id == crate::live_build::JOB {
-            crate::live_build::follow(&req.token, &req.title.chars().take(120).collect::<String>());
         }
         // An already finished job still closes the island.
         if let Some(failure) = crate::jobs::job(&req.job_id).as_ref().and_then(ending_of) {

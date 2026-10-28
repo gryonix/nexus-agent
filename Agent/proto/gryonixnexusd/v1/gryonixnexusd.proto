@@ -2770,6 +2770,14 @@ service Vpn {
   // What decides the tunnels' speed on this host: each interface's MTU,
   // kernel or userspace, the CPU, and UDP packets the host dropped.
   rpc GetVpnSpeedFacts(GetVpnSpeedFactsRequest) returns (VpnSpeedFacts);
+
+  // Moves AmneziaWG into the kernel module, or back onto the program.
+  // Runs in the background; the facts that come back say how it goes.
+  rpc SetAmneziaKernel(SetAmneziaKernelRequest) returns (VpnSpeedFacts);
+}
+
+message SetAmneziaKernelRequest {
+  bool enabled = 1;
 }
 
 message GetVpnSpeedFactsRequest {}
@@ -2793,6 +2801,12 @@ message VpnSpeedFacts {
   uint64 udp_buffer_errors = 5;
   // The MTU phones are given.
   uint32 client_mtu = 6;
+  // AmneziaWG in the kernel: off, working, on or failed.
+  string amnezia_kernel_status = 7;
+  // Why it failed, in the agent's words; empty otherwise.
+  string amnezia_kernel_note = 8;
+  // This server can build the module (Debian or Ubuntu, enough disk).
+  bool amnezia_kernel_possible = 9;
 }
 
 // The protocol a request is about, as the PANEL names it — `wireguard`,
