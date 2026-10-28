@@ -5,6 +5,7 @@ mod agent_update;
 mod api;
 mod awg_kernel;
 mod backup;
+mod backup_leftovers;
 mod backup_drive;
 mod drive_watch;
 mod container_backup;
@@ -61,6 +62,7 @@ mod vpn_dns_priority;
 mod vpn_dns_relay;
 mod vpn_state;
 mod update;
+mod wrapper_stop;
 mod util;
 /// The deployment's own service passwords, sealed at rest
 mod vault;
@@ -373,6 +375,10 @@ async fn keep_host_tools(store: &Arc<Mutex<state::Store>>) {
     let tuned = install::vpn::mtu::refresh().await;
     if !tuned.is_empty() {
         tracing::info!(interfaces = ?tuned, "VPN interfaces set to MTU {}", install::vpn::mtu::MTU);
+    }
+    let removed = backup_leftovers::sweep();
+    if !removed.is_empty() {
+        tracing::info!(folders = ?removed, "removed what interrupted backups left");
     }
     match install::vpn::port_share::refresh().await {
         Ok(true) => tracing::info!("AmneziaWG on the shared port bypasses docker-proxy"),

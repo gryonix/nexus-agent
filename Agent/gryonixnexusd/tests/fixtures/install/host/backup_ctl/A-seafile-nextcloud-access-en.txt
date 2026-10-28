@@ -45,8 +45,14 @@ GD_PARTS="$BACKUP_PARTS"
 load_parts() {
   # shellcheck disable=SC1090
   if [ -f "$PARTSCONF" ]; then . "$PARTSCONF"; fi
-  GD_PARTS="$BACKUP_PARTS"
-  if [ "${1:-}" = update ]; then GD_PARTS="$UPDATE_PARTS"; fi
+  local key=BACKUP_PARTS
+  if [ "${1:-}" = update ]; then key=UPDATE_PARTS; fi
+  GD_PARTS="${!key}"
+  # A service's own choice wins over the shared one.
+  if [ -n "${2:-}" ]; then
+    key="${key}_${2//-/_}"
+    if [ -n "${!key+x}" ]; then GD_PARTS="${!key}"; fi
+  fi
 }
 gd_part() {
   case " $GD_PARTS " in *" $1 "*) return 0 ;; esac
@@ -623,7 +629,7 @@ gd_finish() {
     if ! printf '%s' "$GD_PASS" | gpg --batch --quiet --yes --symmetric \
          --cipher-algo AES256 --passphrase-fd 0 --pinentry-mode loopback \
          --output "$out" "$plain"; then
-      rm -rf "$work"
+      rm -rf "$work" "$out"
       echo "could not encrypt the $name backup" >&2
       return 1
     fi
@@ -831,6 +837,7 @@ do_run() {
         fi
         GD_PASS="$(cat "$PASSFILE")"
       fi
+      load_parts backup "$svc"
       gd_run_service "$svc"
     ) || failed="$failed $svc"
   done
@@ -856,7 +863,7 @@ do_backup() {
       *) echo "unsupported option: ${arg}" >&2; exit 2 ;;
     esac
   done
-  load_parts "$scope"
+  load_parts "$scope" "$svc"
   if [ "$GD_ENCRYPT" -eq 1 ]; then
     # On stdin, never argv. A terminal means nobody piped anything in,
     # and reading would hang forever.
@@ -994,28 +1001,43 @@ EOF_TIMER
 }
 
 do_set_parts() {
-  local scope="${1:-}" part checked=""
+  local scope="${1:-}" svc="" part checked="" key
   shift || true
   case "$scope" in
     backup|update) ;;
     *) echo "unsupported parts scope: ${scope}" >&2; exit 2 ;;
   esac
+  if [ "${1:-}" = --service ]; then
+    svc="${2:-}"
+    shift 2 || true
+    case "$svc" in
+      ''|*[!a-z0-9-]*) echo "unsupported service: ${svc}" >&2; exit 2 ;;
+    esac
+  fi
   for part in "$@"; do
     case "$part" in
       files|settings|databases) checked="$checked $part" ;;
       *) echo "unsupported part: ${part}" >&2; exit 2 ;;
     esac
   done
-  load_parts
-  if [ "$scope" = update ]; then UPDATE_PARTS="${checked# }"; else BACKUP_PARTS="${checked# }"; fi
+  key=BACKUP_PARTS
+  if [ "$scope" = update ]; then key=UPDATE_PARTS; fi
+  if [ -n "$svc" ]; then key="${key}_${svc//-/_}"; fi
   install -d -m 755 "$(dirname "$PARTSCONF")"
-  printf "BACKUP_PARTS='%s'\nUPDATE_PARTS='%s'\n" "$BACKUP_PARTS" "$UPDATE_PARTS" > "$PARTSCONF"
+  {
+    grep -v "^${key}=" "$PARTSCONF" 2>/dev/null || true
+    printf "%s='%s'\n" "$key" "${checked# }"
+  } > "$PARTSCONF.new"
+  mv -f "$PARTSCONF.new" "$PARTSCONF"
   chmod 644 "$PARTSCONF"
 }
 
 do_show_parts() {
   load_parts
   printf "BACKUP_PARTS='%s'\nUPDATE_PARTS='%s'\n" "$BACKUP_PARTS" "$UPDATE_PARTS"
+  if [ -f "$PARTSCONF" ]; then
+    grep -E '^(BACKUP|UPDATE)_PARTS_[a-z0-9_]+=' "$PARTSCONF" || true
+  fi
 }
 
 do_set_passphrase() {

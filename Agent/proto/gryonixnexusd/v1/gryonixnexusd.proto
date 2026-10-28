@@ -2014,6 +2014,8 @@ message BackupPartChoice {
   BackupParts regular = 1;
   // The backup an update takes first.
   BackupParts before_update = 2;
+  // A service's own choice, by catalog id; the shared one applies otherwise.
+  map<string, BackupPartChoice> services = 3;
 }
 
 message SetBackupPartsRequest {

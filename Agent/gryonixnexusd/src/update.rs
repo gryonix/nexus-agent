@@ -369,8 +369,10 @@ where
         journal: crate::jobs::Journal::open(pb::JobKind::Update, service_id),
     };
     let _ = sink.started().await;
+    let stop = crate::jobs::cancellable(&sink.journal);
+    let stop = stop.as_ref();
 
-    let ran = if label == VPN_GROUP { run_vpn_group(&sink).await } else { run_one(label, &sink).await };
+    let ran = if label == VPN_GROUP { run_vpn_group(&sink, stop).await } else { run_one(label, &sink, stop).await };
     match ran {
         Ran::Outcome(outcome, reason) => {
             let mut failure: Option<String> = if outcome == pb::UpdateOutcome::Updated {
@@ -408,8 +410,11 @@ enum Ran {
     Broken(&'static str, String),
 }
 
-async fn run_one(label: &str, sink: &EventSink) -> Ran {
-    let run = run_wrapper_streaming(&["run", label], RUN_TIMEOUT_SECS, sink).await;
+async fn run_one(label: &str, sink: &EventSink, stop: Option<&crate::jobs::CancelSwitch>) -> Ran {
+    let run = run_wrapper_streaming(&["run", label], RUN_TIMEOUT_SECS, sink, stop).await;
+    if run.stopped {
+        return Ran::Outcome(pb::UpdateOutcome::Failed, STOPPED.to_string());
+    }
     if let Some((outcome, reason)) = parse_run_outcome(&run.stdout) {
         return Ran::Outcome(outcome, reason);
     }
@@ -433,7 +438,7 @@ pub fn vpn_members(check_output: &str) -> Vec<&'static str> {
         .collect()
 }
 
-async fn run_vpn_group(sink: &EventSink) -> Ran {
+async fn run_vpn_group(sink: &EventSink, stop: Option<&crate::jobs::CancelSwitch>) -> Ran {
     let check = match run_wrapper(&["check"], CHECK_TIMEOUT_SECS).await {
         Ok(output) => output.stdout,
         Err(why) => return Ran::Broken("internal", why),
@@ -443,7 +448,7 @@ async fn run_vpn_group(sink: &EventSink) -> Ran {
         return Ran::Broken("failed_precondition", "no VPN protocol on this host is updated by the wrapper".into());
     }
     for member in members {
-        match run_one(member, sink).await {
+        match run_one(member, sink, stop).await {
             Ran::Outcome(pb::UpdateOutcome::Updated, _) => {}
             Ran::Outcome(outcome, reason) => return Ran::Outcome(outcome, format!("{member}: {reason}")),
             Ran::Broken(code, why) => return Ran::Broken(code, format!("{member}: {why}")),
@@ -507,9 +512,18 @@ struct WrapperRun {
     stdout: String,
     stderr: String,
     status: Result<std::process::ExitStatus, String>,
+    stopped: bool,
 }
 
-async fn run_wrapper_streaming(args: &[&str], timeout_secs: u64, sink: &EventSink) -> WrapperRun {
+/// The outcome's reason after a stop
+const STOPPED: &str = "stopped before the update was applied";
+
+async fn run_wrapper_streaming(
+    args: &[&str],
+    timeout_secs: u64,
+    sink: &EventSink,
+    stop: Option<&crate::jobs::CancelSwitch>,
+) -> WrapperRun {
     let home = crate::backup::wrapper_home();
     let spawned = tokio::process::Command::new(wrapper_path())
         .args(args)
@@ -528,6 +542,7 @@ async fn run_wrapper_streaming(args: &[&str], timeout_secs: u64, sink: &EventSin
                 stdout: String::new(),
                 stderr: String::new(),
                 status: Err(format!("could not run the update wrapper: {err}")),
+                stopped: false,
             };
         }
     };
@@ -536,6 +551,14 @@ async fn run_wrapper_streaming(args: &[&str], timeout_secs: u64, sink: &EventSin
     let mut err = child.stderr.take().map(|s| tokio::io::BufReader::new(s).lines());
     let mut stdout = String::new();
     let mut stderr = String::new();
+
+    let stopped = std::sync::atomic::AtomicBool::new(false);
+    let said = async {
+        stopped.store(true, std::sync::atomic::Ordering::Relaxed);
+        let _ = sink.progress("stderr", "stopping: ending the backup, the service is left as it was".into()).await;
+    };
+    let watch = crate::wrapper_stop::watch(stop, child.id(), said);
+    tokio::pin!(watch);
 
     let outcome = tokio::time::timeout(Duration::from_secs(timeout_secs), async {
         loop {
@@ -562,6 +585,7 @@ async fn run_wrapper_streaming(args: &[&str], timeout_secs: u64, sink: &EventSin
                         _ => err = None,
                     }
                 }
+                () = &mut watch, if out.is_some() || err.is_some() => {}
                 else => break,
             }
         }
@@ -569,18 +593,21 @@ async fn run_wrapper_streaming(args: &[&str], timeout_secs: u64, sink: &EventSin
     })
     .await;
 
+    let stopped = stopped.load(std::sync::atomic::Ordering::Relaxed);
     match outcome {
         Err(_) => WrapperRun {
             stdout,
             stderr,
             status: Err(format!("the update wrapper timed out after {timeout_secs}s")),
+            stopped,
         },
         Ok(Err(io)) => WrapperRun {
             stdout,
             stderr,
             status: Err(format!("the update wrapper did not finish: {io}")),
+            stopped,
         },
-        Ok(Ok(status)) => WrapperRun { stdout, stderr, status: Ok(status) },
+        Ok(Ok(status)) => WrapperRun { stdout, stderr, status: Ok(status), stopped },
     }
 }
 

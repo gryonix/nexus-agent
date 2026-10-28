@@ -388,17 +388,47 @@ fn read_parts() -> pb::BackupPartChoice {
 fn parse_parts(text: &str) -> pb::BackupPartChoice {
     let mut regular = DEFAULT_BACKUP_PARTS.to_string();
     let mut before_update = DEFAULT_UPDATE_PARTS.to_string();
+    let mut own: std::collections::BTreeMap<String, (Option<String>, Option<String>)> = Default::default();
     for line in text.lines() {
         if let Some(value) = shell_value(line, "BACKUP_PARTS") {
             regular = value.to_string();
         } else if let Some(value) = shell_value(line, "UPDATE_PARTS") {
             before_update = value.to_string();
+        } else if let Some((service, update, value)) = service_line(line) {
+            let entry = own.entry(service).or_default();
+            if update { entry.1 = Some(value.to_string()) } else { entry.0 = Some(value.to_string()) }
         }
     }
+    let services = own
+        .into_iter()
+        .map(|(service, (own_regular, own_update))| {
+            let choice = pb::BackupPartChoice {
+                regular: Some(parts_from_words(own_regular.as_deref().unwrap_or(&regular))),
+                before_update: Some(parts_from_words(own_update.as_deref().unwrap_or(&before_update))),
+                services: Default::default(),
+            };
+            (service, choice)
+        })
+        .collect();
     pb::BackupPartChoice {
         regular: Some(parts_from_words(&regular)),
         before_update: Some(parts_from_words(&before_update)),
+        services,
     }
+}
+
+/// `UPDATE_PARTS_minecraft_java='…'`: service, whether update, the words
+fn service_line(line: &str) -> Option<(String, bool, &str)> {
+    let (update, rest) = match line.trim().strip_prefix("BACKUP_PARTS_") {
+        Some(rest) => (false, rest),
+        None => (true, line.trim().strip_prefix("UPDATE_PARTS_")?),
+    };
+    let (key, _) = rest.split_once('=')?;
+    if key.is_empty() || !key.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_') {
+        return None;
+    }
+    let value = shell_value(rest, key)?;
+    Some((key.replace('_', "-"), update, value))
 }
 
 /// The parts an update's backup copies, for the container path
@@ -411,15 +441,43 @@ pub async fn set_backup_parts(codec: Codec, req: pb::SetBackupPartsRequest) -> R
         return Rejection::NoWrapper.response();
     }
     let choice = req.parts.unwrap_or_default();
-    for (scope, parts) in [("backup", choice.regular), ("update", choice.before_update)] {
-        let Some(parts) = parts else { continue };
-        let mut args = vec!["set-parts", scope];
-        args.extend(parts_words(&parts));
+    if !choice.services.is_empty() && !wrapper_knows_service_parts() {
+        return wrapper_failed(UNSUPPORTED_ACTION);
+    }
+    let mut runs = parts_runs(None, &choice);
+    for (service, own) in &choice.services {
+        if !is_service_id(service) {
+            return connect_error(StatusCode::BAD_REQUEST, "invalid_argument", "not a service id");
+        }
+        runs.extend(parts_runs(Some(service), own));
+    }
+    for args in runs {
+        let args: Vec<&str> = args.iter().map(String::as_str).collect();
         if let Err(why) = run_wrapper(&args, None, QUICK_TIMEOUT_SECS).await {
             return wrapper_failed(&why);
         }
     }
     encode(codec, &read_backup_schedule())
+}
+
+/// The `set-parts` calls one choice needs
+fn parts_runs(service: Option<&str>, choice: &pb::BackupPartChoice) -> Vec<Vec<String>> {
+    [("backup", &choice.regular), ("update", &choice.before_update)]
+        .into_iter()
+        .filter_map(|(scope, parts)| {
+            let parts = parts.as_ref()?;
+            let mut args = vec!["set-parts".to_string(), scope.to_string()];
+            if let Some(service) = service {
+                args.extend(["--service".to_string(), service.to_string()]);
+            }
+            args.extend(parts_words(parts).into_iter().map(str::to_string));
+            Some(args)
+        })
+        .collect()
+}
+
+fn is_service_id(id: &str) -> bool {
+    !id.is_empty() && id.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
 }
 
 struct StoredDestination {
@@ -671,7 +729,8 @@ pub async fn run_backup(codec: Codec, req: pb::RunBackupRequest) -> Resp {
         if let Some(flag) = encryption_flag(encryption) {
             args.push(flag);
         }
-        let outcome = run_wrapper_streaming(&args, &passphrase, RUN_TIMEOUT_SECS, &sink).await;
+        let stop = crate::jobs::cancellable(&sink.journal);
+        let outcome = run_wrapper_streaming(&args, &passphrase, RUN_TIMEOUT_SECS, &sink, stop.as_ref()).await;
 
         let mut failure = outcome.as_ref().err().cloned();
         let archive = outcome.ok().as_deref().and_then(parse_archive);
@@ -760,6 +819,7 @@ async fn run_wrapper_streaming(
     passphrase: &str,
     timeout_secs: u64,
     sink: &EventSink,
+    stop: Option<&crate::jobs::CancelSwitch>,
 ) -> Result<String, String> {
     let home = wrapper_home();
     let mut child = tokio::process::Command::new(wrapper_path())
@@ -779,6 +839,14 @@ async fn run_wrapper_streaming(
     let mut err = child.stderr.take().map(|s| tokio::io::BufReader::new(s).lines());
     let mut stdout = String::new();
     let mut stderr = String::new();
+
+    let stopped = std::sync::atomic::AtomicBool::new(false);
+    let said = async {
+        stopped.store(true, std::sync::atomic::Ordering::Relaxed);
+        let _ = sink.progress("stderr", "stopping: ending the backup and removing what it wrote".into()).await;
+    };
+    let watch = crate::wrapper_stop::watch(stop, child.id(), said);
+    tokio::pin!(watch);
 
     let outcome = tokio::time::timeout(Duration::from_secs(timeout_secs), async {
         loop {
@@ -805,6 +873,7 @@ async fn run_wrapper_streaming(
                         _ => err = None,
                     }
                 }
+                () = &mut watch, if out.is_some() || err.is_some() => {}
                 else => break,
             }
         }
@@ -812,6 +881,9 @@ async fn run_wrapper_streaming(
     })
     .await;
 
+    if stopped.load(std::sync::atomic::Ordering::Relaxed) {
+        return Err("the backup was stopped".to_string());
+    }
     match outcome {
         Err(_) => Err(format!("the backup timed out after {timeout_secs}s")),
         Ok(Err(io)) => Err(format!("the backup wrapper did not finish: {io}")),
@@ -845,6 +917,11 @@ fn wrapper_failed(detail: &str) -> Resp {
 /// Whether the installed wrapper has the parts verbs
 fn wrapper_knows_parts() -> bool {
     std::fs::read_to_string(wrapper_path()).is_ok_and(|text| text.contains("set-parts)"))
+}
+
+/// Whether the installed wrapper keeps a choice per service
+fn wrapper_knows_service_parts() -> bool {
+    std::fs::read_to_string(wrapper_path()).is_ok_and(|text| text.contains("= --service ]"))
 }
 
 /// Whether the installed wrapper has the USB drive verbs
@@ -1375,6 +1452,31 @@ mod tests {
         let regular = choice.regular.unwrap();
         assert!(!regular.files && !regular.settings && regular.databases);
         assert_eq!(choice.before_update.unwrap(), pb::BackupParts::default());
+    }
+
+    #[test]
+    fn a_service_keeps_its_own_choice_and_borrows_the_rest() {
+        let choice = parse_parts(
+            "BACKUP_PARTS='databases'\nUPDATE_PARTS_minecraft_java='files'\nUPDATE_PARTS_Bad='files'\n",
+        );
+        assert_eq!(choice.services.len(), 1, "{:?}", choice.services.keys());
+        let own = &choice.services["minecraft-java"];
+        assert!(own.before_update.unwrap().files && !own.before_update.unwrap().databases);
+        assert_eq!(own.regular, choice.regular, "the shared regular choice applies");
+    }
+
+    #[test]
+    fn a_service_choice_becomes_its_own_set_parts_calls() {
+        let own = pb::BackupPartChoice {
+            regular: None,
+            before_update: Some(pb::BackupParts { files: false, settings: true, databases: true }),
+            services: Default::default(),
+        };
+        assert_eq!(
+            parts_runs(Some("immich"), &own),
+            vec![vec!["set-parts", "update", "--service", "immich", "settings", "databases"]]
+        );
+        assert!(!is_service_id("bad;x") && is_service_id("minecraft-java"));
     }
 
     #[test]
