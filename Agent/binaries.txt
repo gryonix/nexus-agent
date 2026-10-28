@@ -1,3 +1,0 @@
-# Signed agent binaries; a build from source is the fallback
-binary 26.10.28 aarch64 https://github.com/gryonix/nexus-agent/releases/download/bin-26.10.28/gryonixnexusd-26.10.28-aarch64 4bf42891ddf6e08e02d69a9fe79325e416c35600ed9b9bfb1374d6e3bf5cab26 UGzTzS9xFW5+1Hc3roxBbTj7CsW2KUZhzEquCxii81TdT4w4PkoPLDYrf4TyAOgLgMbwWrTqQu4QR7XnFtn9BQ==
-binary 26.10.28 x86_64 https://github.com/gryonix/nexus-agent/releases/download/bin-26.10.28/gryonixnexusd-26.10.28-x86_64 091ec38cb11ab5756568aaf0c649a5766e8db8c20a5872805d6e5f0891d371b5 bzvpr2ZvYLLBq/0mahYCYAxSeVyAePDGp3tNMxTEar8rjInSqA21THAS16kwhuzW8LV9oJJyAJfnQI6g5yu/DQ==

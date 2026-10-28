@@ -433,7 +433,7 @@ fn may_apply_by_itself(state: &ApplyState, version: &str, busy: bool) -> bool {
 }
 
 fn anything_running() -> bool {
-    crate::jobs::any_running() || crate::install::journal::any_running()
+    crate::jobs::any_running() || crate::install::journal::any_running() || crate::awg_kernel::busy()
 }
 
 /// Applies a found update when switched on and nothing runs

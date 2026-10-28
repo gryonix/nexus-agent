@@ -119,9 +119,11 @@ fn kernel_facts() -> crate::pb::VpnSpeedFacts {
     } else {
         state.status
     };
+    // While it works, the note says how far it got
+    let note = if status == "working" { crate::awg_kernel::current_progress() } else { state.note };
     crate::pb::VpnSpeedFacts {
         amnezia_kernel_status: status,
-        amnezia_kernel_note: state.note,
+        amnezia_kernel_note: note,
         amnezia_kernel_possible: crate::awg_kernel::supported(&os)
             && (crate::awg_kernel::module_loaded() || free >= crate::awg_kernel::NEEDED_FREE_BYTES),
         ..Default::default()

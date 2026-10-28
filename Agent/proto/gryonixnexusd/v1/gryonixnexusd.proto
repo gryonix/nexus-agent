@@ -2803,7 +2803,7 @@ message VpnSpeedFacts {
   uint32 client_mtu = 6;
   // AmneziaWG in the kernel: off, working, on or failed.
   string amnezia_kernel_status = 7;
-  // Why it failed, in the agent's words; empty otherwise.
+  // Why it failed, in the agent's words; while working, how far it got as "3/4"; empty otherwise.
   string amnezia_kernel_note = 8;
   // This server can build the module (Debian or Ubuntu, enough disk).
   bool amnezia_kernel_possible = 9;

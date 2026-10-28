@@ -8,6 +8,9 @@ use std::time::Duration;
 use serde::{Deserialize, Serialize};
 
 const STATE_FILE: &str = "awg-kernel.json";
+const LOG_FILE: &str = "awg-kernel.log";
+/// The scripts' own unit, which outlives an agent restart
+const UNIT: &str = "gryonixnexusd-awg-kernel";
 const CONTAINER: &str = "awgvpn";
 /// Free disk the module, headers and compiler need
 pub const NEEDED_FREE_BYTES: i64 = 1 << 30;
@@ -34,6 +37,15 @@ fn state_path() -> PathBuf {
 
 pub fn load() -> State {
     std::fs::read_to_string(state_path()).ok().and_then(|text| serde_json::from_str(&text).ok()).unwrap_or_default()
+}
+
+fn log_path() -> PathBuf {
+    crate::util::state_dir().join(LOG_FILE)
+}
+
+/// The switch is being worked on by this agent
+pub fn busy() -> bool {
+    WORKING.load(Ordering::SeqCst)
 }
 
 fn save(state: &State) {
@@ -83,25 +95,25 @@ pub fn enable_script(suite: &str) -> String {
 export DEBIAN_FRONTEND=noninteractive
 step() {{ echo "STEP $*"; }}
 missing() {{ for p in "$@"; do dpkg -s "$p" >/dev/null 2>&1 || printf '%s ' "$p"; done; }}
-step "installing kernel headers and build tools"
+step 1/4 "installing kernel headers and build tools"
 apt-get update -qq
 NEW="$(missing "linux-headers-$(uname -r)" dkms build-essential curl ca-certificates)"
 [ -z "$NEW" ] || apt-get install -y -qq $NEW >/dev/null
 echo "INSTALLED $NEW"
-step "adding the Amnezia package source"
+step 2/4 "adding the Amnezia package source"
 install -d -m 0755 /etc/apt/keyrings
 curl -fsSL 'https://launchpad.net/api/1.0/~amnezia/+archive/ubuntu/ppa?ws.op=getSigningKeyData' \
   | sed -e 's/^"//' -e 's/"$//' -e 's/\\n/\n/g' > /etc/apt/keyrings/amnezia-ppa.asc
 echo "deb [signed-by=/etc/apt/keyrings/amnezia-ppa.asc] https://ppa.launchpadcontent.net/amnezia/ppa/ubuntu {suite} main" \
   > /etc/apt/sources.list.d/gryonixnexus-amnezia.list
 apt-get update -qq
-step "building the AmneziaWG module"
+step 3/4 "building the AmneziaWG module"
 NEW="$(missing amneziawg)"
 [ -z "$NEW" ] || apt-get install -y -qq $NEW >/dev/null
 echo "INSTALLED $NEW"
 modprobe amneziawg
 [ -d /sys/module/amneziawg ]
-step "restarting AmneziaWG on the module"
+step 4/4 "restarting AmneziaWG on the module"
 docker restart {CONTAINER} >/dev/null
 for _ in $(seq 30); do
   docker exec {CONTAINER} ip link show wg0 >/dev/null 2>&1 && break
@@ -109,7 +121,7 @@ for _ in $(seq 30); do
 done
 docker exec {CONTAINER} ip link show wg0 >/dev/null
 if docker exec {CONTAINER} pgrep amneziawg-go >/dev/null 2>&1; then echo "still a program" >&2; exit 3; fi
-echo "DONE"
+echo "{DONE_ON}"
 "#
     )
 }
@@ -127,7 +139,7 @@ rm -f /etc/apt/sources.list.d/gryonixnexus-amnezia.list /etc/apt/keyrings/amnezi
 [ -n "{packages}" ] && apt-get purge -y -qq {packages} >/dev/null 2>&1 || true
 apt-get autoremove -y -qq >/dev/null 2>&1 || true
 docker start {CONTAINER} >/dev/null
-echo "DONE"
+echo "{DONE_OFF}"
 "#
     )
 }
@@ -143,27 +155,112 @@ pub fn installed_in(output: &str) -> Vec<String> {
 
 /// The last step the script reached, for the note
 pub fn last_step(output: &str) -> String {
-    output.lines().rev().find_map(|line| line.strip_prefix("STEP ")).unwrap_or("").to_string()
+    let step = output.lines().rev().find_map(|line| line.strip_prefix("STEP ")).unwrap_or("");
+    match step.split_once(' ') {
+        Some((count, name)) if is_count(count) => name.to_string(),
+        _ => step.to_string(),
+    }
 }
 
-async fn run(script: &str) -> (bool, String) {
-    let child = tokio::process::Command::new("bash")
-        .args(["-c", script])
+/// How far the script got, as "3/4"
+pub fn progress(output: &str) -> String {
+    let step = output.lines().rev().find_map(|line| line.strip_prefix("STEP ")).unwrap_or("");
+    step.split_whitespace().next().filter(|count| is_count(count)).unwrap_or("").to_string()
+}
+
+fn is_count(word: &str) -> bool {
+    word.split_once('/')
+        .is_some_and(|(n, m)| n.parse::<u8>().is_ok() && m.parse::<u8>().is_ok())
+}
+
+/// How far the switch got, from the script's log
+pub fn current_progress() -> String {
+    std::fs::read_to_string(log_path()).map(|log| progress(&log)).unwrap_or_default()
+}
+
+const DONE_ON: &str = "DONE on";
+const DONE_OFF: &str = "DONE off";
+
+fn systemd_run_bin() -> String {
+    std::env::var("GRYONIXNEXUSD_AWG_SYSTEMD_RUN_BIN").unwrap_or_else(|_| "systemd-run".to_string())
+}
+
+fn systemctl_bin() -> String {
+    std::env::var("GRYONIXNEXUSD_AWG_SYSTEMCTL_BIN").unwrap_or_else(|_| "systemctl".to_string())
+}
+
+async fn unit_active() -> bool {
+    tokio::process::Command::new(systemctl_bin())
+        .args(["is-active", "--quiet", UNIT])
         .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .kill_on_drop(true)
-        .spawn();
-    let Ok(child) = child else { return (false, "could not start bash".to_string()) };
-    match tokio::time::timeout(RUN_LIMIT, child.wait_with_output()).await {
-        Ok(Ok(output)) => {
-            let mut text = String::from_utf8_lossy(&output.stdout).into_owned();
-            text.push_str(&String::from_utf8_lossy(&output.stderr));
-            (output.status.success(), text)
+        .status()
+        .await
+        .is_ok_and(|status| status.success())
+}
+
+/// Waits for a running unit; false when stopped
+async fn wait_for_unit() -> bool {
+    let deadline = tokio::time::Instant::now() + RUN_LIMIT;
+    while unit_active().await {
+        if tokio::time::Instant::now() >= deadline {
+            let _ = tokio::process::Command::new(systemctl_bin()).args(["stop", UNIT]).stdin(Stdio::null()).status().await;
+            return false;
         }
-        Ok(Err(err)) => (false, err.to_string()),
-        Err(_) => (false, "it took longer than 20 minutes".to_string()),
+        tokio::time::sleep(Duration::from_secs(5)).await;
     }
+    true
+}
+
+/// The log ends with the line the script prints last
+fn finished(log: &str, done: &str) -> bool {
+    log.lines().rev().find(|line| !line.trim().is_empty()) == Some(done)
+}
+
+/// Runs the script outside the sandbox, where apt can write
+async fn run(script: &str, done: &str) -> (bool, String) {
+    let log = log_path();
+    // A unit still running is a restarted agent's: await it
+    if !unit_active().await {
+        let _ = std::fs::remove_file(&log);
+        let wrapped = format!("exec >'{}' 2>&1\n{script}", log.display());
+        let started = tokio::process::Command::new(systemd_run_bin())
+            .args([
+                "--quiet".to_string(),
+                "--collect".to_string(),
+                "--wait".to_string(),
+                format!("--unit={UNIT}"),
+                "--service-type=oneshot".to_string(),
+                format!("--property=TimeoutStartSec={}", RUN_LIMIT.as_secs()),
+                "/bin/bash".to_string(),
+                "-c".to_string(),
+                wrapped,
+            ])
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::piped())
+            .kill_on_drop(true)
+            .output();
+        match tokio::time::timeout(RUN_LIMIT + Duration::from_secs(60), started).await {
+            Ok(Ok(output)) if !log.exists() => {
+                let why = String::from_utf8_lossy(&output.stderr).trim().to_string();
+                return (false, if why.is_empty() { "the script did not start".to_string() } else { why });
+            }
+            Ok(Ok(_)) => {}
+            Ok(Err(err)) => return (false, format!("could not start systemd-run: {err}")),
+            Err(_) => {}
+        }
+    }
+    if !wait_for_unit().await {
+        return (false, "it took longer than 20 minutes".to_string());
+    }
+    let text = std::fs::read_to_string(&log).unwrap_or_default();
+    if finished(&text, done) {
+        return (true, text);
+    }
+    if text.lines().all(|line| line.starts_with("STEP ") || line.starts_with("INSTALLED ")) {
+        return (false, format!("{text}it stopped, maybe after 20 minutes"));
+    }
+    (false, text)
 }
 
 fn tail(text: &str) -> String {
@@ -206,15 +303,20 @@ async fn enable() {
         state.note = "less than 1 GB free on the disk".to_string();
         return save(&state);
     }
-    let (ok, output) = run(&enable_script(&suite(&os))).await;
-    state.installed = installed_in(&output);
+    let (ok, output) = run(&enable_script(&suite(&os)), DONE_ON).await;
+    for package in installed_in(&output) {
+        if !state.installed.contains(&package) {
+            state.installed.push(package);
+        }
+    }
+    save(&state);
     if ok {
         state.status = "on".to_string();
         state.note = String::new();
         return save(&state);
     }
     let step = last_step(&output);
-    let (_, _) = run(&disable_script(&state.installed)).await;
+    let (_, _) = run(&disable_script(&state.installed), DONE_OFF).await;
     state.installed.clear();
     state.status = "failed".to_string();
     state.note = format!("{step}: {}", tail(&output));
@@ -223,16 +325,21 @@ async fn enable() {
 
 async fn disable() {
     let mut state = load();
-    let (ok, output) = run(&disable_script(&state.installed)).await;
+    let (ok, output) = run(&disable_script(&state.installed), DONE_OFF).await;
     state.installed.clear();
     state.status = if ok { "off" } else { "failed" }.to_string();
     state.note = if ok { String::new() } else { tail(&output) };
     save(&state);
 }
 
-/// Turns the module on once for a server with AmneziaWG
+/// Turns the module on once; finishes a switch left working
 pub async fn refresh() {
     let state = load();
+    if state.status == "working" && !WORKING.load(Ordering::SeqCst) {
+        tracing::info!("finishing the AmneziaWG kernel switch the last agent started");
+        switch(state.wanted.unwrap_or(true));
+        return;
+    }
     if state.wanted.is_some() || WORKING.load(Ordering::SeqCst) || module_loaded() {
         return;
     }
@@ -292,7 +399,7 @@ mod tests {
         assert!(script.contains("modprobe amneziawg"));
         assert!(script.contains("pgrep amneziawg-go"), "a container still on the program is not a success");
         assert!(script.contains("dpkg -s"), "only packages the server lacked are counted as ours");
-        assert!(script.trim_end().ends_with("echo \"DONE\""));
+        assert!(script.trim_end().ends_with("echo \"DONE on\""));
     }
 
     #[test]
@@ -305,9 +412,12 @@ mod tests {
 
     #[test]
     fn the_output_names_what_it_installed_and_where_it_stopped() {
-        let output = "STEP installing kernel headers\nINSTALLED linux-headers-6.1.0-26-amd64 dkms build-essential\nSTEP building the AmneziaWG module\nE: Unable to locate package amneziawg\n";
+        let output = "STEP 1/4 installing kernel headers\nINSTALLED linux-headers-6.1.0-26-amd64 dkms build-essential\nSTEP 3/4 building the AmneziaWG module\nE: Unable to locate package amneziawg\n";
         assert_eq!(installed_in(output), vec!["linux-headers-6.1.0-26-amd64", "dkms", "build-essential"]);
         assert_eq!(last_step(output), "building the AmneziaWG module");
+        assert_eq!(progress(output), "3/4");
+        assert_eq!(progress("STEP moving AmneziaWG back to the program\n"), "", "a step without a count shows none");
+        assert_eq!(last_step("STEP moving AmneziaWG back to the program\n"), "moving AmneziaWG back to the program");
         assert_eq!(tail(output), "E: Unable to locate package amneziawg");
     }
 
@@ -317,6 +427,89 @@ mod tests {
         let text = serde_json::to_string(&state).unwrap();
         assert_eq!(serde_json::from_str::<State>(&text).unwrap(), state);
         assert_eq!(serde_json::from_str::<State>("{\"status\":\"off\",\"note\":\"\"}").unwrap().wanted, None);
+    }
+
+    #[test]
+    fn only_the_expected_last_line_counts_as_done() {
+        assert!(finished("STEP 4/4 restarting\nDONE on\n\n", DONE_ON));
+        assert!(!finished("STEP moving back\nDONE off\n", DONE_ON), "a finished rollback is not a finished switch-on");
+        assert!(!finished("STEP 3/4 building\nDONE on\nE: late\n", DONE_ON));
+    }
+
+    fn stub(dir: &std::path::Path, name: &str, body: &str) -> String {
+        use std::os::unix::fs::PermissionsExt;
+        let path = dir.join(name);
+        std::fs::write(&path, body).unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+        path.display().to_string()
+    }
+
+    /// Runs the script in place; no unit is ever active
+    fn stub_host(name: &str) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!("gryonixnexusd-awg-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::env::set_var("GRYONIXNEXUSD_STATE_DIR", &dir);
+        std::env::set_var(
+            "GRYONIXNEXUSD_AWG_SYSTEMD_RUN_BIN",
+            stub(&dir, "systemd-run", "#!/bin/sh\necho \"$@\" > \"$(dirname \"$0\")/args\"\nwhile [ \"$1\" != /bin/bash ]; do shift; done\nexec \"$@\"\n"),
+        );
+        std::env::set_var("GRYONIXNEXUSD_AWG_SYSTEMCTL_BIN", stub(&dir, "systemctl", "#!/bin/sh\nexit 3\n"));
+        dir
+    }
+
+    #[tokio::test]
+    async fn the_script_runs_in_its_own_unit_and_its_log_decides() {
+        let _guard = crate::util::STATE_DIR_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let dir = stub_host("run");
+        let (ok, output) = run("echo 'STEP 1/4 headers'\necho 'INSTALLED dkms'\necho 'DONE on'\n", DONE_ON).await;
+        assert!(ok, "{output}");
+        assert_eq!(installed_in(&output), vec!["dkms"]);
+        let args = std::fs::read_to_string(dir.join("args")).unwrap();
+        assert!(args.contains("--unit=gryonixnexusd-awg-kernel"), "{args}");
+        assert!(args.contains("--wait"), "{args}");
+        assert!(args.contains("TimeoutStartSec=1200"), "{args}");
+        assert_eq!(current_progress(), "1/4");
+
+        let (ok, output) = run("echo 'STEP 3/4 building'\necho 'E: no package' >&2\nexit 100\n", DONE_ON).await;
+        assert!(!ok);
+        assert_eq!(last_step(&output), "building");
+        assert_eq!(tail(&output), "E: no package");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn a_unit_an_earlier_agent_started_is_waited_for_not_started_again() {
+        let _guard = crate::util::STATE_DIR_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let dir = stub_host("adopt");
+        std::fs::write(dir.join(LOG_FILE), "STEP 4/4 restarting\nINSTALLED amneziawg\nDONE on\n").unwrap();
+        // Active on the first ask, finished on the next
+        let systemctl = stub(&dir, "systemctl", "#!/bin/sh\nf=\"$(dirname \"$0\")/asked\"\n[ -e \"$f\" ] && exit 3\ntouch \"$f\"\nexit 0\n");
+        std::env::set_var("GRYONIXNEXUSD_AWG_SYSTEMCTL_BIN", systemctl);
+        let (ok, output) = run("echo 'DONE off'\n", DONE_ON).await;
+        assert!(ok, "{output}");
+        assert_eq!(installed_in(&output), vec!["amneziawg"]);
+        assert!(!dir.join("args").exists(), "no second run was started");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn a_switch_left_working_by_an_earlier_agent_is_picked_up() {
+        let _guard = crate::util::STATE_DIR_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let dir = stub_host("resume");
+        save(&State { wanted: Some(false), status: "working".into(), note: String::new(), installed: vec![] });
+        assert!(!busy());
+        refresh().await;
+        for _ in 0..100 {
+            if !busy() && load().status != "working" {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        let state = load();
+        assert_ne!(state.status, "working", "the stale switch was finished: {state:?}");
+        assert!(dir.join("args").exists(), "the switch ran again");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
