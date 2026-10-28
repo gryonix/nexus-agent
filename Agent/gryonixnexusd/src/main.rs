@@ -374,6 +374,11 @@ async fn keep_host_tools(store: &Arc<Mutex<state::Store>>) {
     if !tuned.is_empty() {
         tracing::info!(interfaces = ?tuned, "VPN interfaces set to MTU {}", install::vpn::mtu::MTU);
     }
+    match install::vpn::port_share::refresh().await {
+        Ok(true) => tracing::info!("AmneziaWG on the shared port bypasses docker-proxy"),
+        Ok(false) => {}
+        Err(err) => tracing::warn!(%err, "could not refresh the shared VPN port"),
+    }
     let language = install::execute::language_from_code(&notify::load(store).language);
     match install::execute::refresh_mesh_root_page(language).await {
         Ok(true) => tracing::info!("the mesh address shows a page now"),
