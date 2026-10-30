@@ -525,6 +525,22 @@ async fn resolve(protocol: &str) -> Result<(&'static str, Panel), Refusal> {
     Ok((resolved, Panel::open().await?))
 }
 
+/// Devices per installed protocol, by catalog id
+pub async fn device_counts() -> Option<Vec<(&'static str, usize)>> {
+    let installed = declared_protocols()?;
+    let panel = Panel::open().await.ok()?;
+    let mut counts = Vec::new();
+    for (name, catalog) in PROTOCOLS {
+        if !installed.iter().any(|declared| declared == name) {
+            continue;
+        }
+        if let Ok(clients) = panel.list(name).await {
+            counts.push((*catalog, clients.len()));
+        }
+    }
+    Some(counts)
+}
+
 fn declared_protocols() -> Option<Vec<String>> {
     let text = std::fs::read_to_string(services_path()).ok()?;
     parse_declared_protocols(&text)

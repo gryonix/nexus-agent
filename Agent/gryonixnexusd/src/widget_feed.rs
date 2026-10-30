@@ -55,13 +55,23 @@ fn body(server_id: &str, summary: Value, now: i64) -> Vec<u8> {
 }
 
 async fn summary() -> Value {
-    let (services, security, metrics) = tokio::join!(services(), crate::security::status(), metrics());
+    let (services, security, metrics, vpn) =
+        tokio::join!(services(), crate::security::status(), metrics(), crate::vpn_clients::device_counts());
     json!({
         "services": services,
         "security": security_part(&security),
         "backups": backups_part(&crate::backup::read_backup_schedule()),
         "metrics": metrics,
+        "vpn": vpn_part(vpn),
     })
+}
+
+/// VPN devices per protocol, or null without the panel
+fn vpn_part(counts: Option<Vec<(&str, usize)>>) -> Value {
+    match counts {
+        Some(counts) => Value::Object(counts.into_iter().map(|(id, n)| (id.to_string(), json!(n))).collect()),
+        None => Value::Null,
+    }
 }
 
 async fn services() -> Value {
@@ -143,6 +153,13 @@ mod tests {
         assert_eq!(cadence("every:6h@:15"), (Some(6), None));
         assert_eq!(cadence("every:1d@04:30"), (None, Some(1)));
         assert_eq!(cadence("off"), (None, None));
+    }
+
+    #[test]
+    fn vpn_devices_are_counted_per_protocol() {
+        let part = vpn_part(Some(vec![("wireguard-vpn", 3), ("amnezia-wg", 0)]));
+        assert_eq!(part, json!({ "wireguard-vpn": 3, "amnezia-wg": 0 }));
+        assert!(vpn_part(None).is_null(), "a server without the panel sends nothing");
     }
 
     #[test]
