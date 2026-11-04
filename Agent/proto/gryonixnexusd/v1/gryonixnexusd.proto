@@ -152,6 +152,9 @@ service Backup {
   // of them are used, where archives go and whether the copies are encrypted.
   rpc SetBackupDrives(SetBackupDrivesRequest) returns (BackupSchedulePolicy);
 
+  // Which parts regular and pre-update backups copy.
+  rpc SetBackupParts(SetBackupPartsRequest) returns (BackupSchedulePolicy);
+
   // Copies one archive from a drive into the service's staging folder, so
   // the ordinary restore path can read it. Answers with the staged path.
   rpc FetchDriveBackup(FetchDriveBackupRequest) returns (BackupArchive);
@@ -333,6 +336,14 @@ service Lockdown {
   // wrapper's validation is authoritative, and echoing the request would show
   // the owner a guard that is not the one actually in effect.
   rpc SetLockdown(SetLockdownRequest) returns (LockdownState);
+
+  // The paths each site answers past the guard — the APIs apps use.
+  // Read from the Caddyfile itself, so it is what Caddy serves.
+  rpc GetOpenAPI(GetOpenAPIRequest) returns (OpenAPIState);
+
+  // Replaces one service's open paths and rewrites its sites. The answer is
+  // the state read back from the Caddyfile afterwards.
+  rpc SetOpenAPI(SetOpenAPIRequest) returns (OpenAPIState);
 }
 
 // The host's own intrusion defence — CrowdSec and its nftables bouncer.
@@ -387,6 +398,10 @@ service Security {
   // `SetSshPasswordLogin`: a close the guard refuses comes back with the
   // account still open and a `detail` that says why.
   rpc SetSshKeyOnlyUsers(SetSshKeyOnlyUsersRequest) returns (SshUsers);
+
+  // Puts the app's key on one login account, so the terminal can sign in
+  // as it. The answer is the accounts re-read from the host.
+  rpc AuthorizeAppKey(AuthorizeAppKeyRequest) returns (SshUsers);
 
   // Run the host's intrusion defence the way every other service on the box can
   // be run: start it, stop it, restart it, bring it up to date, put it back, or
@@ -1981,6 +1996,30 @@ message BackupSchedulePolicy {
 
   // USB drives that take a copy too. Absent on hosts whose wrapper predates them.
   BackupDrives drives = 9;
+
+  // What backups copy. Absent on hosts whose wrapper predates it.
+  BackupPartChoice parts = 10;
+}
+
+// One set of parts a backup copies.
+message BackupParts {
+  // Photos, documents, mail and other user files.
+  bool files = 1;
+  bool settings = 2;
+  bool databases = 3;
+}
+
+message BackupPartChoice {
+  // Scheduled runs and the backup button.
+  BackupParts regular = 1;
+  // The backup an update takes first.
+  BackupParts before_update = 2;
+  // A service's own choice, by catalog id; the shared one applies otherwise.
+  map<string, BackupPartChoice> services = 3;
+}
+
+message SetBackupPartsRequest {
+  BackupPartChoice parts = 1;
 }
 
 message SetBackupScheduleRequest {
@@ -2241,6 +2280,26 @@ message SetLockdownRequest {
   repeated string hosts = 2;
 }
 
+message GetOpenAPIRequest {}
+
+// One service's sites and the paths they answer to everyone.
+message OpenAPISite {
+  string service_id = 1;
+  repeated string paths = 2;
+  // False when the site's shape is not one the agent can rewrite.
+  bool editable = 3;
+}
+
+message OpenAPIState {
+  repeated OpenAPISite sites = 1;
+}
+
+message SetOpenAPIRequest {
+  string service_id = 1;
+  // Empty closes every API of the service.
+  repeated string paths = 2;
+}
+
 // ─────────────────────────── Security types ────────────────────────────
 
 message GetSecurityStatusRequest {}
@@ -2407,6 +2466,13 @@ message SetSshKeyOnlyUsersRequest {
   repeated string users = 2;
   string login_user = 3;
   string app_public_key = 4;
+}
+
+message AuthorizeAppKeyRequest {
+  // One of the accounts `ListSshUsers` names; anything else is refused.
+  string user = 1;
+  string login_user = 2;
+  string app_public_key = 3;
 }
 
 // ─────────────────────────── Uninstall types ───────────────────────────
@@ -2727,6 +2793,47 @@ service Vpn {
   // machine of the deployment, and unpacked there before installing.
   rpc ExportVpnState(ExportVpnStateRequest) returns (VpnState);
   rpc ImportVpnState(ImportVpnStateRequest) returns (ImportVpnStateResponse);
+
+  // What decides the tunnels' speed on this host: each interface's MTU,
+  // kernel or userspace, the CPU, and UDP packets the host dropped.
+  rpc GetVpnSpeedFacts(GetVpnSpeedFactsRequest) returns (VpnSpeedFacts);
+
+  // Moves AmneziaWG into the kernel module, or back onto the program.
+  // Runs in the background; the facts that come back say how it goes.
+  rpc SetAmneziaKernel(SetAmneziaKernelRequest) returns (VpnSpeedFacts);
+}
+
+message SetAmneziaKernelRequest {
+  bool enabled = 1;
+}
+
+message GetVpnSpeedFactsRequest {}
+
+message VpnInterfaceFacts {
+  // `wireguard` or `amneziawg`, as the panel names them.
+  string protocol = 1;
+  string interface = 2;
+  uint32 mtu = 3;
+  // The tunnel runs in the kernel; false is a userspace program.
+  bool kernel = 4;
+}
+
+message VpnSpeedFacts {
+  repeated VpnInterfaceFacts interfaces = 1;
+  uint32 cpu_cores = 2;
+  // One-minute load average.
+  double load = 3;
+  // UDP packets the host dropped since it started, by reason.
+  uint64 udp_receive_errors = 4;
+  uint64 udp_buffer_errors = 5;
+  // The MTU phones are given.
+  uint32 client_mtu = 6;
+  // AmneziaWG in the kernel: off, working, on or failed.
+  string amnezia_kernel_status = 7;
+  // Why it failed, in the agent's words; while working, how far it got as "3/4"; empty otherwise.
+  string amnezia_kernel_note = 8;
+  // This server can build the module (Debian or Ubuntu, enough disk).
+  bool amnezia_kernel_possible = 9;
 }
 
 // The protocol a request is about, as the PANEL names it — `wireguard`,
@@ -3692,6 +3799,20 @@ message NotifySettings {
   bool custom_checks = 13;
   // App public keys whose SSH sign-ins stay quiet.
   repeated string quiet_keys = 14;
+  // The phones and computers that get this server's pushes.
+  repeated NotifyDevice registered = 15;
+}
+
+// One device that gets this server's pushes.
+message NotifyDevice {
+  // "apns" or "fcm".
+  string platform = 1;
+  string token = 2;
+  // The device's name as it registered, e.g. "iPhone".
+  string name = 3;
+  string app_version = 4;
+  // Unix seconds of the registration; 0 when older than this field.
+  int64 added_at = 5;
 }
 
 message GetNotifySettingsRequest {}
@@ -3719,6 +3840,10 @@ message RegisterNotifyDeviceRequest {
   repeated string muted = 5;
   // SHA-256 (hex) of a secret only the phone holds; lets the phone remove itself from the relay.
   string device_proof = 6;
+  // The device's name, shown in the list of devices.
+  string name = 7;
+  // The sound chosen per kind of alert, e.g. "backups" -> "chime"; "none" is silent.
+  map<string, string> sounds = 8;
 }
 
 message UnregisterNotifyDeviceRequest {

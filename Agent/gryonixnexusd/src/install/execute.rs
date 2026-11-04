@@ -607,7 +607,7 @@ pub fn patch_doh_insecure(yaml: &str) -> (String, Option<DohSpelling>) {
 
 // ─────────────────────────── language ───────────────────────────
 
-fn language_from_code(code: &str) -> Language {
+pub fn language_from_code(code: &str) -> Language {
     match code {
         "de" => Language::De,
         "fr" => Language::Fr,
@@ -2747,6 +2747,63 @@ async fn write_headscale_files(
     Ok(())
 }
 
+/// Keeps this server's own mesh node current and joined
+pub async fn keep_mesh_node_joined() {
+    let Some(dir) = mesh_node_dir().await else { return };
+    let path = dir.join("docker-compose.yml");
+    let Ok(compose) = std::fs::read_to_string(&path) else { return };
+    let mut changed = false;
+    if let Some(updated) = tailscale::with_current_env(&compose) {
+        changed = write_managed_text(&path, updated).is_ok();
+    }
+    if tailscale::joins_own_control(&compose) && mesh_node_key_expired().await {
+        changed |= renew_mesh_join_key(&dir).await;
+    }
+    if !changed {
+        return;
+    }
+    match run_docker_captured(&compose_up_args(tailscale::COMPOSE_PROJECT, &dir), Duration::from_secs(180)).await {
+        Ok(run) if run.success => tracing::info!("restarted the mesh node to rejoin"),
+        Ok(run) => tracing::warn!(why = %run.why(), "the mesh node did not restart"),
+        Err(why) => tracing::warn!(%why, "the mesh node did not restart"),
+    }
+}
+
+/// Where the mesh node's compose file lives, if installed
+async fn mesh_node_dir() -> Option<PathBuf> {
+    let label = "{{index .Config.Labels \"com.docker.compose.project.working_dir\"}}";
+    let inspect = ["inspect".to_string(), "--format".to_string(), label.to_string(), tailscale::CONTAINER.to_string()];
+    let run = run_docker_captured(&inspect, Duration::from_secs(15)).await.ok()?;
+    let dir = run.stdout.trim();
+    (run.success && !dir.is_empty()).then(|| PathBuf::from(dir))
+}
+
+async fn mesh_node_key_expired() -> bool {
+    let logs = ["logs".to_string(), "--tail".to_string(), "80".to_string(), tailscale::CONTAINER.to_string()];
+    match run_docker_captured(&logs, Duration::from_secs(15)).await {
+        Ok(run) => tailscale::join_key_refused(&format!("{}{}", run.stdout, run.stderr)),
+        Err(_) => false,
+    }
+}
+
+async fn renew_mesh_join_key(dir: &Path) -> bool {
+    let key = match mint_mesh_join_key().await {
+        Ok(key) => key,
+        Err(why) => {
+            tracing::warn!(%why, "no fresh join key for the mesh node");
+            return false;
+        }
+    };
+    let file = ManagedFile { path: dir.join(".env"), contents: format!("TS_AUTHKEY={key}\n"), mode: Some(0o600) };
+    match write_managed_files(&[file]) {
+        Ok(_) => true,
+        Err(err) => {
+            tracing::warn!(%err, "could not store the mesh node's fresh key");
+            false
+        }
+    }
+}
+
 /// Opens the DERP relay's STUN port, saying what happened
 async fn open_stun_port(sink: &EventSink) {
     let ports = vec![firewall::Port::udp(headscale::STUN_PORT)];
@@ -2794,7 +2851,7 @@ async fn install_mesh_node_steps(input: &Input, own_control: bool, sink: &EventS
     let state_dir = dir.join("state");
     let _ = sink.step("adding this server to its own mesh").await;
     prepare_mesh_node_files(input, &dir, &state_dir, sink).await?;
-    if !mesh_node_has_identity(&state_dir) {
+    if own_control || !mesh_node_has_identity(&state_dir) {
         store_mesh_join_key(input, own_control, &dir, sink).await?;
     }
 
@@ -4149,7 +4206,7 @@ async fn install_immich_steps(input: &Input, sink: &EventSink) -> Result<(), Str
     Ok(())
 }
 
-async fn run_docker_capture(args: &[String], timeout: Duration) -> Result<(bool, String), String> {
+pub(crate) async fn run_docker_capture(args: &[String], timeout: Duration) -> Result<(bool, String), String> {
     let output = tokio::time::timeout(
         timeout,
         tokio::process::Command::new(docker_bin())
@@ -6343,7 +6400,7 @@ fn write_caddy_site_locked(names: &[String], site: &str) -> Result<(), String> {
             arm_setup_guard(&guarded)?;
         }
     }
-    let merged = caddy::merge_site(&existing, names, site);
+    let merged = crate::open_api::reapplied(&caddy::merge_site(&existing, names, site));
     if !existing.is_empty() {
         std::fs::write(CADDYFILE_PREVIOUS, &existing)
             .map_err(|err| format!("could not keep a copy of {CADDYFILE_PATH}: {err}"))?;
@@ -6445,7 +6502,9 @@ async fn open_home_doors(sink: &EventSink) {
 pub async fn refresh_portal_split_sites() -> Result<bool, String> {
     let changed = with_caddyfile_lock(|| -> Result<Option<(String, String)>, String> {
         let Ok(existing) = std::fs::read_to_string(CADDYFILE_PATH) else { return Ok(None) };
-        let upgraded = caddy::with_current_global_options(&caddy::with_current_portal_split(&existing));
+        let upgraded = crate::open_api::reapplied(&caddy::with_current_global_options(
+            &caddy::with_current_portal_split(&existing),
+        ));
         if upgraded == existing {
             return Ok(None);
         }
@@ -6458,6 +6517,54 @@ pub async fn refresh_portal_split_sites() -> Result<bool, String> {
     }
     restore_caddyfile_if_unchanged(&existing, &upgraded)?;
     Err("Caddy refused the rebuilt sites, so the old ones stay".to_string())
+}
+
+/// Gives older mesh sites a page at their root
+pub async fn refresh_mesh_root_page(language: Language) -> Result<bool, String> {
+    let changed = with_caddyfile_lock(|| -> Result<Option<(String, String)>, String> {
+        let Ok(existing) = std::fs::read_to_string(CADDYFILE_PATH) else { return Ok(None) };
+        let upgraded = super::headscale::with_root_pages(&existing, language);
+        if upgraded == existing {
+            return Ok(None);
+        }
+        std::fs::write(CADDYFILE_PATH, &upgraded).map_err(|err| format!("could not write {CADDYFILE_PATH}: {err}"))?;
+        Ok(Some((existing, upgraded)))
+    })?;
+    let Some((existing, upgraded)) = changed else { return Ok(false) };
+    if caddy_refusal().await.is_none() && run_quiet(&systemctl_bin(), &["reload", "caddy"]).await.is_ok() {
+        return Ok(true);
+    }
+    restore_caddyfile_if_unchanged(&existing, &upgraded)?;
+    Err("Caddy refused the mesh page, so the old site stays".to_string())
+}
+
+/// Rewrites one service's sites with these paths open
+pub async fn apply_open_paths(owner: &str, open: &[String]) -> Result<(), String> {
+    with_caddyfile_lock(|| -> Result<(), String> {
+        let existing = std::fs::read_to_string(CADDYFILE_PATH)
+            .map_err(|err| format!("could not read {CADDYFILE_PATH}: {err}"))?;
+        let rewritten = super::open_sites::with_open_paths(&existing, owner, open)
+            .ok_or_else(|| format!("the sites of {owner} are not in a shape the agent can change"))?;
+        std::fs::write(CADDYFILE_PREVIOUS, &existing)
+            .map_err(|err| format!("could not keep a copy of {CADDYFILE_PATH}: {err}"))?;
+        write_replacing(Path::new(CADDYFILE_PATH), &rewritten)
+    })?;
+    if let Some(why) = caddy_refusal().await {
+        restore_previous_caddyfile();
+        return Err(format!("Caddy refused the change, so the previous sites stay. Caddy said: {why}"));
+    }
+    if run_quiet(&systemctl_bin(), &["reload", "caddy"]).await.is_err() {
+        restore_previous_caddyfile();
+        let _ = run_quiet(&systemctl_bin(), &["reload", "caddy"]).await;
+        return Err("Caddy did not take the change, so the previous sites stay".to_string());
+    }
+    let _ = std::fs::remove_file(CADDYFILE_PREVIOUS);
+    Ok(())
+}
+
+/// The Caddyfile as it stands, empty when missing
+pub fn current_caddyfile() -> String {
+    std::fs::read_to_string(CADDYFILE_PATH).unwrap_or_default()
 }
 
 fn restore_caddyfile_if_unchanged(old: &str, written: &str) -> Result<(), String> {
@@ -6674,6 +6781,36 @@ fn resolve_panel_password(dir: &Path) -> io::Result<(String, bool)> {
     Ok((random_hex_12()?, false))
 }
 
+const MODULES_LOAD_DIR: &str = "/etc/modules-load.d";
+
+/// Loads WireGuard on the host, now and at every boot
+async fn load_wireguard_module() {
+    let _ = run_quiet("modprobe", &["wireguard"]).await;
+    let dir = Path::new(MODULES_LOAD_DIR);
+    if dir.is_dir() {
+        let _ = std::fs::write(dir.join("gryonixnexus-wireguard.conf"), "wireguard\n");
+    }
+}
+
+/// Takes the module right off an installed panel
+pub async fn keep_panel_without_module_right() {
+    let dir = PathBuf::from(panel::PATH);
+    let path = dir.join("docker-compose.yml");
+    let Some(updated) = std::fs::read_to_string(&path).ok().and_then(|text| panel::without_module_right(&text)) else {
+        return;
+    };
+    load_wireguard_module().await;
+    if let Err(err) = write_managed_text(&path, updated) {
+        tracing::warn!(%err, "could not narrow the VPN panel's rights");
+        return;
+    }
+    match run_docker_captured(&compose_up_args(panel::COMPOSE_PROJECT, &dir), Duration::from_secs(180)).await {
+        Ok(run) if run.success => tracing::info!("the VPN panel no longer loads kernel modules"),
+        Ok(run) => tracing::warn!(why = %run.why(), "the VPN panel did not restart"),
+        Err(why) => tracing::warn!(%why, "the VPN panel did not restart"),
+    }
+}
+
 async fn install_vpn_steps(
     input: &Input,
     protocols: &[panel::Protocol],
@@ -6724,6 +6861,7 @@ async fn install_vpn_steps(
     } else {
         let _ = sink.step("the VPN panel image is current").await;
     }
+    load_wireguard_module().await;
     let _ = sink.step("starting the VPN panel").await;
     compose_up(panel::COMPOSE_PROJECT, &dir, sink).await?;
 

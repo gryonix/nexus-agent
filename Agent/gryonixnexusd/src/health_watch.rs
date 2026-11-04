@@ -165,6 +165,23 @@ pub struct Checks {
 /// Exit codes of a container someone stopped on purpose
 const STOPPED_ON_PURPOSE: &[i32] = &[0, 137, 143];
 
+impl Problem {
+    /// The container a service problem is about
+    pub fn container(&self) -> &str {
+        self.id.strip_prefix("service:").unwrap_or(&self.subject)
+    }
+}
+
+/// How an alert names a container
+pub fn service_name(container: &str, listing: &str) -> String {
+    let mesh_owner = listing.lines().any(|line| line.split('\t').next() == Some(crate::install::headscale::CONTAINER));
+    if container == crate::install::tailscale::CONTAINER && mesh_owner {
+        format!("Headscale ({container})")
+    } else {
+        container.to_string()
+    }
+}
+
 pub fn service_problems(text: &str) -> Vec<Problem> {
     text.lines()
         .filter_map(|line| {
@@ -182,7 +199,7 @@ pub fn service_problems(text: &str) -> Vec<Problem> {
             Some(Problem {
                 id: format!("service:{name}"),
                 kind: Kind::Service,
-                subject: name.to_string(),
+                subject: service_name(name, text),
                 detail: detail.into(),
                 reason: String::new(),
             })
@@ -271,7 +288,7 @@ pub async fn probe(checks: &Checks, failed_groups: &[(String, String)]) -> Vec<P
         let format = "{{.Names}}\t{{.State}}\t{{.Status}}";
         if let Some(text) = output("docker", &["ps", "-a", "--format", format]).await {
             for mut problem in service_problems(&text) {
-                problem.reason = last_error(&problem.subject).await;
+                problem.reason = last_error(problem.container()).await;
                 found.push(problem);
             }
         }
@@ -420,6 +437,16 @@ tank/media /mnt/my\\040media zfs rw 0 0
         assert_eq!((appeared, cleared), (vec![b.clone()], vec![]));
         let (appeared, cleared) = changes(&[a.clone(), b.clone()], &[b]);
         assert_eq!((appeared, cleared), (vec![], vec![a]));
+    }
+
+    #[test]
+    fn the_mesh_node_of_headscale_is_named_after_headscale() {
+        let text = "headscale\trunning\tUp 2 hours\n\
+                    tailscale\trestarting\tRestarting (1) 3 seconds ago\n";
+        let found = service_problems(text);
+        assert_eq!(found[0].subject, "Headscale (tailscale)");
+        assert_eq!(found[0].container(), "tailscale");
+        assert_eq!(service_problems("tailscale\trestarting\tRestarting (1) 1 second ago\n")[0].subject, "tailscale");
     }
 
     #[test]

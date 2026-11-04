@@ -122,7 +122,6 @@ pub fn compose_contents(input: &Input) -> String {
     restart: unless-stopped
     cap_add:
       - NET_ADMIN
-      - SYS_MODULE
     sysctls:
       - net.ipv4.ip_forward=1
     env_file:
@@ -161,6 +160,13 @@ pub fn compose_contents(input: &Input) -> String {
         amnezia = input.amnezia_wg_path,
         mailcow = input.mailcow_path,
     )
+}
+
+const MODULE_RIGHT: &str = "      - SYS_MODULE\n";
+
+/// An older panel file, minus SYS_MODULE
+pub fn without_module_right(compose: &str) -> Option<String> {
+    compose.contains(MODULE_RIGHT).then(|| compose.replacen(MODULE_RIGHT, "", 1))
 }
 
 pub fn env_contents(input: &Input, password: &str) -> String {
@@ -255,6 +261,15 @@ mod tests {
     }
 
     // ─────────────────── assets: drift against the REAL script ───────────────────
+
+    #[test]
+    fn the_panel_cannot_load_kernel_modules() {
+        let current = compose_contents(&base());
+        assert!(!current.contains("SYS_MODULE"));
+        let older = current.replacen("      - NET_ADMIN\n", "      - NET_ADMIN\n      - SYS_MODULE\n", 1);
+        assert_eq!(without_module_right(&older).as_deref(), Some(current.as_str()));
+        assert_eq!(without_module_right(&current), None);
+    }
 
     #[test]
     fn every_panel_asset_matches_the_generators_own_bytes() {

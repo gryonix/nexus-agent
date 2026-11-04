@@ -66,6 +66,10 @@ Resolved by SwiftPM; versions are in `Apple/Packages/gryonixNexus/Package.resolv
 | Sparkle (macOS only) | MIT |
 | swift-protobuf, swift-nio, swift-nio-ssh, swift-crypto, swift-log, swift-collections, swift-system, swift-asn1, swift-atomics | Apache-2.0 |
 
+swift-nio-ssh is the fork Citadel names (github.com/Wellz26/swift-nio-ssh).
+The package asks for 0.3.7 or later: earlier releases send a channel window
+adjust after the channel has sent CLOSE, which traps.
+
 ## Android libraries
 
 Resolved from Maven Central and Google's repository; versions are in

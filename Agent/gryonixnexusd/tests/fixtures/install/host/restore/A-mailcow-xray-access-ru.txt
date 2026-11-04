@@ -238,16 +238,20 @@ restore_vpn_panel() {
   gd_compose_stop 'vpnpanel' 'vpnpanel'
   # The old data is moved aside, never deleted: if the move back
   # fails it is the only way home.
-  previous='/opt/gryonix-vpn-panel/data'".pre-restore-$STAMP"
-  if [ -d '/opt/gryonix-vpn-panel/data' ]; then mv '/opt/gryonix-vpn-panel/data' "$previous"; saved=1; fi
-  if mv "$stage/data" '/opt/gryonix-vpn-panel/data'; then
-    if [ "$saved" -eq 1 ]; then echo "previous data kept at ${previous}"; fi
+  if [ ! -d "$stage/data" ]; then
+    echo "the archive carries no data, it is left as it is"
   else
-    echo "restore failed, rolling back to the previous data" >&2
-    rm -rf '/opt/gryonix-vpn-panel/data'
-    if [ "$saved" -eq 1 ]; then mv "$previous" '/opt/gryonix-vpn-panel/data'; fi
-    gd_compose_start_all 'vpnpanel'
-    exit 1
+    previous='/opt/gryonix-vpn-panel/data'".pre-restore-$STAMP"
+    if [ -d '/opt/gryonix-vpn-panel/data' ]; then mv '/opt/gryonix-vpn-panel/data' "$previous"; saved=1; fi
+    if mv "$stage/data" '/opt/gryonix-vpn-panel/data'; then
+      if [ "$saved" -eq 1 ]; then echo "previous data kept at ${previous}"; fi
+    else
+      echo "restore failed, rolling back to the previous data" >&2
+      rm -rf '/opt/gryonix-vpn-panel/data'
+      if [ "$saved" -eq 1 ]; then mv "$previous" '/opt/gryonix-vpn-panel/data'; fi
+      gd_compose_start_all 'vpnpanel'
+      exit 1
+    fi
   fi
   # Up again on every path, restored or not.
   gd_compose_start_all 'vpnpanel'

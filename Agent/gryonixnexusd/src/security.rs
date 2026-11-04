@@ -183,10 +183,15 @@ fn walk_bouncers(metrics: &Value) -> impl Iterator<Item = (&str, &Value)> {
 
 /// Assemble the status from the host
 pub async fn get_security_status(codec: Codec, _req: pb::GetSecurityStatusRequest) -> Resp {
+    encode(codec, &status().await)
+}
+
+/// CrowdSec's state, read from its units and `cscli`
+pub async fn status() -> pb::SecurityStatus {
     let mut status = pb::SecurityStatus::default();
 
     if !present() {
-        return encode(codec, &status);
+        return status;
     }
     status.present = true;
 
@@ -222,7 +227,7 @@ pub async fn get_security_status(codec: Codec, _req: pb::GetSecurityStatusReques
         }
     }
 
-    encode(codec, &status)
+    status
 }
 
 // ─────────────────────── SSH password login ────────────────────────────
@@ -271,6 +276,23 @@ pub async fn set_ssh_key_only_users(codec: Codec, req: pb::SetSshKeyOnlyUsersReq
         Err(why) => {
             return connect_error(StatusCode::INTERNAL_SERVER_ERROR, "failed_precondition", &why)
         }
+    };
+    encode(codec, &users_answer(&req.login_user, &req.app_public_key, detail).await)
+}
+
+/// Puts the app's key on one listed account
+pub async fn authorize_app_key(codec: Codec, req: pb::AuthorizeAppKeyRequest) -> Resp {
+    let accounts = match ssh_password::list_users(&req.app_public_key).await {
+        Ok(accounts) => accounts,
+        Err(why) => return connect_error(StatusCode::INTERNAL_SERVER_ERROR, "failed_precondition", &why),
+    };
+    if !accounts.iter().any(|account| account.name == req.user) {
+        return connect_error(StatusCode::BAD_REQUEST, "invalid_argument", "no such login account on this host");
+    }
+    let detail = match crate::device_keys::authorize_user(&req.user, &req.app_public_key).await {
+        Ok(true) => format!("the app's key is on {} now", req.user),
+        Ok(false) => format!("the app's key was already on {}", req.user),
+        Err(why) => return connect_error(StatusCode::INTERNAL_SERVER_ERROR, "internal", &why),
     };
     encode(codec, &users_answer(&req.login_user, &req.app_public_key, detail).await)
 }

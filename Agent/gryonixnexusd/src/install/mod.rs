@@ -22,6 +22,7 @@ pub mod caddy_check;
 #[cfg(test)]
 mod caddy_check_tests;
 pub mod caddy_upstream;
+pub mod open_sites;
 pub mod context;
 pub mod hostnames;
 pub mod execute;
@@ -34,6 +35,7 @@ pub mod firewall;
 pub mod home_network;
 pub mod firewall_base;
 pub mod firewall_relay;
+pub mod mark_restore;
 pub mod relay_routes;
 pub mod ports;
 pub mod forgejo;

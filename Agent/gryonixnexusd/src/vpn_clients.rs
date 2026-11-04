@@ -525,6 +525,22 @@ async fn resolve(protocol: &str) -> Result<(&'static str, Panel), Refusal> {
     Ok((resolved, Panel::open().await?))
 }
 
+/// Devices per installed protocol, by catalog id
+pub async fn device_counts() -> Option<Vec<(&'static str, usize)>> {
+    let installed = declared_protocols()?;
+    let panel = Panel::open().await.ok()?;
+    let mut counts = Vec::new();
+    for (name, catalog) in PROTOCOLS {
+        if !installed.iter().any(|declared| declared == name) {
+            continue;
+        }
+        if let Ok(clients) = panel.list(name).await {
+            counts.push((*catalog, clients.len()));
+        }
+    }
+    Some(counts)
+}
+
 fn declared_protocols() -> Option<Vec<String>> {
     let text = std::fs::read_to_string(services_path()).ok()?;
     parse_declared_protocols(&text)
@@ -597,11 +613,13 @@ pub async fn client_config(codec: Codec, req: pb::GetVpnClientConfigRequest) -> 
     };
     let found = panel.list(protocol).await.ok().and_then(|clients| clients.into_iter().find(|client| client.id == client_id));
     let name = found.as_ref().map(|client| client.name.clone()).unwrap_or_else(|| client_id.to_string());
+    let dns = found.map(|client| client.dns).unwrap_or_default();
+    let relayed = crate::vpn_dns::ready();
     let response = pb::VpnClientConfig {
-        text,
+        text: if relayed { crate::vpn_dns::config_with_fallback(&text) } else { text },
         filename: format!("{}{}", sanitise_file_name(&name), config_extension(protocol)),
         qr_is_useful: qr_is_useful(protocol),
-        dns: found.map(|client| client.dns).unwrap_or_default(),
+        dns: if relayed { crate::vpn_dns::with_fallback(&dns) } else { dns },
     };
     encode(codec, &response)
 }
@@ -640,6 +658,10 @@ pub async fn set_default_dns(codec: Codec, req: pb::VpnDns) -> Resp {
     match panel.set_default_dns(&req.dns).await {
         Ok(dns) => {
             crate::vpn_dns::prepare_for(&dns);
+            if let Err(why) = crate::vpn_dns_priority::choose(&dns) {
+                tracing::warn!(%why, "could not put the chosen DNS first in the order");
+            }
+            crate::vpn_dns::refresh().await;
             encode(codec, &with_local(dns).await)
         }
         Err(refusal) => refusal.response(),
@@ -656,6 +678,11 @@ pub async fn set_dns_priority(codec: Codec, req: pb::VpnDnsPriority) -> Resp {
         Ok(order) => order,
         Err(why) => return connect_error(StatusCode::BAD_REQUEST, "invalid_argument", &why),
     };
+    if let Some(chosen) = chosen_dns().await {
+        if let Err(why) = crate::vpn_dns_priority::check(&order, &chosen) {
+            return connect_error(StatusCode::BAD_REQUEST, "invalid_argument", &why);
+        }
+    }
     if let Err(why) = crate::vpn_dns_priority::save(&order) {
         return connect_error(StatusCode::INTERNAL_SERVER_ERROR, "internal", &why);
     }
@@ -663,7 +690,23 @@ pub async fn set_dns_priority(codec: Codec, req: pb::VpnDnsPriority) -> Resp {
     encode(codec, &priority_answer().await)
 }
 
+/// The DNS chosen for devices as an order entry
+pub async fn chosen_dns() -> Option<String> {
+    if let Some(chosen) = crate::vpn_dns_priority::chosen() {
+        return Some(chosen);
+    }
+    let dns = Panel::open().await.ok()?.default_dns().await.ok()?;
+    match crate::vpn_dns_priority::choose(&dns) {
+        Ok(chosen) => Some(chosen),
+        Err(why) => {
+            tracing::warn!(%why, "could not remember the chosen DNS");
+            None
+        }
+    }
+}
+
 async fn priority_answer() -> pb::VpnDnsPriority {
+    chosen_dns().await;
     let (local_available, reachable) = crate::vpn_dns::reachability().await;
     pb::VpnDnsPriority { resolvers: crate::vpn_dns_priority::load(), local_available, reachable }
 }

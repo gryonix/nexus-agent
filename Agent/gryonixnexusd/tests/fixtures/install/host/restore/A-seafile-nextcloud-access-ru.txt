@@ -231,28 +231,34 @@ restore_nextcloud() {
   # shellcheck disable=SC2064
   trap "rm -rf '$stage' '$tmp'" EXIT
   tar --numeric-owner -xzf "$plain" -C "$stage"
-  if [ ! -d "$stage/data" ]; then
+  if [ ! -d "$stage/data" ] && [ ! -f "$stage/gryonixnexus-db/nextcloud.sql" ]; then
     echo "the archive carries no nextcloud data" >&2
     exit 1
   fi
   gd_compose_stop 'nextcloud' 'app'
   # The old data is moved aside, never deleted: if the move back
   # fails it is the only way home.
-  previous='/opt/nextcloud/data'".pre-restore-$STAMP"
-  if [ -d '/opt/nextcloud/data' ]; then mv '/opt/nextcloud/data' "$previous"; saved=1; fi
-  if mv "$stage/data" '/opt/nextcloud/data'; then
-    if [ "$saved" -eq 1 ]; then echo "previous data kept at ${previous}"; fi
+  if [ ! -d "$stage/data" ]; then
+    echo "the archive carries no data, it is left as it is"
   else
-    echo "restore failed, rolling back to the previous data" >&2
-    rm -rf '/opt/nextcloud/data'
-    if [ "$saved" -eq 1 ]; then mv "$previous" '/opt/nextcloud/data'; fi
-    gd_compose_start_all 'nextcloud'
-    exit 1
+    previous='/opt/nextcloud/data'".pre-restore-$STAMP"
+    if [ -d '/opt/nextcloud/data' ]; then mv '/opt/nextcloud/data' "$previous"; saved=1; fi
+    if mv "$stage/data" '/opt/nextcloud/data'; then
+      if [ "$saved" -eq 1 ]; then echo "previous data kept at ${previous}"; fi
+    else
+      echo "restore failed, rolling back to the previous data" >&2
+      rm -rf '/opt/nextcloud/data'
+      if [ "$saved" -eq 1 ]; then mv "$previous" '/opt/nextcloud/data'; fi
+      gd_compose_start_all 'nextcloud'
+      exit 1
+    fi
   fi
-  # The database container has to be up to take its dump back;
-  # the rest of the project stays down until it is loaded.
-  gd_compose_start 'nextcloud' 'db'
-  gd_load_mysql 'nextcloud' 'db' "$stage/gryonixnexus-db/nextcloud.sql" || rc=1
+  if [ -f "$stage/gryonixnexus-db/nextcloud.sql" ]; then
+    # The database container has to be up to take its dump back;
+    # the rest of the project stays down until it is loaded.
+    gd_compose_start 'nextcloud' 'db'
+    gd_load_mysql 'nextcloud' 'db' "$stage/gryonixnexus-db/nextcloud.sql" || rc=1
+  fi
   # Up again on every path, restored or not.
   gd_compose_start_all 'nextcloud'
   if [ "$rc" -ne 0 ]; then
@@ -289,36 +295,46 @@ restore_seafile() {
   # shellcheck disable=SC2064
   trap "rm -rf '$stage' '$tmp'" EXIT
   tar --numeric-owner -xzf "$plain" -C "$stage"
-  if [ ! -d "$stage/data" ]; then
+  if [ ! -d "$stage/data" ] && [ ! -f "$stage/gryonixnexus-db/ccnet_db.sql" ] && [ ! -f "$stage/gryonixnexus-db/seafile_db.sql" ] && [ ! -f "$stage/gryonixnexus-db/seahub_db.sql" ]; then
     echo "the archive carries no seafile data" >&2
     exit 1
   fi
   gd_compose_stop 'seafile' 'seafile'
   # The old data is moved aside, never deleted: if the move back
   # fails it is the only way home.
-  previous='/opt/seafile/data'".pre-restore-$STAMP"
-  if [ -d '/opt/seafile/data' ]; then mv '/opt/seafile/data' "$previous"; saved=1; fi
-  if mv "$stage/data" '/opt/seafile/data'; then
-    if [ "$saved" -eq 1 ]; then echo "previous data kept at ${previous}"; fi
+  if [ ! -d "$stage/data" ]; then
+    echo "the archive carries no data, it is left as it is"
   else
-    echo "restore failed, rolling back to the previous data" >&2
-    rm -rf '/opt/seafile/data'
-    if [ "$saved" -eq 1 ]; then mv "$previous" '/opt/seafile/data'; fi
-    gd_compose_start_all 'seafile'
-    exit 1
+    previous='/opt/seafile/data'".pre-restore-$STAMP"
+    if [ -d '/opt/seafile/data' ]; then mv '/opt/seafile/data' "$previous"; saved=1; fi
+    if mv "$stage/data" '/opt/seafile/data'; then
+      if [ "$saved" -eq 1 ]; then echo "previous data kept at ${previous}"; fi
+    else
+      echo "restore failed, rolling back to the previous data" >&2
+      rm -rf '/opt/seafile/data'
+      if [ "$saved" -eq 1 ]; then mv "$previous" '/opt/seafile/data'; fi
+      gd_compose_start_all 'seafile'
+      exit 1
+    fi
   fi
-  # The database container has to be up to take its dump back;
-  # the rest of the project stays down until it is loaded.
-  gd_compose_start 'seafile' 'db'
-  gd_load_mysql 'seafile' 'db' "$stage/gryonixnexus-db/ccnet_db.sql" 'ccnet_db' || rc=1
-  # The database container has to be up to take its dump back;
-  # the rest of the project stays down until it is loaded.
-  gd_compose_start 'seafile' 'db'
-  gd_load_mysql 'seafile' 'db' "$stage/gryonixnexus-db/seafile_db.sql" 'seafile_db' || rc=1
-  # The database container has to be up to take its dump back;
-  # the rest of the project stays down until it is loaded.
-  gd_compose_start 'seafile' 'db'
-  gd_load_mysql 'seafile' 'db' "$stage/gryonixnexus-db/seahub_db.sql" 'seahub_db' || rc=1
+  if [ -f "$stage/gryonixnexus-db/ccnet_db.sql" ]; then
+    # The database container has to be up to take its dump back;
+    # the rest of the project stays down until it is loaded.
+    gd_compose_start 'seafile' 'db'
+    gd_load_mysql 'seafile' 'db' "$stage/gryonixnexus-db/ccnet_db.sql" 'ccnet_db' || rc=1
+  fi
+  if [ -f "$stage/gryonixnexus-db/seafile_db.sql" ]; then
+    # The database container has to be up to take its dump back;
+    # the rest of the project stays down until it is loaded.
+    gd_compose_start 'seafile' 'db'
+    gd_load_mysql 'seafile' 'db' "$stage/gryonixnexus-db/seafile_db.sql" 'seafile_db' || rc=1
+  fi
+  if [ -f "$stage/gryonixnexus-db/seahub_db.sql" ]; then
+    # The database container has to be up to take its dump back;
+    # the rest of the project stays down until it is loaded.
+    gd_compose_start 'seafile' 'db'
+    gd_load_mysql 'seafile' 'db' "$stage/gryonixnexus-db/seahub_db.sql" 'seahub_db' || rc=1
+  fi
   # Up again on every path, restored or not.
   gd_compose_start_all 'seafile'
   if [ "$rc" -ne 0 ]; then

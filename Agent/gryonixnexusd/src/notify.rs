@@ -26,6 +26,25 @@ pub struct Device {
     /// Hash of the secret only the phone holds
     #[serde(default)]
     pub proof: String,
+    /// Shown in the app's list; never sent to the relay
+    #[serde(default)]
+    pub name: String,
+    #[serde(default)]
+    pub added_at: i64,
+    /// The sound per kind of alert this phone chose
+    #[serde(default)]
+    pub sounds: std::collections::BTreeMap<String, String>,
+}
+
+impl Device {
+    /// What the relay is told about this device
+    fn relay_body(&self) -> Vec<u8> {
+        serde_json::to_vec(&serde_json::json!({
+            "platform": self.platform, "token": self.token, "app_version": self.app_version,
+            "locale": self.locale, "muted": self.muted, "proof": self.proof, "sounds": self.sounds,
+        }))
+        .unwrap_or_default()
+    }
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -220,6 +239,17 @@ pub fn settings(config: &Config) -> pb::NotifySettings {
         relay_maintenance: config.relay_maintenance.clone(),
         custom_checks: config.custom_checks,
         quiet_keys: config.quiet_keys.clone(),
+        registered: config.devices.iter().map(listed).collect(),
+    }
+}
+
+fn listed(device: &Device) -> pb::NotifyDevice {
+    pb::NotifyDevice {
+        platform: device.platform.clone(),
+        token: device.token.clone(),
+        name: device.name.clone(),
+        app_version: device.app_version.clone(),
+        added_at: device.added_at,
     }
 }
 
@@ -294,8 +324,7 @@ async fn register(config: &mut Config) -> Sent {
 
 async fn put_device(config: &Config, device: &Device) -> Sent {
     let path = format!("/v1/servers/{}/devices", config.server_id);
-    let body = serde_json::to_vec(device).unwrap_or_default();
-    relay_call(config, "PUT", &path, &body).await
+    relay_call(config, "PUT", &path, &device.relay_body()).await
 }
 
 /// Sends one alert through the chosen channel
@@ -315,6 +344,18 @@ pub async fn deliver(config: &mut Config, alert: &Alert) -> Sent {
         pb::NotifyChannel::Ntfy => notify_send::ntfy(&config.ntfy_url, &config.ntfy_topic, alert).await,
         _ => Sent::Ok,
     }
+}
+
+/// A wordless event the phones turn into widget readings
+pub async fn deliver_quiet(config: &mut Config, body: &[u8]) -> Sent {
+    if config.registered_at != config.relay_url {
+        let sent = register(config).await;
+        if sent != Sent::Ok {
+            return sent;
+        }
+    }
+    let path = format!("/v1/servers/{}/events", config.server_id);
+    relay_call_known(config, "POST", &path, body).await
 }
 
 // MARK: checks
@@ -340,6 +381,7 @@ pub async fn run_checks(store: &Arc<Mutex<Store>>) {
     if all_sent || config.channel() == pb::NotifyChannel::Off {
         config.active = found;
     }
+    crate::widget_feed::push(&mut config).await;
     config.last_check_at = now();
     let mut latest = load(store);
     latest.active = config.active;
@@ -535,17 +577,27 @@ pub async fn register_device(codec: Codec, store: Arc<Mutex<Store>>, req: pb::Re
     let muted = req.muted.into_iter().filter(|t| t.len() <= 32).take(16).collect();
     let proof = req.device_proof.trim().to_ascii_lowercase();
     let proof = if proof.len() == 64 && proof.chars().all(|c| c.is_ascii_hexdigit()) { proof } else { String::new() };
-    let device = Device { platform: req.platform, token: req.token, app_version: req.app_version, locale: req.locale, muted, proof };
+    let name: String = req.name.trim().chars().take(64).collect();
+    let added_at = config.devices.iter().find(|d| d.token == req.token).map_or_else(now, |d| d.added_at);
+    let sounds = sound_choices(req.sounds);
+    let device = Device { platform: req.platform, token: req.token, app_version: req.app_version, locale: req.locale, muted, proof, name, added_at, sounds };
     config.devices.retain(|d| d.token != device.token);
     config.devices.push(device.clone());
     if config.channel() == pb::NotifyChannel::Relay && config.registered_at == config.relay_url {
         let path = format!("/v1/servers/{}/devices", config.server_id);
-        let body = serde_json::to_vec(&device).unwrap_or_default();
-        let sent = relay_call_known(&mut config, "PUT", &path, &body).await;
+        let sent = relay_call_known(&mut config, "PUT", &path, &device.relay_body()).await;
         record(&mut config, &sent);
     }
     save_keeping_watch_state(&store, &mut config);
     encode(codec, settings(&config))
+}
+
+/// Short lowercase names only, a dozen at most
+fn sound_choices(asked: std::collections::HashMap<String, String>) -> std::collections::BTreeMap<String, String> {
+    let plain = |text: &str, longest: usize| {
+        !text.is_empty() && text.len() <= longest && text.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_')
+    };
+    asked.into_iter().filter(|(kind, sound)| plain(kind, 16) && plain(sound, 24)).take(12).collect()
 }
 
 pub async fn unregister_device(codec: Codec, store: Arc<Mutex<Store>>, req: pb::UnregisterNotifyDeviceRequest) -> Resp {
@@ -572,6 +624,9 @@ pub async fn watch_live(codec: Codec, store: Arc<Mutex<Store>>, req: pb::WatchLi
     let ready = crate::live::relay_ready(&load(&store));
     if ready {
         crate::live::watch(&req.job_id, &req.token, &req.title.chars().take(120).collect::<String>());
+        if req.job_id == crate::live_system::JOB {
+            crate::live_system::follow();
+        }
         // An already finished job still closes the island.
         if let Some(failure) = crate::jobs::job(&req.job_id).as_ref().and_then(ending_of) {
             crate::live::finished(&req.job_id, failure);
@@ -682,6 +737,32 @@ mod tests {
     }
 
     #[test]
+    fn devices_are_listed_with_names_the_relay_never_sees() {
+        let mut config = Config::default();
+        config.devices.push(Device { platform: "apns".into(), token: "t1".into(), app_version: "26.10".into(), locale: "en".into(), muted: Vec::new(), proof: String::new(), name: "iPhone".into(), added_at: 7, sounds: Default::default() });
+        let listed = settings(&config).registered;
+        assert_eq!((listed[0].name.as_str(), listed[0].token.as_str(), listed[0].added_at), ("iPhone", "t1", 7));
+        let body: serde_json::Value = serde_json::from_slice(&config.devices[0].relay_body()).unwrap();
+        assert_eq!(body["token"], "t1");
+        assert!(body.get("name").is_none() && body.get("added_at").is_none());
+    }
+
+    #[test]
+    fn sound_choices_keep_only_plain_names() {
+        let asked = [("backups", "chime"), ("disks", "none"), ("Bad Kind", "chime"), ("ssh", "../x"), ("services", "")]
+            .into_iter()
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .collect();
+        let kept = sound_choices(asked);
+        assert_eq!(kept.len(), 2);
+        assert_eq!((kept["backups"].as_str(), kept["disks"].as_str()), ("chime", "none"));
+        let mut config = Config::default();
+        config.devices.push(Device { platform: "apns".into(), token: "t".into(), app_version: "1".into(), locale: "en".into(), muted: Vec::new(), proof: String::new(), name: String::new(), added_at: 0, sounds: kept });
+        let body: serde_json::Value = serde_json::from_slice(&config.devices[0].relay_body()).unwrap();
+        assert_eq!(body["sounds"]["backups"], "chime");
+    }
+
+    #[test]
     fn identity_is_made_once() {
         let mut config = Config::default();
         config.ensure_identity();
@@ -696,7 +777,7 @@ mod tests {
         let store = store();
         let mut config = Config::default();
         config.ntfy_topic = "t".into();
-        config.devices.push(Device { platform: "apns".into(), token: "abc".into(), app_version: "1".into(), locale: "ru".into(), muted: Vec::new(), proof: String::new() });
+        config.devices.push(Device { platform: "apns".into(), token: "abc".into(), app_version: "1".into(), locale: "ru".into(), muted: Vec::new(), proof: String::new(), name: String::new(), added_at: 0, sounds: Default::default() });
         save(&store, &config);
         let back = load(&store);
         assert_eq!((back.ntfy_topic.as_str(), back.devices.len()), ("t", 1));
@@ -729,7 +810,7 @@ mod tests {
         }
         let mut config = Config::default();
         apply(&mut config, request(pb::NotifyChannel::Relay, &format!("http://127.0.0.1:{port}"), "")).unwrap();
-        config.devices.push(Device { platform: "apns".into(), token: "aa".repeat(32), app_version: "1.0".into(), locale: "ru".into(), muted: Vec::new(), proof: String::new() });
+        config.devices.push(Device { platform: "apns".into(), token: "aa".repeat(32), app_version: "1.0".into(), locale: "ru".into(), muted: Vec::new(), proof: String::new(), name: String::new(), added_at: 0, sounds: Default::default() });
         let registered = register(&mut config).await;
         let sent = deliver(&mut config, &notify_send::test_alert("test", true)).await;
         let live_body = serde_json::json!({ "token": "activity", "state": crate::live::content_state("x", None, false, None) });
@@ -772,7 +853,7 @@ mod tests {
         wait_for(port).await;
         let mut config = Config::default();
         apply(&mut config, request(pb::NotifyChannel::Relay, &format!("http://127.0.0.1:{port}"), "")).unwrap();
-        config.devices.push(Device { platform: "apns".into(), token: "bb".repeat(32), app_version: "1.0".into(), locale: "ru".into(), muted: Vec::new(), proof: String::new() });
+        config.devices.push(Device { platform: "apns".into(), token: "bb".repeat(32), app_version: "1.0".into(), locale: "ru".into(), muted: Vec::new(), proof: String::new(), name: String::new(), added_at: 0, sounds: Default::default() });
         let first = deliver(&mut config, &notify_send::test_alert("test", true)).await;
         let _ = relay.kill();
         let _ = relay.wait();

@@ -63,22 +63,21 @@ Apple and an AndroidKeyStore-backed store on Android, and never in the export
 file. `.gryonixserver` carries the deployment's SSH key by design — that is how
 a server moves to a second phone — so treat that file as the key itself.
 
-**The VPN panel container runs as root and has `docker.sock` mounted, by
-design.** It needs the socket to drive the protocol containers it manages
-(bring clients up and down, read their state) and does not run as an
-unprivileged user inside its own image. The consequence is direct: any RCE in
-the panel, or any way past its login, is root on the HOST, not merely on the
-container — the socket lets the compromised process stand up a privileged
-container with `/` mounted in. This is an accepted trade-off, not an
-oversight, and narrowing it to a
-socket-proxy with a matching allowlist of endpoints is a real option if the
-panel's own attack surface ever justifies the added moving part. The
-mitigations already in place — PBKDF2-SHA256 login at 200k rounds with a
-per-user salt, the fail2ban-style ban/throttle on `client_ip()` (its own
-Caddy site overwrites `X-Forwarded-For` so that address cannot be spoofed by
-a client), and the admin guard restricting the panel to VPN-only access by
-default — are what stand between the internet and this boundary, not a
-sandbox around the container itself.
+**The VPN panel holds no `docker.sock` and cannot load kernel modules.** It
+reaches its protocol containers only through the agent's broker socket
+(`/run/gryonixnexus-panel/broker.sock`, mode 0600), which accepts a fixed list
+of requests: restart, state and log tail of the four protocol containers,
+OpenVPN client build/profile/revoke for a validated client name, and the
+read-only mailbox query mailcow's password-reset sender needs. Anything else is
+refused. The panel keeps `NET_ADMIN`, since it runs the WireGuard interface
+itself; the agent loads the WireGuard module on the host. An RCE in the panel
+is therefore root inside its container with control of that host's WireGuard
+interface, the client keys and the protocol configs it mounts. That is serious
+for the VPN, but it is not a shell on the host. Between the internet and the
+panel stand a PBKDF2-SHA256 login at 200k rounds with a per-user salt, the
+fail2ban-style ban/throttle on `client_ip()` (its own Caddy site overwrites
+`X-Forwarded-For` so that address cannot be spoofed by a client), and the
+admin guard restricting the panel to VPN-only access by default.
 
 **The control account is root in practice.** The account the app signs in with
 may run `/opt/gryonixnexus-agent-bootstrap.sh` as root without a password, and

@@ -98,19 +98,49 @@ pub async fn authorize(public_key: &str, tag: &str, expires_at: i64) -> Result<b
     Ok(changed)
 }
 
+/// Puts a device's key on one more account
+pub async fn authorize_user(user: &str, public_key: &str) -> Result<bool, String> {
+    let (kind, blob) = split_key(public_key).ok_or("the SSH key is not an ed25519 public key")?;
+    match run_ctl(&["add", user, &tag_for_key(blob), kind, blob, "0"]).await? {
+        0 => Ok(true),
+        3 => Ok(false),
+        code => Err(format!("the key helper failed for {user} ({code})")),
+    }
+}
+
 pub async fn revoke(tag: &str) -> Result<bool, String> {
     if !valid_tag(tag) {
         return Err("bad key tag".into());
     }
     let mut removed = false;
-    for user in crate::ssh_watch::control_users() {
-        match run_ctl(&["remove", &user, tag]).await? {
+    let controls = crate::ssh_watch::control_users();
+    for user in &controls {
+        match run_ctl(&["remove", user, tag]).await? {
             0 => removed = true,
             4 => {}
             code => return Err(format!("the key helper failed for {user} ({code})")),
         }
     }
+    let passwd = std::fs::read_to_string("/etc/passwd").unwrap_or_default();
+    for user in login_accounts(&passwd).into_iter().filter(|user| !controls.contains(user)) {
+        if run_ctl(&["remove", &user, tag]).await? == 0 {
+            removed = true;
+        }
+    }
     Ok(removed)
+}
+
+/// Accounts a person can sign in as, root included
+pub fn login_accounts(passwd: &str) -> Vec<String> {
+    passwd
+        .lines()
+        .filter_map(|line| {
+            let fields: Vec<&str> = line.split(':').collect();
+            let (name, uid, shell) = (fields.first()?, fields.get(2)?.parse::<u32>().ok()?, fields.get(6)?);
+            let can_log_in = !shell.is_empty() && !shell.ends_with("nologin") && !shell.ends_with("/false");
+            (can_log_in && (uid == 0 || (1000..65534).contains(&uid))).then(|| name.to_string())
+        })
+        .collect()
 }
 
 /// Drops transfer keys whose time is up
@@ -188,6 +218,16 @@ mod tests {
     use super::*;
 
     const KEY: &str = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIGGXGwG07/Xo7QRceaYftIbaIii+zfpZ5wulUpfayeon app";
+
+    #[test]
+    fn login_accounts_are_root_and_people_with_a_shell() {
+        let passwd = "root:x:0:0:root:/root:/bin/bash\n\
+                      daemon:x:1:1::/usr/sbin:/usr/sbin/nologin\n\
+                      orion:x:1000:1000::/home/orion:/bin/bash\n\
+                      draco:x:1001:1001::/home/draco:/bin/false\n\
+                      nobody:x:65534:65534::/nonexistent:/bin/sh\n";
+        assert_eq!(login_accounts(passwd), vec!["root".to_string(), "orion".to_string()]);
+    }
 
     #[test]
     fn only_an_ed25519_public_key_is_taken() {

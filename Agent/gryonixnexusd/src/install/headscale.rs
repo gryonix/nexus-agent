@@ -2,6 +2,7 @@
 
 use super::caddy::{self, WebIngress};
 use super::context::Input;
+use crate::language::Language;
 
 /// Exact pinned tag
 pub const SERVICE_ID: &str = "headscale";
@@ -104,7 +105,40 @@ pub fn caddy_site_names(input: &Input) -> Vec<String> {
 pub fn caddy_site(input: &Input) -> String {
     let ingress = web_ingress(input);
     let joined = caddy_site_names(input).join(", ");
-    caddy::site(SERVICE_ID, &joined, ingress.upstream_port, ingress.admin_guard, ingress.upstream_https, input.local_only)
+    let site = caddy::site(SERVICE_ID, &joined, ingress.upstream_port, ingress.admin_guard, ingress.upstream_https, input.local_only);
+    caddy::with_root_notice(&site, root_page(input.language))
+}
+
+/// What a browser shows at the server's address
+pub fn root_page(language: Language) -> &'static str {
+    match language {
+        Language::En => "This is the Headscale server your devices connect to. It has no web page: add and manage devices in the Nexus app, in the Mesh section of the server.",
+        Language::De => "Dies ist der Headscale-Server, mit dem sich Ihre Geräte verbinden. Er hat keine Webseite: Geräte fügen Sie in der Nexus-App im Bereich Mesh des Servers hinzu und verwalten sie dort.",
+        Language::Fr => "Ceci est le serveur Headscale auquel vos appareils se connectent. Il n'a pas de page web : ajoutez et gérez les appareils dans l'app Nexus, section Mesh du serveur.",
+        Language::Es => "Este es el servidor Headscale al que se conectan tus dispositivos. No tiene página web: añade y gestiona los dispositivos en la app Nexus, en la sección Mesh del servidor.",
+        Language::Ru => "Это сервер Headscale, к которому подключаются ваши устройства. Веб-страницы у него нет: устройства добавляются и управляются в приложении Nexus, в разделе Mesh сервера.",
+        Language::Uk => "Це сервер Headscale, до якого підключаються ваші пристрої. Вебсторінки в нього немає: пристрої додаються й керуються в застосунку Nexus, у розділі Mesh сервера.",
+        Language::It => "Questo è il server Headscale a cui si collegano i tuoi dispositivi. Non ha una pagina web: aggiungi e gestisci i dispositivi nell'app Nexus, nella sezione Mesh del server.",
+        Language::Ja => "これはデバイスが接続する Headscale サーバーです。Web ページはありません。デバイスの追加と管理は Nexus アプリのサーバーの Mesh セクションで行います。",
+        Language::Zh => "这是设备连接的 Headscale 服务器。它没有网页：请在 Nexus 应用中服务器的 Mesh 部分添加和管理设备。",
+    }
+}
+
+/// Older mesh sites, given the page at their root
+pub fn with_root_pages(caddyfile: &str, language: Language) -> String {
+    caddy::top_level_blocks(caddyfile)
+        .into_iter()
+        .map(|block| {
+            let owned = caddy::owner_of(block).as_deref() == Some(SERVICE_ID);
+            if !owned || block.contains("handle / {") {
+                return block.to_string();
+            }
+            let lead = &block[..block.len() - block.trim_start().len()];
+            let tail = &block[block.trim_end().len()..];
+            format!("{lead}{}{tail}", caddy::with_root_notice(block.trim(), root_page(language)))
+        })
+        .collect::<Vec<_>>()
+        .join("\n\n")
 }
 
 #[cfg(test)]
@@ -224,5 +258,23 @@ mod tests {
         input.additional_domains = vec!["example.org".to_string()];
         input.headscale_hostname = "mesh.other-company.net".to_string();
         assert_eq!(caddy_site_names(&input), vec!["mesh.other-company.net".to_string()]);
+    }
+
+    #[test]
+    fn the_address_shows_a_page_and_the_rest_goes_to_headscale() {
+        let site = caddy_site(&base("example.net"));
+        assert!(site.contains("    handle / {\n        respond \"This is the Headscale server"));
+        assert!(site.contains("    handle {\n        reverse_proxy 127.0.0.1:8091\n    }\n}"));
+    }
+
+    #[test]
+    fn an_older_mesh_site_gets_the_page_once() {
+        let old = caddy::site(SERVICE_ID, "mesh.example.net", WEB_UI_PORT, false, false, false);
+        let file = format!("{{\n    email admin@example.net\n}}\n\n{old}\n");
+        let upgraded = with_root_pages(&file, Language::Ru);
+        assert!(upgraded.contains("respond \"Это сервер Headscale"));
+        assert!(upgraded.starts_with("{\n    email admin@example.net\n}\n\n"));
+        assert!(upgraded.ends_with("}\n"));
+        assert_eq!(with_root_pages(&upgraded, Language::En), upgraded);
     }
 }

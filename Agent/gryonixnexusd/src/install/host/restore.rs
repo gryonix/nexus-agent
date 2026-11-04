@@ -376,7 +376,6 @@ fn restore_archive_function(target: &str, plan: &ArchivePlan) -> String {
 
 fn restore_prepare_lines(target: &str, plan: &ArchivePlan) -> Vec<String> {
     let name = target.replace('-', "_");
-    let slot = plan.data_slot();
     let parent = plan.data_parent();
     vec![
         format!("restore_{name}() {{"),
@@ -407,11 +406,18 @@ fn restore_prepare_lines(target: &str, plan: &ArchivePlan) -> Vec<String> {
         "  # shellcheck disable=SC2064".to_string(),
         "  trap \"rm -rf '$stage' '$tmp'\" EXIT".to_string(),
         "  tar --numeric-owner -xzf \"$plain\" -C \"$stage\"".to_string(),
-        format!("  if [ ! -d \"$stage/{slot}\" ]; then"),
+        format!("  if {}; then", nothing_restorable_test(plan)),
         format!("    echo \"the archive carries no {target} data\" >&2"),
         "    exit 1".to_string(),
         "  fi".to_string(),
     ]
+}
+
+/// Shell test: the archive holds no part of this service
+fn nothing_restorable_test(plan: &ArchivePlan) -> String {
+    let mut tests = vec![format!("[ ! -d \"$stage/{}\" ]", plan.data_slot())];
+    tests.extend(plan.databases.iter().map(|db| format!("[ ! -f \"$stage/gryonixnexus-db/{}\" ]", db.file_name)));
+    tests.join(" && ")
 }
 
 fn restore_swap_lines(plan: &ArchivePlan) -> Vec<String> {
@@ -426,16 +432,20 @@ fn restore_swap_lines(plan: &ArchivePlan) -> Vec<String> {
     lines.extend([
         "  # The old data is moved aside, never deleted: if the move back".to_string(),
         "  # fails it is the only way home.".to_string(),
-        format!("  previous='{data}'\".pre-restore-$STAMP\""),
-        format!("  if [ -d '{data}' ]; then mv '{data}' \"$previous\"; saved=1; fi"),
-        format!("  if mv \"$stage/{slot}\" '{data}'; then"),
-        "    if [ \"$saved\" -eq 1 ]; then echo \"previous data kept at ${previous}\"; fi".to_string(),
+        format!("  if [ ! -d \"$stage/{slot}\" ]; then"),
+        format!("    echo \"the archive carries no {slot}, it is left as it is\""),
         "  else".to_string(),
-        "    echo \"restore failed, rolling back to the previous data\" >&2".to_string(),
-        format!("    rm -rf '{data}'"),
-        "    if [ \"$saved\" -eq 1 ]; then mv \"$previous\" '".to_string() + data + "'; fi",
-        format!("    gd_compose_start_all '{project}'"),
-        "    exit 1".to_string(),
+        format!("    previous='{data}'\".pre-restore-$STAMP\""),
+        format!("    if [ -d '{data}' ]; then mv '{data}' \"$previous\"; saved=1; fi"),
+        format!("    if mv \"$stage/{slot}\" '{data}'; then"),
+        "      if [ \"$saved\" -eq 1 ]; then echo \"previous data kept at ${previous}\"; fi".to_string(),
+        "    else".to_string(),
+        "      echo \"restore failed, rolling back to the previous data\" >&2".to_string(),
+        format!("      rm -rf '{data}'"),
+        "      if [ \"$saved\" -eq 1 ]; then mv \"$previous\" '".to_string() + data + "'; fi",
+        format!("      gd_compose_start_all '{project}'"),
+        "      exit 1".to_string(),
+        "    fi".to_string(),
         "  fi".to_string(),
     ]);
     lines
@@ -450,14 +460,14 @@ fn restore_database_lines(target: &str, plan: &ArchivePlan) -> Vec<String> {
             Engine::Mysql => "gd_load_mysql",
         };
         let db_name_arg = db.database_name.map(|n| format!(" '{n}'")).unwrap_or_default();
+        let dump = format!("$stage/gryonixnexus-db/{}", db.file_name);
         lines.extend([
-            "  # The database container has to be up to take its dump back;".to_string(),
-            "  # the rest of the project stays down until it is loaded.".to_string(),
-            format!("  gd_compose_start '{project}' '{}'", db.service),
-            format!(
-                "  {helper} '{project}' '{}' \"$stage/gryonixnexus-db/{}\"{db_name_arg} || rc=1",
-                db.service, db.file_name
-            ),
+            format!("  if [ -f \"{dump}\" ]; then"),
+            "    # The database container has to be up to take its dump back;".to_string(),
+            "    # the rest of the project stays down until it is loaded.".to_string(),
+            format!("    gd_compose_start '{project}' '{}'", db.service),
+            format!("    {helper} '{project}' '{}' \"{dump}\"{db_name_arg} || rc=1", db.service),
+            "  fi".to_string(),
         ]);
     }
     lines.extend([

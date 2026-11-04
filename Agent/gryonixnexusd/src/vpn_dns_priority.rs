@@ -21,6 +21,9 @@ const HOME_FILE: &str = "relay-home.json";
 #[derive(Serialize, Deserialize)]
 struct Stored {
     resolvers: Vec<String>,
+    /// The DNS chosen for devices; always first
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    chosen: Option<String>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -37,18 +40,72 @@ fn path(name: &str) -> PathBuf {
     crate::util::state_dir().join(name)
 }
 
-/// The saved order, or the default one
-pub fn load() -> Vec<String> {
-    std::fs::read_to_string(path(FILE))
-        .ok()
-        .and_then(|text| serde_json::from_str::<Stored>(&text).ok())
-        .and_then(|stored| validate(&stored.resolvers).ok())
-        .unwrap_or_else(default_order)
+fn stored() -> Option<Stored> {
+    let text = std::fs::read_to_string(path(FILE)).ok()?;
+    serde_json::from_str::<Stored>(&text).ok()
 }
 
+/// The saved or default order, led by the chosen DNS
+pub fn load() -> Vec<String> {
+    let stored = stored();
+    let order = stored
+        .as_ref()
+        .and_then(|stored| validate(&stored.resolvers).ok())
+        .unwrap_or_else(default_order);
+    match stored.and_then(|stored| stored.chosen) {
+        Some(chosen) => pin(&order, &chosen),
+        None => order,
+    }
+}
+
+/// The DNS chosen for devices, once known
+pub fn chosen() -> Option<String> {
+    stored().and_then(|stored| stored.chosen)
+}
+
+/// Saves the order, keeping the chosen DNS
 pub fn save(order: &[String]) -> Result<(), String> {
-    let text = serde_json::to_string(&Stored { resolvers: order.to_vec() }).map_err(|err| err.to_string())?;
+    store(order, chosen())
+}
+
+fn store(order: &[String], chosen: Option<String>) -> Result<(), String> {
+    let text = serde_json::to_string(&Stored { resolvers: order.to_vec(), chosen }).map_err(|err| err.to_string())?;
     write(FILE, &text)
+}
+
+/// The order entry for a device DNS choice
+pub fn entry_for(dns: &[String]) -> String {
+    let Some(first) = dns.iter().map(|entry| entry.trim()).find(|entry| !entry.is_empty()) else {
+        return "1.1.1.1".to_string();
+    };
+    if first == crate::vpn_dns::ADDRESS || first.eq_ignore_ascii_case(LOCAL) {
+        return LOCAL.to_string();
+    }
+    canonical(first).unwrap_or_else(|_| LOCAL.to_string())
+}
+
+/// The order with this entry first and nowhere else
+pub fn pin(order: &[String], first: &str) -> Vec<String> {
+    let mut pinned = vec![first.to_string()];
+    pinned.extend(order.iter().filter(|entry| entry.as_str() != first).cloned());
+    pinned.truncate(MAX);
+    pinned
+}
+
+/// Remembers the devices' DNS and puts it first
+pub fn choose(dns: &[String]) -> Result<String, String> {
+    let chosen = entry_for(dns);
+    store(&pin(&load(), &chosen), Some(chosen.clone()))?;
+    Ok(chosen)
+}
+
+/// Refuses an order not led by the chosen DNS
+pub fn check(order: &[String], chosen: &str) -> Result<(), String> {
+    if order.first().map(String::as_str) == Some(chosen) {
+        Ok(())
+    } else {
+        Err(format!("the DNS chosen for devices ({chosen}) stays first"))
+    }
 }
 
 fn write(name: &str, text: &str) -> Result<(), String> {
@@ -151,6 +208,46 @@ mod tests {
         let wanted: Vec<SocketAddr> = vec![loopback, "1.1.1.1:53".parse().unwrap()];
         assert_eq!(sockets(&default_order(), Some(loopback)), wanted);
         assert_eq!(sockets(&default_order(), None), vec!["1.1.1.1:53".parse::<SocketAddr>().unwrap()]);
+    }
+
+    #[test]
+    fn a_choice_becomes_its_order_entry() {
+        assert_eq!(entry_for(&order(&["10.53.0.53"])), "local");
+        assert_eq!(entry_for(&order(&[" 94.140.14.14", "94.140.15.15"])), "94.140.14.14");
+        assert_eq!(entry_for(&[]), "1.1.1.1");
+        assert_eq!(entry_for(&order(&["not an address"])), "local");
+    }
+
+    #[test]
+    fn pinning_moves_the_entry_first_and_keeps_four() {
+        assert_eq!(pin(&order(&["94.140.14.14", "1.1.1.1"]), "local"), order(&["local", "94.140.14.14", "1.1.1.1"]));
+        assert_eq!(pin(&order(&["1.1.1.1", "local"]), "local"), order(&["local", "1.1.1.1"]));
+        let full = order(&["1.1.1.1", "8.8.8.8", "9.9.9.9", "1.0.0.1"]);
+        assert_eq!(pin(&full, "local"), order(&["local", "1.1.1.1", "8.8.8.8", "9.9.9.9"]));
+    }
+
+    #[test]
+    fn an_order_must_start_with_the_choice() {
+        assert!(check(&order(&["local", "1.1.1.1"]), "local").is_ok());
+        assert!(check(&order(&["1.1.1.1", "local"]), "local").is_err());
+        assert!(check(&[], "local").is_err());
+    }
+
+    #[test]
+    fn the_choice_stays_first_across_saves_and_restarts() {
+        let _guard = crate::util::STATE_DIR_ENV_LOCK.lock().unwrap_or_else(|poison| poison.into_inner());
+        let dir = std::env::temp_dir().join(format!("vpn-dns-chosen-{}", std::process::id()));
+        std::env::set_var("GRYONIXNEXUSD_STATE_DIR", &dir);
+        save(&order(&["94.140.14.14", "1.1.1.1"])).unwrap();
+        assert_eq!(chosen(), None);
+        assert_eq!(choose(&order(&["10.53.0.53"])).unwrap(), "local");
+        assert_eq!(load(), order(&["local", "94.140.14.14", "1.1.1.1"]));
+        save(&order(&["local", "1.1.1.1"])).unwrap();
+        assert_eq!(chosen().as_deref(), Some("local"));
+        std::fs::write(dir.join(FILE), r#"{"resolvers":["9.9.9.9"],"chosen":"local"}"#).unwrap();
+        assert_eq!(load(), order(&["local", "9.9.9.9"]));
+        std::env::remove_var("GRYONIXNEXUSD_STATE_DIR");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

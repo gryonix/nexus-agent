@@ -106,7 +106,7 @@ ProtectSystem=full
 # jump still has to arrive through the existing app-triggered SSH rebuild,
 # which also rewrites this unit file and reloads it; every apply after that
 # one runs under a namespace that already has this entry.
-ReadWritePaths=-/etc/gryonixnexus /etc/systemd/system -/etc/caddy -/etc/nftables.d -/etc/wireguard -/etc/sysctl.d -/etc/sudoers.d -/etc/crowdsec -/usr/local/bin
+ReadWritePaths=-/etc/gryonixnexus /etc/systemd/system -/etc/caddy -/etc/nftables.d -/etc/wireguard -/etc/sysctl.d -/etc/modules-load.d -/etc/sudoers.d -/etc/crowdsec -/usr/local/bin
 
 [Install]
 WantedBy=multi-user.target

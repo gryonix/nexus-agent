@@ -237,16 +237,20 @@ restore_homepage() {
   fi
   # The old data is moved aside, never deleted: if the move back
   # fails it is the only way home.
-  previous='/opt/homepage/config'".pre-restore-$STAMP"
-  if [ -d '/opt/homepage/config' ]; then mv '/opt/homepage/config' "$previous"; saved=1; fi
-  if mv "$stage/config" '/opt/homepage/config'; then
-    if [ "$saved" -eq 1 ]; then echo "previous data kept at ${previous}"; fi
+  if [ ! -d "$stage/config" ]; then
+    echo "the archive carries no config, it is left as it is"
   else
-    echo "restore failed, rolling back to the previous data" >&2
-    rm -rf '/opt/homepage/config'
-    if [ "$saved" -eq 1 ]; then mv "$previous" '/opt/homepage/config'; fi
-    gd_compose_start_all 'homepage'
-    exit 1
+    previous='/opt/homepage/config'".pre-restore-$STAMP"
+    if [ -d '/opt/homepage/config' ]; then mv '/opt/homepage/config' "$previous"; saved=1; fi
+    if mv "$stage/config" '/opt/homepage/config'; then
+      if [ "$saved" -eq 1 ]; then echo "previous data kept at ${previous}"; fi
+    else
+      echo "restore failed, rolling back to the previous data" >&2
+      rm -rf '/opt/homepage/config'
+      if [ "$saved" -eq 1 ]; then mv "$previous" '/opt/homepage/config'; fi
+      gd_compose_start_all 'homepage'
+      exit 1
+    fi
   fi
   # Up again on every path, restored or not.
   gd_compose_start_all 'homepage'

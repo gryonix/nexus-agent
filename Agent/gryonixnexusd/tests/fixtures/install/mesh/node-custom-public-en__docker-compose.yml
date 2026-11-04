@@ -19,6 +19,10 @@ services:
       - /srv/node/state:/var/lib/tailscale
     environment:
       TS_STATE_DIR: /var/lib/tailscale
+      # Joins once; later starts reuse the saved identity.
+      TS_AUTH_ONCE: "true"
+      # A real interface, so the host itself reaches the mesh.
+      TS_USERSPACE: "false"
       TS_HOSTNAME: vault-host
       # Read from .env, which is 0600 and written once.
       TS_AUTHKEY: ${TS_AUTHKEY}

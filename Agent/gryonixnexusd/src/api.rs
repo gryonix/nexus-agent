@@ -448,6 +448,10 @@ async fn route_vault(path: &str, codec: Codec, bytes: Bytes, store: Arc<Mutex<St
             let req: pb::SetBackupDrivesRequest = codec.decode(&bytes)?;
             Ok(backup_drive::set_backup_drives(codec, req).await)
         }).map(Some),
+        "/gryonixnexusd.v1.Backup/SetBackupParts" => ({
+            let req: pb::SetBackupPartsRequest = codec.decode(&bytes)?;
+            Ok(backup::set_backup_parts(codec, req).await)
+        }).map(Some),
         "/gryonixnexusd.v1.Backup/FetchDriveBackup" => ({
             let req: pb::FetchDriveBackupRequest = codec.decode(&bytes)?;
             Ok(backup_drive::fetch_drive_backup(codec, req).await)
@@ -498,6 +502,14 @@ async fn route_update(path: &str, codec: Codec, bytes: Bytes) -> anyhow::Result<
             let req: pb::SetLockdownRequest = codec.decode(&bytes)?;
             Ok(lockdown::set_lockdown(codec, req).await)
         }).map(Some),
+        "/gryonixnexusd.v1.Lockdown/GetOpenAPI" => ({
+            let req: pb::GetOpenApiRequest = codec.decode(&bytes)?;
+            Ok(crate::open_api::get_open_api(codec, req).await)
+        }).map(Some),
+        "/gryonixnexusd.v1.Lockdown/SetOpenAPI" => ({
+            let req: pb::SetOpenApiRequest = codec.decode(&bytes)?;
+            Ok(crate::open_api::set_open_api(codec, req).await)
+        }).map(Some),
         "/gryonixnexusd.v1.Security/GetSecurityStatus" => ({
             let req: pb::GetSecurityStatusRequest = codec.decode(&bytes)?;
             Ok(security::get_security_status(codec, req).await)
@@ -547,6 +559,10 @@ async fn route_security(path: &str, codec: Codec, bytes: Bytes) -> anyhow::Resul
         "/gryonixnexusd.v1.Security/ListSshUsers" => ({
             let req: pb::ListSshUsersRequest = codec.decode(&bytes)?;
             Ok(security::list_ssh_users(codec, req).await)
+        }).map(Some),
+        "/gryonixnexusd.v1.Security/AuthorizeAppKey" => ({
+            let req: pb::AuthorizeAppKeyRequest = codec.decode(&bytes)?;
+            Ok(security::authorize_app_key(codec, req).await)
         }).map(Some),
         "/gryonixnexusd.v1.Security/SetSshKeyOnlyUsers" => ({
             let req: pb::SetSshKeyOnlyUsersRequest = codec.decode(&bytes)?;
@@ -707,6 +723,12 @@ async fn route_models(path: &str, codec: Codec, bytes: Bytes, store: Arc<Mutex<S
             let req: pb::DeletePreRestoreCopyRequest = codec.decode(&bytes)?;
             Ok(crate::pre_restore::delete(codec, req).await)
         }).map(Some),
+        _ => route_settings(path, codec, bytes, store).await,
+    }
+}
+
+async fn route_settings(path: &str, codec: Codec, bytes: Bytes, store: Arc<Mutex<Store>>) -> anyhow::Result<Option<Resp>> {
+    match path {
         "/gryonixnexusd.v1.Vaultwarden/GetVaultwardenTwoFactor" => (Ok(crate::vaultwarden_2fa::get(codec).await)).map(Some),
         "/gryonixnexusd.v1.Dns/SetDynamicDNS" => ({
             let req: pb::SetDynamicDnsRequest = codec.decode(&bytes)?;
@@ -771,6 +793,17 @@ async fn route_vpn(path: &str, codec: Codec, bytes: Bytes) -> anyhow::Result<Opt
         "/gryonixnexusd.v1.Vpn/SetVpnClientDns" => ({
             let req: pb::SetVpnClientDnsRequest = codec.decode(&bytes)?;
             Ok(vpn_clients::set_client_dns(codec, req).await)
+        }).map(Some),
+        "/gryonixnexusd.v1.Vpn/GetVpnSpeedFacts" => ({
+            let _req: pb::GetVpnSpeedFactsRequest = codec.decode(&bytes)?;
+            let facts = crate::install::vpn::mtu::speed_facts().await;
+            Ok(codec.encode(&facts).unwrap_or_else(|err| connect_error(hyper::StatusCode::INTERNAL_SERVER_ERROR, "internal", &err.to_string())))
+        }).map(Some),
+        "/gryonixnexusd.v1.Vpn/SetAmneziaKernel" => ({
+            let req: pb::SetAmneziaKernelRequest = codec.decode(&bytes)?;
+            crate::awg_kernel::switch(req.enabled);
+            let facts = crate::install::vpn::mtu::speed_facts().await;
+            Ok(codec.encode(&facts).unwrap_or_else(|err| connect_error(hyper::StatusCode::INTERNAL_SERVER_ERROR, "internal", &err.to_string())))
         }).map(Some),
         "/gryonixnexusd.v1.Vpn/GetVpnDns" => ({
             let req: pb::GetVpnDnsRequest = codec.decode(&bytes)?;

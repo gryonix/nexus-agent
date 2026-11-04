@@ -238,16 +238,20 @@ restore_jellyfin() {
   gd_compose_stop 'jellyfin' 'jellyfin'
   # The old data is moved aside, never deleted: if the move back
   # fails it is the only way home.
-  previous='/opt/jellyfin/config'".pre-restore-$STAMP"
-  if [ -d '/opt/jellyfin/config' ]; then mv '/opt/jellyfin/config' "$previous"; saved=1; fi
-  if mv "$stage/config" '/opt/jellyfin/config'; then
-    if [ "$saved" -eq 1 ]; then echo "previous data kept at ${previous}"; fi
+  if [ ! -d "$stage/config" ]; then
+    echo "the archive carries no config, it is left as it is"
   else
-    echo "restore failed, rolling back to the previous data" >&2
-    rm -rf '/opt/jellyfin/config'
-    if [ "$saved" -eq 1 ]; then mv "$previous" '/opt/jellyfin/config'; fi
-    gd_compose_start_all 'jellyfin'
-    exit 1
+    previous='/opt/jellyfin/config'".pre-restore-$STAMP"
+    if [ -d '/opt/jellyfin/config' ]; then mv '/opt/jellyfin/config' "$previous"; saved=1; fi
+    if mv "$stage/config" '/opt/jellyfin/config'; then
+      if [ "$saved" -eq 1 ]; then echo "previous data kept at ${previous}"; fi
+    else
+      echo "restore failed, rolling back to the previous data" >&2
+      rm -rf '/opt/jellyfin/config'
+      if [ "$saved" -eq 1 ]; then mv "$previous" '/opt/jellyfin/config'; fi
+      gd_compose_start_all 'jellyfin'
+      exit 1
+    fi
   fi
   # Up again on every path, restored or not.
   gd_compose_start_all 'jellyfin'

@@ -237,16 +237,20 @@ restore_adguard_home() {
   fi
   # The old data is moved aside, never deleted: if the move back
   # fails it is the only way home.
-  previous='/opt/adguardhome/conf'".pre-restore-$STAMP"
-  if [ -d '/opt/adguardhome/conf' ]; then mv '/opt/adguardhome/conf' "$previous"; saved=1; fi
-  if mv "$stage/conf" '/opt/adguardhome/conf'; then
-    if [ "$saved" -eq 1 ]; then echo "previous data kept at ${previous}"; fi
+  if [ ! -d "$stage/conf" ]; then
+    echo "the archive carries no conf, it is left as it is"
   else
-    echo "restore failed, rolling back to the previous data" >&2
-    rm -rf '/opt/adguardhome/conf'
-    if [ "$saved" -eq 1 ]; then mv "$previous" '/opt/adguardhome/conf'; fi
-    gd_compose_start_all 'adguardhome'
-    exit 1
+    previous='/opt/adguardhome/conf'".pre-restore-$STAMP"
+    if [ -d '/opt/adguardhome/conf' ]; then mv '/opt/adguardhome/conf' "$previous"; saved=1; fi
+    if mv "$stage/conf" '/opt/adguardhome/conf'; then
+      if [ "$saved" -eq 1 ]; then echo "previous data kept at ${previous}"; fi
+    else
+      echo "restore failed, rolling back to the previous data" >&2
+      rm -rf '/opt/adguardhome/conf'
+      if [ "$saved" -eq 1 ]; then mv "$previous" '/opt/adguardhome/conf'; fi
+      gd_compose_start_all 'adguardhome'
+      exit 1
+    fi
   fi
   # Up again on every path, restored or not.
   gd_compose_start_all 'adguardhome'

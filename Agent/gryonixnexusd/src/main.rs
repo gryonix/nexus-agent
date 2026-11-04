@@ -3,7 +3,9 @@
 mod agent_removal;
 mod agent_update;
 mod api;
+mod awg_kernel;
 mod backup;
+mod backup_leftovers;
 mod backup_drive;
 mod drive_watch;
 mod container_backup;
@@ -31,12 +33,14 @@ mod mesh;
 mod metrics;
 mod models;
 mod mods;
+mod open_api;
 mod move_run;
 mod move_transfer;
 mod move_upstream;
 mod health_watch;
 mod live;
 mod live_tunnel;
+mod live_system;
 mod notify;
 mod notify_send;
 mod panel_broker;
@@ -58,6 +62,8 @@ mod vpn_dns_priority;
 mod vpn_dns_relay;
 mod vpn_state;
 mod update;
+mod widget_feed;
+mod wrapper_stop;
 mod util;
 /// The deployment's own service passwords, sealed at rest
 mod vault;
@@ -180,12 +186,20 @@ fn spawn_background_work(store: &Arc<Mutex<state::Store>>) {
         }
     });
     agent_update::reconcile_on_startup();
+    tokio::spawn(install::execute::keep_panel_without_module_right());
+    tokio::spawn(async {
+        loop {
+            install::execute::keep_mesh_node_joined().await;
+            tokio::time::sleep(std::time::Duration::from_secs(600)).await;
+        }
+    });
     tokio::task::spawn_blocking(backup_drive::upgrade_fstab);
     tokio::task::spawn_blocking(install::host::backup_ctl_store::refresh_on_startup);
     agent_update::spawn();
-    tokio::spawn(async {
+    let tools_store = store.clone();
+    tokio::spawn(async move {
         loop {
-            keep_host_tools().await;
+            keep_host_tools(&tools_store).await;
             tokio::time::sleep(std::time::Duration::from_secs(600)).await;
         }
     });
@@ -330,7 +344,7 @@ mod tests {
     }
 }
 
-async fn keep_host_tools() {
+async fn keep_host_tools(store: &Arc<Mutex<state::Store>>) {
     cert_watch::retry_missing().await;
     match system_ctl::install_if_needed() {
         Ok(true) => tracing::info!("wrote the system updater"),
@@ -362,6 +376,38 @@ async fn keep_host_tools() {
         Ok(false) => {}
         Err(err) => tracing::warn!(%err, "could not rebuild the webmail sites"),
     }
+    if awg_kernel::refresh_udp_buffers().await {
+        tracing::info!("raised the UDP socket buffers for the VPN");
+    }
+    awg_kernel::refresh().await;
+    let tuned = install::vpn::mtu::refresh().await;
+    if !tuned.is_empty() {
+        tracing::info!(interfaces = ?tuned, "VPN interfaces set to MTU {}", install::vpn::mtu::MTU);
+    }
+    let removed = backup_leftovers::sweep();
+    if !removed.is_empty() {
+        tracing::info!(folders = ?removed, "removed what interrupted backups left");
+    }
+    refresh_host_rules(store).await;
+}
+
+async fn refresh_host_rules(store: &Arc<Mutex<state::Store>>) {
+    match install::mark_restore::refresh().await {
+        Ok(true) => tracing::info!("the mark restore leaves WireGuard's own mark alone"),
+        Ok(false) => {}
+        Err(err) => tracing::warn!(%err, "could not guard the mark restore"),
+    }
+    match install::vpn::port_share::refresh().await {
+        Ok(true) => tracing::info!("AmneziaWG on the shared port bypasses docker-proxy"),
+        Ok(false) => {}
+        Err(err) => tracing::warn!(%err, "could not refresh the shared VPN port"),
+    }
+    let language = install::execute::language_from_code(&notify::load(store).language);
+    match install::execute::refresh_mesh_root_page(language).await {
+        Ok(true) => tracing::info!("the mesh address shows a page now"),
+        Ok(false) => {}
+        Err(err) => tracing::warn!(%err, "could not add the mesh page"),
+    }
     match install::execute::refresh_mail_autoconfig_site().await {
         Ok(true) => tracing::info!("mail apps can now configure themselves"),
         Ok(false) => {}
@@ -371,6 +417,16 @@ async fn keep_host_tools() {
         Ok(true) => tracing::info!("refreshed the admin lockdown"),
         Ok(false) => {}
         Err(err) => tracing::warn!(%err, "could not refresh the admin lockdown"),
+    }
+    match install::host::update_ctl::refresh_current_check() {
+        Ok(true) => tracing::info!("scheduled updates skip services with nothing new"),
+        Ok(false) => {}
+        Err(err) => tracing::warn!(%err, "could not refresh the update wrapper"),
+    }
+    match install::host::update_ctl::refresh_mailcow_updater() {
+        Ok(true) => tracing::info!("mailcow updates through its own updater"),
+        Ok(false) => {}
+        Err(err) => tracing::warn!(%err, "could not refresh the update wrapper for mailcow"),
     }
     match install::host::uninstall::refresh_image_reclaim() {
         Ok(true) => tracing::info!("removals now reclaim their images"),

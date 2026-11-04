@@ -15,8 +15,13 @@ const SPACING: Duration = Duration::from_secs(15);
 /// How often a step may spend the urgent budget
 const URGENT_SPACING: Duration = Duration::from_secs(60);
 const STALE_AFTER: i64 = 300;
+/// A silent job's card is refreshed before it goes stale
+const HEARTBEAT: Duration = Duration::from_secs(240);
+const HEARTBEAT_CHECK: Duration = Duration::from_secs(30);
 const LINGER: i64 = 30;
 const FAILED_LINGER: i64 = 120;
+/// The app's time to claim a job before server cards
+pub const START_GRACE: Duration = Duration::from_secs(8);
 
 struct Watch {
     /// The card the app started itself, if any
@@ -31,6 +36,8 @@ struct Watch {
     last_sent: Option<Instant>,
     flush_planned: bool,
     last_urgent: Option<Instant>,
+    /// When the agent began following the job
+    since: Instant,
 }
 
 fn watches() -> &'static Mutex<HashMap<String, Watch>> {
@@ -45,6 +52,29 @@ fn store() -> &'static OnceLock<Arc<Mutex<Store>>> {
 
 pub fn init(shared: Arc<Mutex<Store>>) {
     let _ = store().set(shared);
+    let Ok(runtime) = tokio::runtime::Handle::try_current() else { return };
+    runtime.spawn(async {
+        loop {
+            tokio::time::sleep(HEARTBEAT_CHECK).await;
+            silent_bodies().into_iter().for_each(send);
+        }
+    });
+}
+
+/// The same state again for cards whose job went quiet
+fn silent_bodies() -> Vec<Value> {
+    let mut all = watches().lock().unwrap();
+    let mut bodies = Vec::new();
+    for (job_id, watch) in all.iter_mut() {
+        let quiet_since = watch.last_sent.unwrap_or(watch.since);
+        if !watch.is_shown() || watch.flush_planned || quiet_since.elapsed() < HEARTBEAT {
+            continue;
+        }
+        watch.last_sent = Some(Instant::now());
+        let body = body_of(watch, false);
+        bodies.extend(watch.addressed(job_id, &body));
+    }
+    bodies
 }
 
 // MARK: reading the journal
@@ -103,7 +133,7 @@ fn strip_ansi(text: &str) -> String {
 
 /// The app's ContentState, key for key
 pub fn content_state(text: &str, progress: Option<f64>, finished: bool, failure: Option<&str>) -> Value {
-    let mut state = json!({ "progressText": text, "isFinished": finished });
+    let mut state = json!({ "progressText": text, "isFinished": finished, "updatedAt": notify::now() - APPLE_EPOCH });
     if let Some(progress) = progress.filter(|_| !finished) {
         state["progress"] = json!(progress);
     }
@@ -126,16 +156,35 @@ fn headline(failed: bool, russian: bool) -> &'static str {
 
 pub fn watch(job_id: &str, token: &str, title: &str) {
     let mut all = watches().lock().unwrap();
-    if let Some(cards) = all.get_mut(job_id).filter(|w| w.job_cards) {
-        cards.token = token.to_string();
+    let Some(known) = all.get_mut(job_id) else {
+        all.insert(job_id.to_string(), Watch::new(token, false, title, String::new()));
         return;
+    };
+    known.token = token.to_string();
+    if !known.job_cards && !title.is_empty() {
+        known.title = title.to_string();
     }
-    all.insert(job_id.to_string(), Watch::new(token, false, title, String::new()));
 }
 
 impl Watch {
+    /// Whether any card shows this job
+    fn is_shown(&self) -> bool {
+        self.job_cards || !self.token.is_empty()
+    }
+
     fn new(token: &str, job_cards: bool, title: &str, text: String) -> Watch {
-        Watch { token: token.to_string(), job_cards, title: title.to_string(), text, progress: None, step: None, last_sent: None, flush_planned: false, last_urgent: None }
+        Watch {
+            token: token.to_string(),
+            job_cards,
+            title: title.to_string(),
+            text,
+            progress: None,
+            step: None,
+            last_sent: None,
+            flush_planned: false,
+            last_urgent: None,
+            since: Instant::now(),
+        }
     }
 
     /// One body per destination: the job's cards, the app's own
@@ -154,17 +203,42 @@ impl Watch {
     }
 }
 
-/// Starts the job's card on every iPhone of the server
+/// Starts server cards unless the app claims the job
 pub fn job_began(kind: i32, subject: &str, job_id: &str) {
+    if !shows_card(kind) {
+        return;
+    }
     let Some(config) = config().filter(relay_ready) else { return };
     let russian = config.russian();
     let title = format!("{} · {}", notify::run_name(kind, russian), subject);
     let text = if russian { "Запуск…" } else { "Starting…" }.to_string();
-    let body = start_body(job_id, kind, &title, &text, &config);
-    let mut watch = Watch::new("", true, &title, text);
+    watches().lock().unwrap().entry(job_id.to_string()).or_insert_with(|| Watch::new("", false, &title, text));
+    let Ok(runtime) = tokio::runtime::Handle::try_current() else { return };
+    let job_id = job_id.to_string();
+    runtime.spawn(async move {
+        tokio::time::sleep(START_GRACE).await;
+        match claim_unwatched(&job_id, kind, &config) {
+            Some(body) => {
+                tracing::info!(job = %job_id, "no app card follows the job; starting server cards");
+                send_to(START_PATH, body);
+            }
+            None => tracing::info!(job = %job_id, "the app's card follows the job"),
+        }
+    });
+}
+
+/// The start request, when no app card follows the job
+fn claim_unwatched(job_id: &str, kind: i32, config: &notify::Config) -> Option<Value> {
+    let mut all = watches().lock().unwrap();
+    let watch = all.get_mut(job_id).filter(|w| w.token.is_empty())?;
+    watch.job_cards = true;
     watch.last_sent = Some(Instant::now());
-    watches().lock().unwrap().insert(job_id.to_string(), watch);
-    send_to(START_PATH, body);
+    Some(start_body(job_id, kind, &watch.title, &watch.text, config))
+}
+
+/// The agent's own updates get no card
+fn shows_card(kind: i32) -> bool {
+    pb::JobKind::try_from(kind).ok() != Some(pb::JobKind::AgentUpdate)
 }
 
 /// Unix seconds at Apple's reference date
@@ -233,7 +307,7 @@ pub fn line(job_id: &str, text: &str) {
 
 /// The job ended: the island opens with the outcome
 pub fn finished(job_id: &str, failure: Option<&str>) -> bool {
-    let Some(watch) = watches().lock().unwrap().remove(job_id) else { return false };
+    let Some(watch) = watches().lock().unwrap().remove(job_id).filter(Watch::is_shown) else { return false };
     let russian = config().is_some_and(|c| c.language.starts_with("ru"));
     let (shown, closing) = ending_bodies(&watch, failure, russian, notify::now());
     watch.addressed(job_id, &shown).into_iter().for_each(send);
@@ -317,6 +391,10 @@ fn update_body(watch: &mut Watch) -> Value {
     if urgent {
         watch.last_urgent = Some(Instant::now());
     }
+    body_of(watch, urgent)
+}
+
+fn body_of(watch: &Watch, urgent: bool) -> Value {
     let mut state = content_state(&watch.text, watch.progress, false, None);
     if let Some((done, total)) = watch.step {
         state["step"] = json!(done);
@@ -435,10 +513,16 @@ mod tests {
 
     #[test]
     fn the_state_matches_the_app() {
-        let running = content_state("Pulling", Some(0.5), false, None);
+        let mut running = content_state("Pulling", Some(0.5), false, None);
+        let stamped = running["updatedAt"].as_i64().expect("an update time");
+        assert!((stamped - (notify::now() - APPLE_EPOCH)).abs() < 5, "seconds since 2001, as the app reads dates");
+        running.as_object_mut().unwrap().remove("updatedAt");
         assert_eq!(running, json!({ "progressText": "Pulling", "isFinished": false, "progress": 0.5 }));
-        let failed = content_state("Pulling", Some(0.5), true, Some("disk full"));
+        let mut failed = content_state("Pulling", Some(0.5), true, Some("disk full"));
+        failed.as_object_mut().unwrap().remove("updatedAt");
         assert_eq!(failed, json!({ "progressText": "Pulling", "isFinished": true, "errorMessage": "disk full" }));
+        assert!(!shows_card(pb::JobKind::AgentUpdate as i32));
+        assert!(shows_card(pb::JobKind::Backup as i32));
     }
 
     #[test]
@@ -466,6 +550,34 @@ mod tests {
         let (failed_shown, failed) = ending_bodies(&watch, Some("disk full"), false, 1000);
         assert!(failed.get("dismiss_at").is_none(), "a failure stays on the lock screen");
         assert_eq!(failed_shown["stale_at"], 1000 + FAILED_LINGER + STALE_AFTER);
+    }
+
+    #[test]
+    fn a_job_the_app_claims_gets_no_server_cards() {
+        let config = notify::Config::default();
+        watches().lock().unwrap().insert("job-claimed".into(), Watch::new("", false, "Update · immich", "Starting…".into()));
+        watch("job-claimed", "app-card", "Updating immich");
+        assert!(claim_unwatched("job-claimed", pb::JobKind::Update as i32, &config).is_none());
+        let kept = watches().lock().unwrap().remove("job-claimed").unwrap();
+        assert_eq!((kept.token.as_str(), kept.title.as_str(), kept.job_cards), ("app-card", "Updating immich", false));
+    }
+
+    #[test]
+    fn an_unclaimed_job_starts_server_cards_with_its_latest_line() {
+        let config = notify::Config::default();
+        watches().lock().unwrap().insert("job-unclaimed".into(), Watch::new("", false, "Update · immich", "Starting…".into()));
+        line("job-unclaimed", "Pulling images\n");
+        let body = claim_unwatched("job-unclaimed", pb::JobKind::Update as i32, &config).unwrap();
+        assert_eq!(body["state"]["progressText"], "Pulling images");
+        let claimed = watches().lock().unwrap().remove("job-unclaimed").unwrap();
+        assert!(claimed.job_cards);
+    }
+
+    #[test]
+    fn a_job_no_card_showed_is_not_called_shown() {
+        watches().lock().unwrap().insert("job-unseen".into(), Watch::new("", false, "Update", String::new()));
+        assert!(!finished("job-unseen", None), "a short job ended before any card opened");
+        assert!(watches().lock().unwrap().get("job-unseen").is_none());
     }
 
     #[test]
@@ -527,6 +639,43 @@ mod tests {
     fn the_sample_card_counts_in_the_owners_language() {
         assert_eq!(check_step(2, true), "Шаг 2 из 6");
         assert_eq!(check_step(6, false), "Step 6 of 6");
+    }
+
+    #[test]
+    fn a_quiet_job_refreshes_its_card_without_spending_the_urgent_budget() {
+        let mut quiet = Watch::new("quiet-card", false, "Backing up · immich", "Copying".into());
+        quiet.last_sent = Some(Instant::now() - HEARTBEAT);
+        let mut fresh = Watch::new("fresh-card", false, "Backing up · immich", "Copying".into());
+        fresh.last_sent = Some(Instant::now());
+        let mut never_sent = Watch::new("never-sent-card", false, "Backing up · immich", "Copying".into());
+        never_sent.since = Instant::now() - HEARTBEAT;
+        {
+            let mut all = watches().lock().unwrap();
+            all.insert("job-quiet".into(), quiet);
+            all.insert("job-fresh".into(), fresh);
+            all.insert("job-never-sent".into(), never_sent);
+        }
+        let ours = |bodies: Vec<Value>| -> Vec<String> {
+            let mut tokens: Vec<String> = bodies.iter().filter_map(|b| b["token"].as_str()).filter(|t| t.ends_with("-card")).map(String::from).collect();
+            tokens.sort();
+            tokens
+        };
+        let bodies = silent_bodies();
+        let quiet_body = bodies.iter().find(|b| b["token"] == "quiet-card").unwrap().clone();
+        assert_eq!(ours(bodies), vec!["never-sent-card", "quiet-card"], "only quiet cards are refreshed");
+        assert_eq!(quiet_body["urgent"], false);
+        assert_eq!(quiet_body["state"]["progressText"], "Copying");
+        assert!(ours(silent_bodies()).is_empty(), "once per heartbeat");
+        let mut all = watches().lock().unwrap();
+        assert!(all.get("job-quiet").unwrap().last_urgent.is_none());
+        for job in ["job-quiet", "job-fresh", "job-never-sent"] {
+            all.remove(job);
+        }
+    }
+
+    #[test]
+    fn a_card_is_refreshed_before_it_goes_stale() {
+        assert!(((HEARTBEAT + HEARTBEAT_CHECK).as_secs() as i64) < STALE_AFTER);
     }
 
     #[test]

@@ -60,7 +60,7 @@ fn owner_line(owner: &str) -> String {
 
 const OWNER_TAG: &str = "gryonixnexus:";
 
-const PUBLIC_PATHS_MATCHER: &str = "gryonixnexus_open";
+pub(super) const PUBLIC_PATHS_MATCHER: &str = "gryonixnexus_open";
 
 pub fn owner_of(block: &str) -> Option<String> {
     block.lines().skip(1).find_map(|line| {
@@ -178,6 +178,20 @@ pub fn site_with_public_paths(
     }
 }
 
+/// A notice at the root, the rest goes upstream
+pub fn with_root_notice(site: &str, notice: &str) -> String {
+    let Some(at) = site.rfind("\n    reverse_proxy ") else { return site.to_string() };
+    let Some(proxy) = site[at + 1..].strip_suffix("\n}") else { return site.to_string() };
+    if proxy.contains('{') || proxy.contains('\n') {
+        return site.to_string();
+    }
+    let notice = notice.replace(['"', '\\'], "'");
+    format!(
+        "{}\n    handle / {{\n        respond \"{notice}\" 200\n    }}\n    handle {{\n    {proxy}\n    }}\n}}",
+        &site[..at]
+    )
+}
+
 /// Matcher for the paths the portal still covers
 pub const PORTAL_PATHS_MATCHER: &str = "gryonixnexus_portal";
 
@@ -213,7 +227,7 @@ fn without_extra_autoconfig_sites(blocks: Vec<String>) -> Vec<String> {
 }
 
 /// A mailcow block whose names are only autodiscover and autoconfig
-fn serves_only_autoconfig(block: &str) -> bool {
+pub(super) fn serves_only_autoconfig(block: &str) -> bool {
     let trimmed = block.trim();
     let Some(names) = trimmed.lines().next().and_then(|line| line.strip_suffix(" {")) else { return false };
     owner_of(trimmed).as_deref() == Some("mailcow")
@@ -308,7 +322,7 @@ pub fn site_overwriting_forwarded_for(
     site_with_public_paths(owner, hostname, upstream_port, admin_guard, upstream_https, tls_internal, false, &[], true)
 }
 
-pub(super) fn top_level_blocks(text: &str) -> Vec<&str> {
+pub fn top_level_blocks(text: &str) -> Vec<&str> {
     let bytes = text.as_bytes();
     let (mut pieces, mut start, mut depth) = (Vec::new(), 0usize, 0i32);
     let (mut quote, mut comment) = (None::<u8>, false);

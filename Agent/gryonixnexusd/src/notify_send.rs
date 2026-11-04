@@ -161,7 +161,7 @@ pub fn alert(problem: &Problem, appeared: bool, host: &str, russian: bool) -> Al
         job_id: None,
         address: None,
         at: None,
-        args: vec![host.to_string(), problem.subject.clone(), problem.detail.clone()],
+        args: vec![host.to_string(), problem.container().to_string(), problem.detail.clone()],
         title: fill(title),
         body,
         key,
