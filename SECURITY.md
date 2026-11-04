@@ -6,7 +6,7 @@ report it privately rather than opening a public issue.
 
 ## Reporting a vulnerability
 
-Email **danyil@grypak.com** with:
+Email **[security@gryonix.com](mailto:security@gryonix.com)** with:
 
 - A description of the vulnerability and its potential impact.
 - Steps to reproduce, or a proof of concept if available.
