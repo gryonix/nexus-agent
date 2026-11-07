@@ -42,6 +42,23 @@ are gitignored. The table names every source and its pinned tag.
 | [amnezia-libxray](https://github.com/amnezia-vpn/amnezia-libxray) `v1.0.2` | MIT | the Xray core's C and Go entry points. Built into the archive above on Apple; built here through `Android/xraybridge` on Android. |
 | [xray-core](https://github.com/amnezia-vpn/amnezia-xray-core) `v1.260724.0` | **MPL-2.0** | VLESS/Reality. Built without its Shadowsocks 2022 code; see the notes above. |
 | [hev-socks5-tunnel](https://github.com/heiher/hev-socks5-tunnel) `2.9.3` | MIT | the lwIP stack that turns tunnel packets into SOCKS5 connections for the core above. Vendors lwIP (BSD-3-Clause), libyaml (MIT) and hev-task-system (MIT). |
+| [apernet/quic-go](https://github.com/apernet/quic-go) | MIT | QUIC for xray-core's own Hysteria2 outbound. No Hysteria code from apernet/hysteria itself is linked. |
+
+**Advanced VPN: what is downloaded, and what is deliberately absent.**
+
+- **Country database (GeoIP) is DATA, downloaded at run time, never bundled.**
+  The default address is [v2fly/geoip](https://github.com/v2fly/geoip)'s
+  `geoip.dat` (CC BY-SA 4.0), built from [DB-IP](https://db-ip.com) Lite data
+  (CC BY 4.0). The user can point it elsewhere. The app keeps only the
+  countries the user's rules name, as plain CIDR lists. Loyalsoldier's and
+  MetaCubeX's rule sets are GPL-3.0 repositories and are not the default.
+- **TUIC is not supported.** Every client engine is GPL-3.0 (tuic, sing-box,
+  mihomo) and would have to be linked into the tunnel extension, which an iOS
+  Network Extension cannot avoid; so none is.
+- **NaiveProxy's own client (Chromium, BSD-3-Clause) is not built in** — it is a
+  Chromium network stack. NaiveProxy servers are reached as HTTP/2 CONNECT over
+  TLS by xray-core's HTTP outbound, without Naive's padding.
+- **No TLS interception (MITM) and no scripts.** Host rewrites run in xray's DNS.
 
 **OpenVPN is carried on neither platform, and no entry above is OpenVPN's.**
 The pinned tags for `OpenVPNAdapter` (AGPL-3.0) and `ics-openvpn` (GPLv2 with

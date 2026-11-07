@@ -3,6 +3,12 @@
 mod agent_removal;
 mod agent_update;
 mod api;
+mod app_modules;
+mod audio_outputs;
+mod odio_api;
+mod mcp;
+mod mcp_access;
+mod modules;
 mod awg_kernel;
 mod backup;
 mod backup_leftovers;
@@ -21,6 +27,7 @@ mod discover;
 mod dkim;
 mod exposure;
 mod docker_assets;
+mod docker_networks;
 mod health;
 mod history;
 mod install;
@@ -93,7 +100,7 @@ const SOCKET_PATH: &str = "/run/gryonixnexusd.sock";
 const STATE_DIR: &str = "/var/lib/gryonixnexus/agent";
 const PAIRING_CODE_TTL_SECS: i64 = 600;
 
-const COMMANDS: [&str; 5] = ["bridge", "version", "--version", "-V", "pair-code"];
+const COMMANDS: [&str; 6] = ["bridge", "version", "--version", "-V", "pair-code", "mcp"];
 
 fn ensure_socket_free(path: &str) -> std::io::Result<()> {
     if std::os::unix::net::UnixStream::connect(path).is_ok() {
@@ -124,7 +131,11 @@ fn worker_threads() -> usize {
 }
 
 async fn run() -> anyhow::Result<()> {
-    tracing_subscriber::fmt::init();
+    if std::env::args().nth(1).as_deref() == Some("mcp") {
+        tracing_subscriber::fmt().with_writer(std::io::stderr).init();
+    } else {
+        tracing_subscriber::fmt::init();
+    }
 
     let socket_path = std::env::var("GRYONIXNEXUSD_SOCKET").unwrap_or_else(|_| SOCKET_PATH.to_string());
     let state_dir = std::env::var("GRYONIXNEXUSD_STATE_DIR").unwrap_or_else(|_| STATE_DIR.to_string());
@@ -132,6 +143,10 @@ async fn run() -> anyhow::Result<()> {
     if let Some(unknown) = command.as_deref().filter(|c| !COMMANDS.contains(c)) {
         eprintln!("unknown command {unknown:?}; known: {}", COMMANDS.join(", "));
         std::process::exit(2);
+    }
+
+    if command.as_deref() == Some("mcp") {
+        return mcp::serve(&state_dir).await;
     }
 
     if !matches!(command.as_deref(), Some("bridge") | Some("version") | Some("--version") | Some("-V")) {

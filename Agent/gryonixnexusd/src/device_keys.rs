@@ -64,7 +64,7 @@ fn valid_tag(tag: &str) -> bool {
     (6..=64).contains(&tag.len()) && tag.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
 }
 
-async fn run_ctl(args: &[&str]) -> Result<i32, String> {
+pub(crate) async fn run_ctl(args: &[&str]) -> Result<i32, String> {
     let mut command = match systemd_run() {
         Some(bin) => {
             let mut command = Command::new(bin);

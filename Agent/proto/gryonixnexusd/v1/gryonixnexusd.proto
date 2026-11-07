@@ -359,6 +359,105 @@ service Exposure {
   rpc ProbePublicPorts(ProbePublicPortsRequest) returns (ProbePublicPortsResponse);
   // The public key of the local certificate authority Caddy signs internal sites with.
   rpc GetLocalRootCA(GetLocalRootCARequest) returns (GetLocalRootCAResponse);
+  // Sites that also answer at a .local name on the home network.
+  rpc GetLocalAliases(GetLocalAliasesRequest) returns (LocalAliasesState);
+  // Adds or removes a site's .local name; the answer is read back from the Caddyfile.
+  rpc SetLocalAlias(SetLocalAliasRequest) returns (LocalAliasesState);
+  // Lets only private addresses reach these ports, Docker-published ones too.
+  // An empty list removes the rules.
+  rpc SetHomeOnlyPorts(SetHomeOnlyPortsRequest) returns (SetHomeOnlyPortsResponse);
+}
+
+message HomeOnlyPort {
+  // "tcp" or "udp".
+  string proto = 1;
+  uint32 port = 2;
+}
+
+message SetHomeOnlyPortsRequest {
+  repeated HomeOnlyPort ports = 1;
+}
+
+message SetHomeOnlyPortsResponse {
+  // The ports now kept to private addresses.
+  repeated HomeOnlyPort ports = 1;
+}
+
+// A read-only MCP door for outside AI agents, over SSH with its own key.
+service McpAccess {
+  rpc GetMcpAccess(GetMcpAccessRequest) returns (McpAccessState);
+  // On: the key may only run `gryonixnexusd mcp`. Off: key and sudo line go.
+  rpc SetMcpAccess(SetMcpAccessRequest) returns (McpAccessState);
+}
+
+message GetMcpAccessRequest {}
+
+message SetMcpAccessRequest {
+  bool enabled = 1;
+  // ed25519 public key line; read only when enabled.
+  string public_key = 2;
+}
+
+message McpAccessState {
+  bool enabled = 1;
+  // Accounts the key is put on; the client connects as one of them.
+  repeated string users = 2;
+  // What the key is held to, for the client's own notes.
+  string command = 3;
+}
+
+// The app's optional modules this server keeps on, shared by every device.
+service AppModules {
+  rpc GetAppModules(GetAppModulesRequest) returns (AppModuleSet);
+  // Replaces the whole set and answers with what was stored.
+  rpc SetAppModules(AppModuleSet) returns (AppModuleSet);
+}
+
+message GetAppModulesRequest {}
+
+message AppModuleSet {
+  // Module ids that are on, e.g. "ai", "dockerAdvanced".
+  repeated string on = 1;
+}
+
+// Sound hardware of the machine, for the AirPlay speaker.
+service Audio {
+  // Playback devices ALSA knows, read from /proc/asound.
+  rpc ListAudioOutputs(ListAudioOutputsRequest) returns (ListAudioOutputsResponse);
+  // One call to the audio hub's local API (odio-api on 127.0.0.1:8018),
+  // limited to reading state and the controls the app offers.
+  rpc OdioCall(OdioCallRequest) returns (OdioCallResponse);
+}
+
+message OdioCallRequest {
+  // "GET" or "POST".
+  string method = 1;
+  // e.g. /audio/server/volume; anything off the allowed list is refused.
+  string path = 2;
+  // JSON body for POST, empty otherwise.
+  string body = 3;
+}
+
+message OdioCallResponse {
+  // HTTP status odio-api answered with.
+  uint32 status = 1;
+  // Its JSON body, as is.
+  string body = 2;
+}
+
+message ListAudioOutputsRequest {}
+
+message AudioOutput {
+  // ALSA device name, e.g. hw:CARD=Headphones,DEV=0.
+  string device = 1;
+  // Card and device names as the driver reports them.
+  string title = 2;
+  // The card's volume controls, from amixer; empty without alsa-utils.
+  repeated string mixers = 3;
+}
+
+message ListAudioOutputsResponse {
+  repeated AudioOutput outputs = 1;
 }
 
 message ProbePublicPortsRequest {
@@ -377,6 +476,24 @@ message ProbePublicPortsResponse {
 }
 
 message GetLocalRootCARequest {}
+
+message GetLocalAliasesRequest {}
+
+message SetLocalAliasRequest {
+  // The site's public name, e.g. vault.example.com.
+  string host = 1;
+  bool on = 2;
+}
+
+message LocalAlias {
+  string host = 1;
+  // e.g. vault.local
+  string alias = 2;
+}
+
+message LocalAliasesState {
+  repeated LocalAlias aliases = 1;
+}
 
 message GetLocalRootCAResponse {
   // PEM text of the root certificate; empty when Caddy has none.
@@ -1168,6 +1285,9 @@ service Containers {
   rpc RemoveVolume(RemoveVolumeRequest) returns (DockerRemovalResult);
   // Remove every unused image and volume except managed services' volumes.
   rpc PruneUnused(PruneUnusedRequest) returns (PruneUnusedResult);
+  // Networks the engine holds; removing refuses built-in, used or managed ones.
+  rpc ListNetworks(ListNetworksRequest) returns (NetworkInventory);
+  rpc RemoveNetwork(RemoveNetworkRequest) returns (DockerRemovalResult);
 }
 
 // Multi-device control of one server: pair a new pult, list them, revoke, and
@@ -3879,6 +3999,8 @@ message NotifyChecks {
   bool operations = 8;
   // Someone signed in over SSH, not with an app key.
   bool ssh_logins = 9;
+  // The machine stays overloaded: load twice its cores, or memory nearly gone.
+  bool unusual_load = 10;
 }
 
 message NotifySettings {
@@ -4267,6 +4389,33 @@ message DockerVolume {
 message VolumeInventory {
   repeated DockerVolume volumes = 1;
   string unavailable_reason = 2;
+}
+
+message ListNetworksRequest {}
+
+message DockerNetwork {
+  string id = 1;
+  string name = 2;
+  string driver = 3;
+  string scope = 4;
+  uint32 containers = 5;
+  bool in_use = 6;
+  // Belongs to a compose project of a catalog service.
+  bool managed = 7;
+  // bridge, host or none: the engine's own.
+  bool builtin = 8;
+  // No route to the outside.
+  bool internal = 9;
+  string subnet = 10;
+}
+
+message NetworkInventory {
+  repeated DockerNetwork networks = 1;
+  string unavailable_reason = 2;
+}
+
+message RemoveNetworkRequest {
+  string name = 1;
 }
 
 message RemoveImageRequest {

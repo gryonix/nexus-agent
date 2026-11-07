@@ -128,7 +128,7 @@ pub async fn scan() -> Result<pb::DiscoverResult> {
     for (id, display, members) in &groups {
         services.push(build_service(id, display, members).await);
     }
-    for native in crate::native::ALL {
+    for native in crate::native::all() {
         if let Some(service) = native.snapshot().await {
             services.push(service);
         }
@@ -214,6 +214,12 @@ const CATALOG: &[(&str, &str, &str)] = &[
     ("shairport-sync", "shairport-sync", "AirPlay speaker"),
     ("gryonixnexus-uxplay", "uxplay", "AirPlay screen"),
     ("gryonixnexus-odio", "odio", "Audio hub (odio)"),
+    ("snapserver", "snapserver", "Multi-room server (Snapcast)"),
+    ("snapclient", "snapclient", "Multi-room speaker (Snapcast)"),
+    ("upmpdcli", "upmpdcli", "DLNA speaker"),
+    ("bluealsa", "bluealsa", "Bluetooth speaker"),
+    ("raspotify", "raspotify", "Spotify Connect speaker"),
+    ("mympd", "mympd", "Music library (MPD + myMPD)"),
     ("photoprism", "photoprism", "PhotoPrism"),
     ("seafile", "seafile", "Seafile"),
     ("psono", "psono", "Psono"),

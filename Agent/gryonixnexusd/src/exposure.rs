@@ -168,3 +168,55 @@ mod tests {
         assert!(!connects(loopback, open).await);
     }
 }
+
+fn aliases_state(caddyfile: &str) -> pb::LocalAliasesState {
+    let aliases = crate::install::local_alias::local_aliases(caddyfile)
+        .into_iter()
+        .map(|(host, alias)| pb::LocalAlias { host, alias })
+        .collect();
+    pb::LocalAliasesState { aliases }
+}
+
+fn encode_aliases(codec: Codec) -> Resp {
+    let state = aliases_state(&crate::install::execute::current_caddyfile());
+    codec.encode(&state).unwrap_or_else(|err| connect_error(StatusCode::INTERNAL_SERVER_ERROR, "internal", &err.to_string()))
+}
+
+/// Sites that also answer at a .local name
+pub async fn get_local_aliases(codec: Codec, _req: pb::GetLocalAliasesRequest) -> Resp {
+    encode_aliases(codec)
+}
+
+/// Adds or removes one site's .local name
+pub async fn set_local_alias(codec: Codec, req: pb::SetLocalAliasRequest) -> Resp {
+    let host = req.host.trim().to_ascii_lowercase();
+    let edit = |existing: &str| crate::install::local_alias::with_local_alias(existing, &host, req.on);
+    if let Err(why) = crate::install::execute::apply_caddyfile_edit(edit).await {
+        return connect_error(StatusCode::UNPROCESSABLE_ENTITY, "failed_precondition", &why);
+    }
+    encode_aliases(codec)
+}
+
+/// Keeps the listed ports to private addresses
+pub async fn set_home_only_ports(codec: Codec, req: pb::SetHomeOnlyPortsRequest) -> Resp {
+    use crate::install::{firewall, home_only_ports};
+    let pairs: Vec<(String, u32)> = req.ports.iter().map(|p| (p.proto.clone(), p.port)).collect();
+    let ports = match home_only_ports::parse(&pairs) {
+        Ok(ports) => ports,
+        Err(why) => return connect_error(StatusCode::BAD_REQUEST, "invalid_argument", &why),
+    };
+    let text = home_only_ports::rules(&ports);
+    if let Err(why) = firewall::apply_rules(home_only_ports::LABEL, &text).await {
+        return connect_error(StatusCode::UNPROCESSABLE_ENTITY, "failed_precondition", &why);
+    }
+    if text.is_empty() {
+        let _ = tokio::process::Command::new(firewall::nft_bin())
+            .args(["delete", "table", "inet", "gryonixnexus_home_only"])
+            .output()
+            .await;
+    }
+    let kept = ports.iter().map(|p| pb::HomeOnlyPort { proto: p.proto.to_string(), port: u32::from(p.port) }).collect();
+    codec
+        .encode(&pb::SetHomeOnlyPortsResponse { ports: kept })
+        .unwrap_or_else(|err| connect_error(StatusCode::INTERNAL_SERVER_ERROR, "internal", &err.to_string()))
+}

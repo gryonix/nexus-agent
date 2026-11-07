@@ -48,6 +48,7 @@ use super::home_assistant;
 use super::mosquitto;
 use super::zigbee2mqtt;
 use super::shairport_sync;
+use super::packaged;
 use super::uxplay;
 use super::odio;
 use super::jellyfin;
@@ -109,6 +110,12 @@ const IMPLEMENTED_SERVICE_IDS: &[&str] = &[
     "shairport-sync",
     "uxplay",
     "odio",
+    "snapserver",
+    "snapclient",
+    "upmpdcli",
+    "bluealsa",
+    "raspotify",
+    "mympd",
     "minecraft-java",
     "minecraft-bedrock",
     "crafty-controller",
@@ -647,6 +654,8 @@ pub enum Rejection {
     ZigbeeWithoutAStick,
     /// A named stick that is not plugged into this machine
     StickMissing { service: &'static str, device: String },
+    /// The audio hub already runs this player, or the reverse
+    OverlapsAudioHub(&'static str),
     SiteNameTaken(Vec<String>),
     /// This host is already installing this service
     InstallAlreadyRunning(String),
@@ -772,6 +781,15 @@ impl Rejection {
                      it in, or correct its path in the app, then install again. Nothing has been changed"
                 ),
             ),
+            Rejection::OverlapsAudioHub(service) => (
+                StatusCode::CONFLICT,
+                "failed_precondition",
+                format!(
+                    "{service} will not be installed: the audio hub (odio) on this machine runs the \
+                     same player, and two copies fight over the sound card. Use the hub's own, or \
+                     remove one of them first. Nothing has been changed"
+                ),
+            ),
             Rejection::InstallAlreadyRunning(job) => (
                 StatusCode::CONFLICT,
                 "already_exists",
@@ -825,6 +843,7 @@ fn home_only_service_away(
         "shairport-sync" if !machine_is_at_home(input, role, dynamic_dns) => Some("AirPlay speaker"),
         "uxplay" if !machine_is_at_home(input, role, dynamic_dns) => Some("AirPlay screen"),
         "odio" if !machine_is_at_home(input, role, dynamic_dns) => Some("Audio hub (odio)"),
+        id if !machine_is_at_home(input, role, dynamic_dns) && packaged::find(id).is_some() => packaged::find(id).map(|spec| spec.display),
         _ => None,
     }
 }
@@ -934,6 +953,7 @@ fn compose_project(label: &str) -> &'static str {
         "shairport-sync" => shairport_sync::COMPOSE_PROJECT,
         "uxplay" => uxplay::UNIT,
         "odio" => "gryonixnexus-odio",
+        id if packaged::find(id).is_some() => packaged::find(id).map_or("", |spec| spec.id),
         "ollama" => ollama::COMPOSE_PROJECT,
         "open-webui" => open_webui::COMPOSE_PROJECT,
         "litellm" => litellm::COMPOSE_PROJECT,
@@ -1143,6 +1163,7 @@ fn apply_shairport(input: &mut Input, req: &pb::InstallServiceRequest) {
     input.shairport_mode = setting_or(req, "shairport_mode", &input.shairport_mode);
     input.shairport_name = setting_or(req, "shairport_name", &input.shairport_name);
     input.shairport_output = setting_or(req, "shairport_output", &input.shairport_output);
+    input.shairport_options = setting_or(req, "shairport_options", &input.shairport_options);
     input.uxplay_name = setting_or(req, "uxplay_name", &input.uxplay_name);
 }
 
@@ -1462,7 +1483,10 @@ fn refuse_unworkable_request(req: &pb::InstallServiceRequest, label: &str, input
     if let Some((service, device)) = stick_missing(label, input) {
         return Err(Rejection::StickMissing { service, device });
     }
-    if label != "uxplay" && !caddy_is_installed() && !can_install_packages() {
+    if let Some(service) = packaged::audio_hub_overlap(label) {
+        return Err(Rejection::OverlapsAudioHub(service));
+    }
+    if label != "uxplay" && packaged::find(label).is_none() && !caddy_is_installed() && !can_install_packages() {
         return Err(Rejection::NoReverseProxy);
     }
     Ok(())
@@ -1797,6 +1821,7 @@ async fn dispatch_install_1(
         "shairport-sync" => Some(install_shairport_sync_steps(input, sink).await),
         "uxplay" => Some(install_uxplay_steps(input, sink).await),
         "odio" => Some(install_odio_steps(input, sink).await),
+        id if packaged::find(id).is_some() => Some(install_packaged_steps(id, sink).await),
         "ollama" => Some(install_ollama_steps(input, sink).await),
         "open-webui" => Some({
             let services = host_service_ids(label, protocols).await;
@@ -1878,7 +1903,7 @@ async fn install(
         remember_relay_home(&host_ctx);
     }
 
-    let web_stack = if label == "uxplay" { Ok(()) } else { packages::ensure_for(crate::vpn_dns_priority::is_relay(), &sink).await };
+    let web_stack = if label == "uxplay" || packaged::find(label).is_some() { Ok(()) } else { packages::ensure_for(crate::vpn_dns_priority::is_relay(), &sink).await };
     let outcome = match web_stack {
         Err(why) => Err(why),
         Ok(()) => {
@@ -1901,6 +1926,12 @@ async fn install(
         let _ = sink.fail(&why).await;
         sink.close(Some(&why));
         return;
+    }
+
+    if crate::modules::AUDIO_SERVICES.contains(&label) {
+        if let Err(why) = crate::modules::activate(&crate::modules::AUDIO) {
+            tracing::warn!(%why, "the audio module is not in place");
+        }
     }
 
     if let Err(why) = provision_host_surface(&input, &host_ctx, &protocols, label, &sink).await {
@@ -3792,6 +3823,9 @@ async fn install_shairport_sync_steps(input: &Input, sink: &EventSink) -> Result
     let compose_path = dir.join("docker-compose.yml");
     write_managed_text(&compose_path, shairport_sync::compose_contents(input))
         .map_err(|err| format!("could not write {}: {err}", compose_path.display()))?;
+    let config_path = dir.join(shairport_sync::CONFIG_FILE);
+    write_managed_text(&config_path, shairport_sync::config_contents(input))
+        .map_err(|err| format!("could not write {}: {err}", config_path.display()))?;
 
     let _ = sink.step("pulling the AirPlay speaker image").await;
     run_docker_streaming(&compose_pull_args(shairport_sync::COMPOSE_PROJECT, &dir), sink).await?;
@@ -3800,6 +3834,14 @@ async fn install_shairport_sync_steps(input: &Input, sink: &EventSink) -> Result
 
     open_service_firewall_ports(shairport_sync::SERVICE_ID, &shairport_sync::firewall_ports(), sink).await;
 
+    Ok(())
+}
+
+/// A port of `PackagedAudioService.setupSteps`
+async fn install_packaged_steps(id: &str, sink: &EventSink) -> Result<(), String> {
+    let Some(spec) = packaged::find(id) else { return Err(format!("unknown service {id}")) };
+    packages::run_outside_sandbox(&packaged::setup_script(spec), &format!("installing {}", spec.display), sink).await?;
+    open_service_firewall_ports(spec.id, spec.ports, sink).await;
     Ok(())
 }
 
@@ -6622,11 +6664,19 @@ pub async fn refresh_mesh_root_page(language: Language) -> Result<bool, String> 
 
 /// Rewrites one service's sites with these paths open
 pub async fn apply_open_paths(owner: &str, open: &[String]) -> Result<(), String> {
+    apply_caddyfile_edit(|existing| {
+        super::open_sites::with_open_paths(existing, owner, open)
+            .ok_or_else(|| format!("the sites of {owner} are not in a shape the agent can change"))
+    })
+    .await
+}
+
+/// Rewrites the Caddyfile, reloads Caddy, restores it on refusal
+pub async fn apply_caddyfile_edit(edit: impl Fn(&str) -> Result<String, String>) -> Result<(), String> {
     with_caddyfile_lock(|| -> Result<(), String> {
         let existing = std::fs::read_to_string(CADDYFILE_PATH)
             .map_err(|err| format!("could not read {CADDYFILE_PATH}: {err}"))?;
-        let rewritten = super::open_sites::with_open_paths(&existing, owner, open)
-            .ok_or_else(|| format!("the sites of {owner} are not in a shape the agent can change"))?;
+        let rewritten = edit(&existing)?;
         std::fs::write(CADDYFILE_PREVIOUS, &existing)
             .map_err(|err| format!("could not keep a copy of {CADDYFILE_PATH}: {err}"))?;
         write_replacing(Path::new(CADDYFILE_PATH), &rewritten)
@@ -8304,7 +8354,7 @@ mod tests {
         "home_assistant_hostname", "home_assistant_path", "machine_at_home",
         "home_assistant_usb_device", "mosquitto_path",
         "shairport_path", "shairport_mode", "shairport_name", "shairport_output",
-        "zigbee2mqtt_path", "zigbee2mqtt_hostname", "uxplay_name", "odio_path", "odio_hostname",
+        "shairport_options", "zigbee2mqtt_path", "zigbee2mqtt_hostname", "uxplay_name", "odio_path", "odio_hostname",
         "minecraft_java_path", "minecraft_java_version", "minecraft_java_flavour",
         "minecraft_java_memory_mb", "minecraft_java_port", "minecraft_java_accepts_eula",
         "minecraft_java_whitelist", "minecraft_java_operators", "minecraft_java_mods",

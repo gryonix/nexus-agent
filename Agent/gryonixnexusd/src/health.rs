@@ -47,7 +47,7 @@ pub fn read() -> pb::AgentHealth {
         peak_memory_bytes: status_bytes(&status, "VmHWM:"),
         open_channels: open_bridges(),
         started_at: STARTED_AT.get().copied().unwrap_or_default(),
-        modules: Vec::new(),
+        modules: crate::modules::health(),
     }
 }
 

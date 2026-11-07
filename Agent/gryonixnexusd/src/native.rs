@@ -4,7 +4,7 @@ use std::path::Path;
 
 use tokio::process::Command;
 
-use crate::install::{odio, uxplay};
+use crate::install::{odio, packaged, uxplay};
 use crate::pb;
 
 /// One service the agent reads and drives through systemd
@@ -20,7 +20,20 @@ pub const ALL: &[Native] = &[
 ];
 
 pub fn find(id: &str) -> Option<&'static Native> {
-    ALL.iter().find(|native| native.id == id)
+    ALL.iter().find(|native| native.id == id).or_else(|| PACKAGED.iter().find(|native| native.id == id))
+}
+
+/// Packaged audio services, driven like native ones
+pub static PACKAGED: std::sync::LazyLock<Vec<Native>> = std::sync::LazyLock::new(|| {
+    packaged::ALL
+        .iter()
+        .map(|spec| Native { id: spec.id, display: spec.display, marker: Box::leak(packaged::marker(spec.id).into_boxed_str()) })
+        .collect()
+});
+
+/// Every native service the agent knows
+pub fn all() -> impl Iterator<Item = &'static Native> {
+    ALL.iter().chain(PACKAGED.iter())
 }
 
 pub const PROJECT_PREFIX: &str = "native:";
@@ -31,6 +44,9 @@ impl Native {
     }
 
     fn command(&self, verb: &str) -> (String, Vec<String>) {
+        if let Some(spec) = packaged::find(self.id) {
+            return packaged::command(spec, verb);
+        }
         let unit = format!("{}.service", uxplay::UNIT);
         match (self.id, verb) {
             ("uxplay", "status") => ("systemctl".into(), ["show", &unit, "--property=Id", "--property=LoadState", "--property=ActiveState"].map(String::from).to_vec()),

@@ -37,6 +37,7 @@ fail() { log "$*"; exit 1; }
 case "$(uname -m)" in
   aarch64|arm64) ARCH="aarch64" ;;
   x86_64|amd64)  ARCH="x86_64" ;;
+  armv6l|armv7l|armhf) ARCH="arm" ;;
   *) fail "unsupported arch: $(uname -m)" ;;
 esac
 
@@ -554,9 +555,10 @@ install_docker() {
 BINARY_KEY_HEX="${GRYONIXNEXUSD_BINARY_KEY_HEX:-22e7be06fa63ad3319c386b23dfefaf0efc1e1f96560582bad42eeadecbb0be5}"
 PREBUILT=""
 fetch_prebuilt() {
+  local key="${1:-$ARCH}" name="${2:-gryonixnexusd}"
   local list="$AGENT_DIR/binaries.txt" line url sum sig work got
   [ -f "$list" ] && [ -z "${GRYONIXNEXUSD_NO_PREBUILT:-}" ] || return 1
-  line="$(awk -v v="$VERSION" -v a="$ARCH" '$1 == "binary" && $2 == v && $3 == a { print; exit }' "$list")"
+  line="$(awk -v v="$VERSION" -v a="$key" '$1 == "binary" && $2 == v && $3 == a { print; exit }' "$list")"
   [ -n "$line" ] || return 1
   url="$(echo "$line" | awk '{print $4}')"
   sum="$(echo "$line" | awk '{print $5}')"
@@ -565,15 +567,15 @@ fetch_prebuilt() {
     command -v "$tool" >/dev/null 2>&1 || { log "no $tool here, building from source"; return 1; }
   done
   work="$(mktemp -d)" || return 1
-  log "downloading the signed gryonixnexusd $VERSION for $ARCH"
-  if ! curl -fsSL --max-time 300 -o "$work/gryonixnexusd" "$url"; then
+  log "downloading the signed $name $VERSION for $key"
+  if ! curl -fsSL --max-time 300 -o "$work/$name" "$url"; then
     log "the download failed, building from source"; rm -rf "$work"; return 1
   fi
-  got="$(sha256sum "$work/gryonixnexusd" | cut -d' ' -f1)"
+  got="$(sha256sum "$work/$name" | cut -d' ' -f1)"
   if [ "$got" != "$sum" ]; then
     log "the download's checksum does not match, building from source"; rm -rf "$work"; return 1
   fi
-  printf 'gryonixnexusd-binary\n%s\n%s\n%s\n' "$VERSION" "$ARCH" "$sum" > "$work/signed"
+  printf 'gryonixnexusd-binary\n%s\n%s\n%s\n' "$VERSION" "$key" "$sum" > "$work/signed"
   printf '%s' "$sig" | base64 -d > "$work/signature" 2>/dev/null || { rm -rf "$work"; return 1; }
   {
     echo "-----BEGIN PUBLIC KEY-----"
@@ -584,11 +586,34 @@ fetch_prebuilt() {
       -sigfile "$work/signature" >/dev/null 2>&1; then
     log "the download is not signed by the release key, building from source"; rm -rf "$work"; return 1
   fi
-  chmod 0755 "$work/gryonixnexusd"
-  if [ "$("$work/gryonixnexusd" version 2>/dev/null | awk '/^gryonixnexusd /{print $2; exit}')" != "$VERSION" ]; then
-    log "the download does not run as gryonixnexusd $VERSION, building from source"; rm -rf "$work"; return 1
+  chmod 0755 "$work/$name"
+  if [ "$("$work/$name" version 2>/dev/null | awk -v n="$name" '$1 == n {print $2; exit}')" != "$VERSION" ]; then
+    log "the download does not run as $name $VERSION, building from source"; rm -rf "$work"; return 1
   fi
-  PREBUILT="$work/gryonixnexusd"
+  PREBUILT="$work/$name"
+}
+
+# Add-on programs: left ready in a cache, put in place by the agent when needed
+MODULES_ROOT="$PREFIX/usr/local/lib/gryonixnexus"
+install_modules() {
+  local module built core_prebuilt="$PREBUILT"
+  install -d -m 0755 "$MODULES_ROOT/modules-cache"
+  # shellcheck disable=SC2043
+  for module in gryonixnexus-audio; do
+    built="$CRATE_DIR/target/release/$module"
+    if [ -n "$core_prebuilt" ]; then
+      PREBUILT=""
+      if fetch_prebuilt "$ARCH/${module#gryonixnexus-}" "$module"; then built="$PREBUILT"; else built=""; fi
+    fi
+    if [ -n "$built" ] && [ -x "$built" ]; then
+      install -m 0755 "$built" "$MODULES_ROOT/modules-cache/$module"
+      [ -f "$MODULES_ROOT/modules/$module" ] && install -m 0755 "$built" "$MODULES_ROOT/modules/$module"
+      [ -n "$core_prebuilt" ] && rm -rf "$(dirname "$built")"
+    else
+      log "no $module for $VERSION here; its features wait for the next update"
+    fi
+  done
+  PREBUILT="$core_prebuilt"
 }
 
 if [ "$NEEDS_BUILD" = 1 ] && fetch_prebuilt; then
@@ -618,6 +643,7 @@ if [ "$NEEDS_BUILD" = 1 ]; then
   rm -f "$BIN_DEST.previous"
   [ -x "$BIN_DEST" ] && cp -p "$BIN_DEST" "$BIN_DEST.previous"
   install -m 0755 "$ARTIFACT" "$BIN_DEST"
+  install_modules
   rm -rf "$CRATE_DIR/target"
   [ -n "$PREBUILT" ] && rm -rf "$(dirname "$PREBUILT")"
 fi

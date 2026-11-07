@@ -63,6 +63,7 @@ pub struct Config {
     pub agent_update: bool,
     pub operations: bool,
     pub ssh_logins: bool,
+    pub unusual_load: bool,
     /// The checks are this server's own, not the app defaults
     pub custom_checks: bool,
     /// App public keys whose SSH sign-ins stay quiet, newest last
@@ -97,6 +98,7 @@ impl Default for Config {
             agent_update: true,
             operations: false,
             ssh_logins: true,
+            unusual_load: true,
             custom_checks: false,
             quiet_keys: Vec::new(),
             ssh_cursor: String::new(),
@@ -151,6 +153,7 @@ impl Config {
             services: self.services,
             backups: self.backups,
             agent_update: self.agent_update,
+            load: self.unusual_load,
         }
     }
 }
@@ -229,6 +232,7 @@ pub fn settings(config: &Config) -> pb::NotifySettings {
             agent_update: config.agent_update,
             operations: config.operations,
             ssh_logins: config.ssh_logins,
+            unusual_load: config.unusual_load,
         }),
         server_id: config.server_id.clone(),
         devices: config.devices.len() as u32,
@@ -541,6 +545,7 @@ fn apply(config: &mut Config, req: pb::SetNotifySettingsRequest) -> Result<(), &
         config.agent_update = checks.agent_update;
         config.operations = checks.operations;
         config.ssh_logins = checks.ssh_logins;
+        config.unusual_load = checks.unusual_load;
     }
     config.custom_checks = req.custom_checks;
     crate::ssh_watch::remember_key(&mut config.quiet_keys, &req.app_public_key);
@@ -717,7 +722,7 @@ mod tests {
             relay_url: relay.into(),
             ntfy_url: "https://ntfy.sh".into(),
             ntfy_topic: topic.into(),
-            checks: Some(pb::NotifyChecks { raid: true, smart: false, disk_space: true, disk_space_percent: 120, services: true, backups: false, agent_update: true, operations: true, ssh_logins: false }),
+            checks: Some(pb::NotifyChecks { raid: true, smart: false, disk_space: true, disk_space_percent: 120, services: true, backups: false, agent_update: true, operations: true, ssh_logins: false, unusual_load: false }),
             language: "ru".into(),
             custom_checks: true,
             app_public_key: "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIMjhZbMLa1yPZt87ATUHLO4OUNZoQu6+22Re+KW7HKUl phone".into(),

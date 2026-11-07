@@ -472,6 +472,7 @@ async fn run_apply(codec: Codec, tx: Sender<Bytes>) -> bool {
         return false;
     }
 
+    refresh_modules(&staging.join("Agent"), &built, &update.manifest.version).await;
     let _ = std::fs::remove_dir_all(&staging);
     sink.restarting().await;
     let _ = tokio::process::Command::new(systemctl_bin())
@@ -630,17 +631,21 @@ fn verified_binary(bytes: &[u8], listed: &Prebuilt, version: &str, arch: &str) -
 
 /// The signed binary for this machine, when listed
 async fn prebuilt(agent_dir: &std::path::Path, version: &str) -> Option<std::path::PathBuf> {
-    let arch = std::env::consts::ARCH;
+    prebuilt_named(agent_dir, version, std::env::consts::ARCH, "gryonixnexusd").await
+}
+
+/// A signed program listed under `key`, saved as `name`
+async fn prebuilt_named(agent_dir: &std::path::Path, version: &str, key: &str, name: &str) -> Option<std::path::PathBuf> {
     let list = std::fs::read_to_string(agent_dir.join("binaries.txt")).ok()?;
-    let listed = prebuilt_line(&list, version, arch)?;
+    let listed = prebuilt_line(&list, version, key)?;
     let bytes = download(&listed.url).await.ok()?;
-    if let Err(why) = verified_binary(&bytes, &listed, version, arch) {
-        tracing::warn!(%why, "the signed binary was refused; building from source");
+    if let Err(why) = verified_binary(&bytes, &listed, version, key) {
+        tracing::warn!(%why, name, "the signed binary was refused");
         return None;
     }
     let dir = agent_dir.join("gryonixnexusd").join("target").join("release");
     std::fs::create_dir_all(&dir).ok()?;
-    let path = dir.join("gryonixnexusd");
+    let path = dir.join(name);
     crate::util::write_file_atomic(&path, &bytes, 0o755).ok()?;
     Some(path)
 }
@@ -721,6 +726,23 @@ async fn smoke_test(binary: &std::path::Path, expected_version: &str) -> Result<
         return Err(format!("the new binary reports '{}', expected {expected_version}", printed.trim()));
     }
     Ok(())
+}
+
+/// Leaves each module of this release ready, refreshing active ones
+async fn refresh_modules(agent_dir: &std::path::Path, built: &std::path::Path, version: &str) {
+    for module in crate::modules::ALL {
+        let mut source = built.with_file_name(module.program);
+        if !source.is_file() {
+            let key = format!("{}/{}", std::env::consts::ARCH, module.name);
+            match prebuilt_named(agent_dir, version, &key, module.program).await {
+                Some(path) => source = path,
+                None => continue,
+            }
+        }
+        if let Err(why) = crate::modules::store(module, &source) {
+            tracing::warn!(%why, module = module.name, "the module was not refreshed");
+        }
+    }
 }
 
 fn swap_binary(built: &std::path::Path) -> Result<(), String> {

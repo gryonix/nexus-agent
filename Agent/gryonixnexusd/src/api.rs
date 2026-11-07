@@ -111,6 +111,8 @@ async fn route_control(path: &str, codec: Codec, bytes: Bytes, store: Arc<Mutex<
             let result = discover::scan().await?;
             // Persist what adoption found so GetState reflects it afterwards.
             lock(&store).record_discovery(&result.services)?;
+            let ids: Vec<String> = result.services.iter().map(|service| service.id.clone()).collect();
+            crate::modules::settle_audio(&ids);
             codec.encode(&result)
         }).map(Some),
         "/gryonixnexusd.v1.Control/ServiceStatus" => ({
@@ -227,6 +229,16 @@ async fn route_containers(path: &str, codec: Codec, bytes: Bytes, store: Arc<Mut
             let req: pb::PruneUnusedRequest = codec.decode(&bytes)?;
             let names = lock(&store).container_names()?;
             Ok(docker_assets::prune_unused(codec, req, &names).await)
+        }).map(Some),
+        "/gryonixnexusd.v1.Containers/ListNetworks" => ({
+            let _req: pb::ListNetworksRequest = codec.decode(&bytes)?;
+            let names = lock(&store).container_names()?;
+            Ok(crate::docker_networks::list_networks(codec, &names).await)
+        }).map(Some),
+        "/gryonixnexusd.v1.Containers/RemoveNetwork" => ({
+            let req: pb::RemoveNetworkRequest = codec.decode(&bytes)?;
+            let names = lock(&store).container_names()?;
+            Ok(crate::docker_networks::remove_network(codec, req, &names).await)
         }).map(Some),
         "/gryonixnexusd.v1.Containers/InspectContainer" => ({
             let req: pb::InspectContainerRequest = codec.decode(&bytes)?;
@@ -553,6 +565,42 @@ async fn route_update(path: &str, codec: Codec, bytes: Bytes) -> anyhow::Result<
         "/gryonixnexusd.v1.Exposure/ProbePublicPorts" => ({
             let req: pb::ProbePublicPortsRequest = codec.decode(&bytes)?;
             Ok(crate::exposure::probe_public_ports(codec, req).await)
+        }).map(Some),
+        "/gryonixnexusd.v1.AppModules/GetAppModules" => ({
+            let req: pb::GetAppModulesRequest = codec.decode(&bytes)?;
+            Ok(crate::app_modules::get_app_modules(codec, req).await)
+        }).map(Some),
+        "/gryonixnexusd.v1.AppModules/SetAppModules" => ({
+            let req: pb::AppModuleSet = codec.decode(&bytes)?;
+            Ok(crate::app_modules::set_app_modules(codec, req).await)
+        }).map(Some),
+        "/gryonixnexusd.v1.Audio/ListAudioOutputs" => ({
+            let req: pb::ListAudioOutputsRequest = codec.decode(&bytes)?;
+            Ok(crate::audio_outputs::list_audio_outputs(codec, req).await)
+        }).map(Some),
+        "/gryonixnexusd.v1.Audio/OdioCall" => ({
+            let req: pb::OdioCallRequest = codec.decode(&bytes)?;
+            Ok(crate::odio_api::odio_call(codec, req).await)
+        }).map(Some),
+        "/gryonixnexusd.v1.Exposure/GetLocalAliases" => ({
+            let req: pb::GetLocalAliasesRequest = codec.decode(&bytes)?;
+            Ok(crate::exposure::get_local_aliases(codec, req).await)
+        }).map(Some),
+        "/gryonixnexusd.v1.Exposure/SetLocalAlias" => ({
+            let req: pb::SetLocalAliasRequest = codec.decode(&bytes)?;
+            Ok(crate::exposure::set_local_alias(codec, req).await)
+        }).map(Some),
+        "/gryonixnexusd.v1.Exposure/SetHomeOnlyPorts" => ({
+            let req: pb::SetHomeOnlyPortsRequest = codec.decode(&bytes)?;
+            Ok(crate::exposure::set_home_only_ports(codec, req).await)
+        }).map(Some),
+        "/gryonixnexusd.v1.McpAccess/GetMcpAccess" => ({
+            let req: pb::GetMcpAccessRequest = codec.decode(&bytes)?;
+            Ok(crate::mcp_access::get_mcp_access(codec, req).await)
+        }).map(Some),
+        "/gryonixnexusd.v1.McpAccess/SetMcpAccess" => ({
+            let req: pb::SetMcpAccessRequest = codec.decode(&bytes)?;
+            Ok(crate::mcp_access::set_mcp_access(codec, req).await)
         }).map(Some),
         "/gryonixnexusd.v1.Exposure/GetLocalRootCA" => ({
             let req: pb::GetLocalRootCaRequest = codec.decode(&bytes)?;

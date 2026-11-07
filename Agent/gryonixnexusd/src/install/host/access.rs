@@ -165,6 +165,9 @@ fn service_sudoers_targets_1(id: &str, input: &Input, backups: &BackupPaths, use
 }
 
 fn service_sudoers_targets_2(id: &str, input: &Input) -> Option<Vec<String>> {
+    if let Some(spec) = crate::install::packaged::find(id) {
+        return Some(crate::install::packaged::sudoers_targets(spec));
+    }
     match id {
         "uxplay" => Some(vec![
             format!("/usr/bin/systemctl show {u} --property=Id --property=LoadState --property=ActiveState", u = unit(crate::install::uxplay::UNIT)),

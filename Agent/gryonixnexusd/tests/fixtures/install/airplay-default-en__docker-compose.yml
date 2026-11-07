@@ -7,4 +7,6 @@ services:
     network_mode: host
     devices:
       - /dev/snd
+    volumes:
+      - ./shairport-sync.conf:/etc/shairport-sync.conf:ro
     command: -a "gryonix" -o alsa -- -d default

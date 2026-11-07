@@ -379,12 +379,32 @@ pub fn merge_site(existing: &str, new_site_names: &[String], new_site: &str) -> 
         .filter(|block| !block.is_empty())
         .map(str::to_string)
         .collect();
-    blocks.retain(|block| !block.starts_with(&header_prefix) && !is_package_welcome_site(block));
-    blocks.push(new_site.to_string());
+    let kept_aliases: Vec<String> = blocks.iter().filter_map(|block| replaced_aliases(block, new_site_names)).flatten().collect();
+    blocks.retain(|block| {
+        !block.starts_with(&header_prefix) && replaced_aliases(block, new_site_names).is_none() && !is_package_welcome_site(block)
+    });
+    blocks.push(with_aliases(new_site, &header_prefix, &kept_aliases));
     let owners_global = blocks.iter().find(|block| is_global_block(block)).cloned();
     blocks.retain(|block| !is_global_block(block));
     blocks.insert(0, merged_global(owners_global.as_deref()));
     caddyfile(&blocks)
+}
+
+/// The .local names of an old block for these sites
+fn replaced_aliases(block: &str, names: &[String]) -> Option<Vec<String>> {
+    let header = block.lines().next()?.trim().strip_suffix('{')?;
+    let listed: Vec<String> = header.split(',').map(|name| name.trim().to_string()).collect();
+    let (local, public): (Vec<String>, Vec<String>) = listed.into_iter().partition(|name| name.ends_with(".local"));
+    let ours = local.iter().all(|alias| public.iter().any(|host| super::local_alias::alias_for(host).as_ref() == Some(alias)));
+    (!local.is_empty() && ours && public == names).then_some(local)
+}
+
+fn with_aliases(site: &str, header_prefix: &str, aliases: &[String]) -> String {
+    if aliases.is_empty() || !site.starts_with(header_prefix) {
+        return site.to_string();
+    }
+    let names = header_prefix.trim_end_matches(" {");
+    site.replacen(header_prefix, &format!("{names}, {} {{", aliases.join(", ")), 1)
 }
 
 /// The package's `:80` welcome page, which swallows every HTTP redirect

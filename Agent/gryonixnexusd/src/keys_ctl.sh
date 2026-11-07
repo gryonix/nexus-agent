@@ -47,6 +47,13 @@ case "$action" in
       printf '%s %s # gnx:%s\n' "$kind" "$blob" "$tag" >> "$file"
     fi
     ;;
+  add-forced)
+    tag="${3:-}"; kind="${4:-}"; blob="${5:-}"; forced="${6:-}"
+    [ -n "$tag" ] && [ -n "$kind" ] && [ -n "$blob" ] && [ -n "$forced" ] || exit 2
+    case "$forced" in *'"'*) exit 2 ;; esac
+    rewrite "$tag"
+    printf 'restrict,command="%s" %s %s # gnx:%s\n' "$forced" "$kind" "$blob" "$tag" >> "$file"
+    ;;
   remove)
     tag="${3:-}"
     [ -n "$tag" ] || exit 2

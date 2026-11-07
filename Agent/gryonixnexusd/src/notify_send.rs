@@ -148,6 +148,8 @@ pub fn alert(problem: &Problem, appeared: bool, host: &str, russian: bool) -> Al
         Kind::AgentUpdate => "gnx.alert.agent_update",
         Kind::DriveStale => "gnx.alert.drive_stale",
         Kind::DriveReadOnly => "gnx.alert.drive_readonly",
+        Kind::Load if problem.subject == "memory" => "gnx.alert.memory",
+        Kind::Load => "gnx.alert.load",
     };
     let key = if appeared { base.to_string() } else { format!("{base}.ok") };
     let (title, body) = texts(&key, russian);
@@ -218,6 +220,10 @@ const TEXTS: &[(&str, AlertText, AlertText)] = &[
     ("gnx.alert.smart", ("Disk failing on {host}", "{subject} failed its SMART check. Back up its data."), ("Диск выходит из строя на {host}", "{subject} не прошёл проверку SMART. Сохраните данные.")),
     ("gnx.alert.smart.ok", ("Disk check passes on {host}", "{subject} passes its SMART check again."), ("Диск в порядке на {host}", "{subject} снова проходит проверку SMART.")),
     ("gnx.alert.space", ("Disk almost full on {host}", "{subject} is {detail}% full."), ("Диск почти заполнен на {host}", "{subject} заполнен на {detail}%.")),
+    ("gnx.alert.load", ("{host} is overloaded", "Load has stayed at {detail}% of its cores for 15 minutes."), ("{host} перегружен", "Нагрузка 15 минут держится на {detail}% от числа ядер.")),
+    ("gnx.alert.load.ok", ("{host} is calm again", "Load is back to normal."), ("{host} снова спокоен", "Нагрузка вернулась в норму.")),
+    ("gnx.alert.memory", ("Memory almost gone on {host}", "Only {detail}% of memory is free."), ("Память почти кончилась на {host}", "Свободно только {detail}% памяти.")),
+    ("gnx.alert.memory.ok", ("Memory freed on {host}", "Memory is back to normal."), ("Память освободилась на {host}", "Память вернулась в норму.")),
     ("gnx.alert.space.ok", ("Space freed on {host}", "{subject} is below the limit again."), ("Место освободилось на {host}", "{subject} снова ниже порога.")),
     ("gnx.alert.service", ("Service down on {host}", "{subject} {detail}."), ("Сервис не работает на {host}", "{subject} {detail}.")),
     ("gnx.alert.service.ok", ("Service back on {host}", "{subject} runs again."), ("Сервис снова работает на {host}", "{subject} снова запущен.")),

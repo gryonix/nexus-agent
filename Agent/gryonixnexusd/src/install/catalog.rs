@@ -11,7 +11,7 @@ const PASSWORDS: &[(&str, &str)] =
     &[("vaultwarden", "Vaultwarden"), ("psono", "Psono"), ("passbolt", "Passbolt")];
 const FILES: &[(&str, &str)] = &[("nextcloud", "Nextcloud"), ("seafile", "Seafile")];
 const PHOTOS: &[(&str, &str)] = &[("immich", "Immich"), ("photoprism", "PhotoPrism")];
-const MEDIA: &[(&str, &str)] = &[("jellyfin", "Jellyfin"), ("shairport-sync", "AirPlay speaker"), ("uxplay", "AirPlay screen"), ("odio", "Audio hub (odio)")];
+const MEDIA: &[(&str, &str)] = &[("jellyfin", "Jellyfin"), ("shairport-sync", "AirPlay speaker"), ("uxplay", "AirPlay screen"), ("odio", "Audio hub (odio)"), ("snapserver", "Multi-room server (Snapcast)"), ("snapclient", "Multi-room speaker (Snapcast)"), ("upmpdcli", "DLNA speaker"), ("bluealsa", "Bluetooth speaker"), ("raspotify", "Spotify Connect speaker"), ("mympd", "Music library (MPD + myMPD)")];
 const CODE: &[(&str, &str)] = &[("gitlab", "GitLab"), ("forgejo", "Forgejo")];
 const NETWORK: &[(&str, &str)] = &[("adguard-home", "AdGuard Home"), ("pihole", "Pi-hole")];
 const VPN: &[(&str, &str)] = &[

@@ -266,6 +266,10 @@ fn spec_for_3(id: &str, input: &Input, backups: &BackupPaths) -> Option<Spec> {
             pre_steps: Vec::new(),
             post_steps: Vec::new(),
         }),
+        id if crate::install::packaged::find(id).is_some() => Some(Spec {
+            pre_steps: crate::install::packaged::find(id).map(crate::install::packaged::removal_steps).unwrap_or_default(),
+            ..Spec::empty()
+        }),
         "uxplay" => Some(Spec {
             pre_steps: vec![
                 format!("systemctl disable --now {}.service >/dev/null 2>&1 || true", crate::install::uxplay::UNIT),

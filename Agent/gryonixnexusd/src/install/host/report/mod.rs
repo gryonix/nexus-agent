@@ -656,6 +656,11 @@ fn service_block_7(id: &str, i: &Input, l: Language, facts: &dyn Facts, out: &mu
             out.push_str(&format!("  {}\n", l10n::airplay_speaker_hint(l)));
             true
         }
+        id if crate::install::packaged::find(id).is_some() => {
+            let spec = crate::install::packaged::find(id).map_or("", |spec| spec.display);
+            out.push_str(&format!("{spec}: {}\n", l10n::packaged_audio_ready(l)));
+            true
+        }
         "uxplay" => {
             out.push_str(&format!("AirPlay screen: {}\n", crate::install::uxplay::screen_name(i)));
             out.push_str(&format!("  {}\n", l10n::airplay_screen_hint(l)));

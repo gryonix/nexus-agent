@@ -77,6 +77,12 @@ pub const CATALOG_ORDER: &[&str] = &[
     "shairport-sync",
     "uxplay",
     "odio",
+    "snapserver",
+    "snapclient",
+    "upmpdcli",
+    "bluealsa",
+    "raspotify",
+    "mympd",
 ];
 
 /// The VPN's catalog ids — the panel plus the five protocols

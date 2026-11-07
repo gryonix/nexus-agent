@@ -18,6 +18,7 @@ pub enum Kind {
     AgentUpdate,
     DriveStale,
     DriveReadOnly,
+    Load,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -145,6 +146,47 @@ pub fn space_problem(mount: &str, size: i64, used: i64, limit_percent: u32) -> O
     })
 }
 
+/// The 15-minute load over twice the cores
+pub fn load_problem(loadavg: &str, cores: usize) -> Option<Problem> {
+    let load15: f64 = loadavg.split_whitespace().nth(2)?.parse().ok()?;
+    let cores = cores.max(1) as f64;
+    (load15 >= cores * 2.0).then(|| Problem {
+        id: "load:cpu".into(),
+        kind: Kind::Load,
+        subject: "cpu".into(),
+        detail: format!("{:.0}", load15 / cores * 100.0),
+        reason: String::new(),
+    })
+}
+
+/// Available memory under five percent
+pub fn memory_problem(meminfo: &str) -> Option<Problem> {
+    let field = |name: &str| -> Option<f64> {
+        meminfo.lines().find_map(|line| line.strip_prefix(name)?.split_whitespace().next()?.parse().ok())
+    };
+    let (total, available) = (field("MemTotal:")?, field("MemAvailable:")?);
+    let percent = available * 100.0 / total.max(1.0);
+    (percent < 5.0).then(|| Problem {
+        id: "load:memory".into(),
+        kind: Kind::Load,
+        subject: "memory".into(),
+        detail: format!("{percent:.0}"),
+        reason: String::new(),
+    })
+}
+
+async fn load_problems() -> Vec<Problem> {
+    let mut found = Vec::new();
+    if let Ok(text) = tokio::fs::read_to_string("/proc/loadavg").await {
+        let cores = std::thread::available_parallelism().map_or(1, |n| n.get());
+        found.extend(load_problem(&text, cores));
+    }
+    if let Ok(text) = tokio::fs::read_to_string("/proc/meminfo").await {
+        found.extend(memory_problem(&text));
+    }
+    found
+}
+
 /// Problems that appeared, and ones that cleared, since `before`
 pub fn changes(before: &[Problem], now: &[Problem]) -> (Vec<Problem>, Vec<Problem>) {
     let appeared = now.iter().filter(|p| !before.iter().any(|b| b.id == p.id)).cloned().collect();
@@ -160,6 +202,7 @@ pub struct Checks {
     pub services: bool,
     pub backups: bool,
     pub agent_update: bool,
+    pub load: bool,
 }
 
 /// Exit codes of a container someone stopped on purpose
@@ -284,6 +327,9 @@ async fn output(program: &str, args: &[&str]) -> Option<String> {
 /// Runs the enabled checks on this host
 pub async fn probe(checks: &Checks, failed_groups: &[(String, String)]) -> Vec<Problem> {
     let mut found = disk_problems(checks).await;
+    if checks.load {
+        found.extend(load_problems().await);
+    }
     if checks.services {
         let format = "{{.Names}}\t{{.State}}\t{{.Status}}";
         if let Some(text) = output("docker", &["ps", "-a", "--format", format]).await {
@@ -371,6 +417,15 @@ md2 : active raid5 sde1[3] sdd1[1] sdc1[0]
 
 unused devices: <none>
 ";
+
+    #[test]
+    fn overload_and_low_memory_are_problems() {
+        assert_eq!(load_problem("9.0 8.5 8.2 3/400 1", 4).unwrap().detail, "205");
+        assert!(load_problem("1.0 1.0 1.0 3/400 1", 4).is_none());
+        let low = "MemTotal:       1000000 kB\nMemFree: 1 kB\nMemAvailable:     30000 kB\n";
+        assert_eq!(memory_problem(low).unwrap().id, "load:memory");
+        assert!(memory_problem("MemTotal: 1000 kB\nMemAvailable: 500 kB\n").is_none());
+    }
 
     #[test]
     fn a_failed_drive_copy_is_a_backup_problem() {

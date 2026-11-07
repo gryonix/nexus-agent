@@ -1593,3 +1593,17 @@ pub fn ollama_gpu_missing_note(l: Language) -> String {
         Language::Zh => "已请求使用显卡，但本机没有 NVIDIA 驱动响应 — 引擎正在处理器上运行。安装驱动是关于主机本身的决定 (内核模块和一次重启)，本次安装不会替你做这个决定。".to_string(),
     }
 }
+
+pub fn packaged_audio_ready(l: Language) -> String {
+    match l {
+        Language::En => "installed; phones and computers on your home network find it on their own.".to_string(),
+        Language::De => "installiert; Telefone und Computer in Ihrem Heimnetz finden es von selbst.".to_string(),
+        Language::Fr => "installé ; les téléphones et ordinateurs de votre réseau domestique le trouvent d'eux-mêmes.".to_string(),
+        Language::Es => "instalado; los teléfonos y ordenadores de su red doméstica lo encuentran solos.".to_string(),
+        Language::Ru => "установлено; телефоны и компьютеры в домашней сети находят его сами.".to_string(),
+        Language::Uk => "встановлено; телефони й комп'ютери в домашній мережі знаходять його самі.".to_string(),
+        Language::It => "installato; telefoni e computer della rete di casa lo trovano da soli.".to_string(),
+        Language::Ja => "インストールしました。家庭内ネットワークのスマートフォンやパソコンが自動で見つけます。".to_string(),
+        Language::Zh => "已安装；家庭网络中的手机和电脑会自动找到它。".to_string(),
+    }
+}

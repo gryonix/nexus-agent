@@ -76,6 +76,8 @@ pub struct Input {
     pub shairport_name: String,
     /// `ServiceSettings.shairportOutput`, the ALSA device.
     pub shairport_output: String,
+    /// `ServiceSettings.shairportOptions`, `key=value;` pairs.
+    pub shairport_options: String,
     /// `ServiceSettings.uxplayName`, the screen's name on the phones.
     pub uxplay_name: String,
     /// `ServiceSettings.odioPath`, Swift default `/opt/odio`.
@@ -196,7 +198,7 @@ impl Default for Input {
             mosquitto_path: "/opt/mosquitto".to_string(),
             zigbee2mqtt_path: "/opt/zigbee2mqtt".to_string(), zigbee2mqtt_hostname: String::new(),
             shairport_path: "/opt/shairport-sync".to_string(), shairport_mode: "airplay2".to_string(),
-            shairport_name: "gryonix".to_string(), shairport_output: "default".to_string(),
+            shairport_name: "gryonix".to_string(), shairport_output: "default".to_string(), shairport_options: String::new(),
             uxplay_name: "gryonix TV".to_string(), odio_path: "/opt/odio".to_string(), odio_hostname: String::new(),
             minecraft_java_path: "/opt/minecraft-java".to_string(), minecraft_java_version: String::new(),
             minecraft_java_flavour: "PAPER".to_string(), minecraft_java_memory_mb: 2048, minecraft_java_port: 25565,
