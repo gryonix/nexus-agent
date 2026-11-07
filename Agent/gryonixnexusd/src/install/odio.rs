@@ -137,7 +137,7 @@ pub fn control_script() -> String {
 pub fn installer_script(airplay_taken: bool) -> String {
     let airplay = if airplay_taken { "N" } else { "Y" };
     format!(
-        "set -e\nodio_tmp=\"$(mktemp -d)\"\ncurl -fsSL -o \"$odio_tmp/install.sh\" '{INSTALLER_URL}'\necho '{INSTALLER_SHA256}  '\"$odio_tmp/install.sh\" | sha256sum -c - >/dev/null || {{ echo 'the odio installer does not match its pinned checksum'; exit 1; }}\nTARGET_USER={ACCOUNT} ODIOS_VERSION={VERSION} INSTALL_BRANDING=N INSTALL_SHAIRPORT_SYNC={airplay} bash < \"$odio_tmp/install.sh\"\nrm -rf \"$odio_tmp\"\n"
+        "set -e\nodio_tmp=\"$(mktemp -d)\"\ncurl -fsSL -o \"$odio_tmp/install.sh\" '{INSTALLER_URL}'\necho '{INSTALLER_SHA256}  '\"$odio_tmp/install.sh\" | sha256sum -c - >/dev/null || {{ echo 'the odio installer does not match its pinned checksum'; exit 1; }}\nprintf 'APT::Get::Assume-Yes \"true\";\\n' > \"$odio_tmp/apt.conf\"\nTARGET_USER={ACCOUNT} ODIOS_VERSION={VERSION} INSTALL_BRANDING=N INSTALL_SHAIRPORT_SYNC={airplay} APT_CONFIG=\"$odio_tmp/apt.conf\" DEBIAN_FRONTEND=noninteractive bash \"$odio_tmp/install.sh\" < /dev/null\nrm -rf \"$odio_tmp\"\n"
     )
 }
 
@@ -184,7 +184,8 @@ mod tests {
         assert!(text.contains("sha256sum -c -"));
         assert!(text.contains("INSTALL_SHAIRPORT_SYNC=Y"));
         assert!(installer_script(true).contains("INSTALL_SHAIRPORT_SYNC=N"));
-        assert!(text.contains("bash < \"$odio_tmp/install.sh\""));
+        assert!(text.contains("bash \"$odio_tmp/install.sh\" < /dev/null"));
+        assert!(text.contains("APT::Get::Assume-Yes"), "apt must not stop to ask");
     }
 
     #[test]

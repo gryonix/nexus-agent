@@ -33,7 +33,7 @@ impl Native {
     fn command(&self, verb: &str) -> (String, Vec<String>) {
         let unit = format!("{}.service", uxplay::UNIT);
         match (self.id, verb) {
-            ("uxplay", "status") => ("systemctl".into(), ["show", &unit, "--property=Id,LoadState,ActiveState"].map(String::from).to_vec()),
+            ("uxplay", "status") => ("systemctl".into(), ["show", &unit, "--property=Id", "--property=LoadState", "--property=ActiveState"].map(String::from).to_vec()),
             ("uxplay", "logs") => ("journalctl".into(), ["-u", &unit, "-n", "500", "--no-pager", "-o", "short-iso"].map(String::from).to_vec()),
             ("uxplay", verb) => ("systemctl".into(), vec![verb.to_string(), unit]),
             (_, verb) => (odio::CONTROL_PATH.into(), vec![verb.to_string()]),

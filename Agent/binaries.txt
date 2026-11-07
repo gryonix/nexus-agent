@@ -1,3 +1,3 @@
 # Signed agent binaries; a build from source is the fallback
-binary 26.11.13 aarch64 https://github.com/gryonix/nexus-agent/releases/download/bin-26.11.13/gryonixnexusd-26.11.13-aarch64 dd32a73ff657799f06c97c02b4d2190bdb0e2d088fedc2c4fce754a607c25c0d c2xAZU00UmseFci2qyXT1mjBA+cwYS52XwRL1RcG9uKUVLI6xZrEcOzlIbMQcrJ2IvulWth0Kn0kbusZ5ZpiCw==
-binary 26.11.13 x86_64 https://github.com/gryonix/nexus-agent/releases/download/bin-26.11.13/gryonixnexusd-26.11.13-x86_64 1544dfcf7a456a814794dc95198169f9be3f15ae1f1ce022b8775196d2eb727b BOg+nfHnpDOZuLDXZB1O9b12vZkf24PXMMVSc5O5+kHbpzdLs+VyeRKlADVu7xMTaH+u0gDIGxH6qCkpretjCw==
+binary 26.11.14 aarch64 https://github.com/gryonix/nexus-agent/releases/download/bin-26.11.14/gryonixnexusd-26.11.14-aarch64 15a159ec94d7ca32c380a49554408ae24fe460edb69b7fbcb3e6b51ad3921630 DlRxQxDBAP6XfuqIivDspS7F0BOJJe24V5d0050gDmHgX/G264XGh/FykIv/L6dnVKFTFGN39zTBofiDBZkLCA==
+binary 26.11.14 x86_64 https://github.com/gryonix/nexus-agent/releases/download/bin-26.11.14/gryonixnexusd-26.11.14-x86_64 6e028831ae8f5fda6cc61d83a7c25d914683687d611f6bdf4f480fb2b62d03ab B/BNgJY7GEKjSHMMgJfcrMkw3ssYbQIAgDrUa5Sl/ElNANtLPc3HD3Dzn6kJ6U6KFrSRN+j8Ha2WnYoxcDwTBQ==

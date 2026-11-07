@@ -167,7 +167,7 @@ fn service_sudoers_targets_1(id: &str, input: &Input, backups: &BackupPaths, use
 fn service_sudoers_targets_2(id: &str, input: &Input) -> Option<Vec<String>> {
     match id {
         "uxplay" => Some(vec![
-            format!("/usr/bin/systemctl show {u} --property=Id,LoadState,ActiveState", u = unit(crate::install::uxplay::UNIT)),
+            format!("/usr/bin/systemctl show {u} --property=Id --property=LoadState --property=ActiveState", u = unit(crate::install::uxplay::UNIT)),
             format!("/usr/bin/systemctl restart {}", unit(crate::install::uxplay::UNIT)),
             format!("/usr/bin/systemctl start {}", unit(crate::install::uxplay::UNIT)),
             format!("/usr/bin/systemctl stop {}", unit(crate::install::uxplay::UNIT)),
