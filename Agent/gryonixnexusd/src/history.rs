@@ -12,7 +12,8 @@ const DEFAULT_DIR: &str = "/var/lib/gryonixnexus/metrics";
 
 const BUCKETS: &[&str] = &["10s", "1m", "10m", "1h", "1d", "1w"];
 
-const COLUMNS: usize = 12;
+const COLUMNS_WITHOUT_SWAP: usize = 12;
+const COLUMNS_WITH_SWAP: usize = 14;
 
 pub fn known_bucket(name: &str) -> Option<&'static str> {
     BUCKETS.iter().copied().find(|bucket| *bucket == name)
@@ -112,9 +113,10 @@ fn parse(text: &str) -> Vec<pb::MetricsHistoryPoint> {
 
 fn parse_line(line: &str) -> Option<pb::MetricsHistoryPoint> {
     let fields: Vec<&str> = line.split(',').collect();
-    if fields.len() != COLUMNS {
+    if fields.len() != COLUMNS_WITHOUT_SWAP && fields.len() != COLUMNS_WITH_SWAP {
         return None;
     }
+    let has_swap = fields.len() == COLUMNS_WITH_SWAP;
     let seconds: f64 = fields[0].trim().parse().ok()?;
     Some(pb::MetricsHistoryPoint {
         at: (seconds * 1000.0) as i64,
@@ -131,6 +133,8 @@ fn parse_line(line: &str) -> Option<pb::MetricsHistoryPoint> {
         temperature_celsius: optional(fields[11]),
         power_watts: None,
         power_source: String::new(),
+        swap_used_bytes: if has_swap { fields[12].trim().parse().ok() } else { None },
+        swap_total_bytes: if has_swap { fields[13].trim().parse().ok() } else { None },
     })
 }
 
@@ -195,6 +199,15 @@ this is not a row
         assert_eq!(first.disk_written_per_second, Some(200.5));
         assert_eq!(first.load1, 0.42);
         assert_eq!(first.temperature_celsius, Some(41.2));
+    }
+
+    #[test]
+    fn the_fourteen_column_shape_carries_swap_and_the_old_one_does_not() {
+        let points = parse("1754400000,1,2,3,4,5,6,7,8,9,0.5,,100,400\n1754400010,1,2,3,4,5,6,7,8,9,0.5,,,\n1754400020,1,2,3,4,5,6,7,8,9,0.5,\n");
+        assert_eq!(points.len(), 3);
+        assert_eq!((points[0].swap_used_bytes, points[0].swap_total_bytes), (Some(100), Some(400)));
+        assert_eq!((points[1].swap_used_bytes, points[1].swap_total_bytes), (None, None));
+        assert_eq!((points[2].swap_used_bytes, points[2].swap_total_bytes), (None, None));
     }
 
     #[test]

@@ -46,6 +46,11 @@ pub mod jellyfin;
 pub mod home_assistant;
 pub mod mosquitto;
 pub mod zigbee2mqtt;
+pub mod shairport_sync;
+pub mod uxplay;
+pub mod odio;
+#[cfg(test)]
+mod golden;
 pub mod minecraft;
 pub mod nextcloud;
 pub mod passbolt;
@@ -58,7 +63,7 @@ pub mod mail;
 #[allow(dead_code)]
 pub mod host;
 
-pub const HOME_ONLY_SERVICE_IDS: &[&str] = &["home-assistant", "mosquitto", "zigbee2mqtt"];
+pub const HOME_ONLY_SERVICE_IDS: &[&str] = &["home-assistant", "mosquitto", "zigbee2mqtt", "shairport-sync", "uxplay", "odio"];
 
 /// The hub's add-ons, which are refused without it.
 pub const SMART_HOME_ADD_ON_IDS: &[&str] = &["mosquitto", "zigbee2mqtt"];

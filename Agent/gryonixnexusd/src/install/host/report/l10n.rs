@@ -843,6 +843,62 @@ pub fn home_assistant_owner_warning(l: Language) -> String {
     }
 }
 
+pub fn airplay_speaker_hint(l: Language) -> String {
+    match l {
+        Language::En => "Pick it in the AirPlay menu on your iPhone, iPad or Mac.".to_string(),
+        Language::De => "Wählen Sie ihn im AirPlay-Menü Ihres iPhones, iPads oder Macs aus.".to_string(),
+        Language::Fr => "Choisissez-le dans le menu AirPlay de votre iPhone, iPad ou Mac.".to_string(),
+        Language::Es => "Elíjalo en el menú AirPlay de su iPhone, iPad o Mac.".to_string(),
+        Language::Ru => "Выберите его в меню AirPlay на iPhone, iPad или Mac.".to_string(),
+        Language::Uk => "Виберіть його в меню AirPlay на iPhone, iPad або Mac.".to_string(),
+        Language::It => "Scegli l'altoparlante nel menu AirPlay di iPhone, iPad o Mac.".to_string(),
+        Language::Ja => "iPhone、iPad、Mac の AirPlay メニューから選んでください。".to_string(),
+        Language::Zh => "请在 iPhone、iPad 或 Mac 的 AirPlay 菜单中选择它。".to_string(),
+    }
+}
+
+pub fn airplay_screen_hint(l: Language) -> String {
+    match l {
+        Language::En => "Pick it in the AirPlay menu on your iPhone, iPad or Mac, under Screen Mirroring.".to_string(),
+        Language::De => "Wählen Sie ihn im AirPlay-Menü Ihres iPhones, iPads oder Macs unter Bildschirmsynchronisierung aus.".to_string(),
+        Language::Fr => "Choisissez-le dans le menu AirPlay de votre iPhone, iPad ou Mac, sous Recopie de l'écran.".to_string(),
+        Language::Es => "Elíjalo en el menú AirPlay de su iPhone, iPad o Mac, en Duplicar pantalla.".to_string(),
+        Language::Ru => "Выберите его в меню AirPlay на iPhone, iPad или Mac, в разделе «Повтор экрана».".to_string(),
+        Language::Uk => "Виберіть його в меню AirPlay на iPhone, iPad або Mac, у розділі «Дзеркалення екрана».".to_string(),
+        Language::It => "Sceglilo nel menu AirPlay di iPhone, iPad o Mac, sotto Duplica schermo.".to_string(),
+        Language::Ja => "iPhone、iPad、Mac の AirPlay メニューの「画面ミラーリング」から選んでください。".to_string(),
+        Language::Zh => "请在 iPhone、iPad 或 Mac 的 AirPlay 菜单的“屏幕镜像”中选择它。".to_string(),
+    }
+}
+
+pub fn airplay_screen_drm_note(l: Language) -> String {
+    match l {
+        Language::En => "DRM-protected video (Netflix and similar) cannot be shown — that is an Apple restriction.".to_string(),
+        Language::De => "Kopiergeschützte Videos (Netflix und Ähnliches) können nicht angezeigt werden — das ist eine Einschränkung von Apple.".to_string(),
+        Language::Fr => "Les vidéos protégées par DRM (Netflix et similaires) ne peuvent pas être affichées — c'est une restriction d'Apple.".to_string(),
+        Language::Es => "El vídeo protegido con DRM (Netflix y similares) no se puede mostrar: es una restricción de Apple.".to_string(),
+        Language::Ru => "Видео с защитой DRM (Netflix и подобные) показать нельзя — это ограничение Apple.".to_string(),
+        Language::Uk => "Відео із захистом DRM (Netflix та подібні) показати не можна — це обмеження Apple.".to_string(),
+        Language::It => "I video protetti da DRM (Netflix e simili) non possono essere mostrati: è una restrizione di Apple.".to_string(),
+        Language::Ja => "DRM で保護された動画（Netflix など）は表示できません。これは Apple の制限です。".to_string(),
+        Language::Zh => "受 DRM 保护的视频（Netflix 等）无法显示——这是 Apple 的限制。".to_string(),
+    }
+}
+
+pub fn odio_leftovers(l: Language, packages: &str, account: &str) -> String {
+    match l {
+        Language::En => format!("left in place: the packages the installer added ({packages}) and the user {account}. Remove them with apt and userdel if you no longer need them."),
+        Language::De => format!("bleibt bestehen: die vom Installer hinzugefügten Pakete ({packages}) und der Benutzer {account}. Entfernen Sie sie bei Bedarf mit apt und userdel."),
+        Language::Fr => format!("laissés en place : les paquets ajoutés par l'installateur ({packages}) et l'utilisateur {account}. Supprimez-les avec apt et userdel si vous n'en avez plus besoin."),
+        Language::Es => format!("se dejan instalados: los paquetes que añadió el instalador ({packages}) y el usuario {account}. Elimínelos con apt y userdel si ya no los necesita."),
+        Language::Ru => format!("остаются на месте: пакеты, добавленные установщиком ({packages}), и пользователь {account}. Удалите их через apt и userdel, если они больше не нужны."),
+        Language::Uk => format!("залишаються на місці: пакети, додані інсталятором ({packages}), і користувач {account}. Видаліть їх через apt і userdel, якщо вони більше не потрібні."),
+        Language::It => format!("lasciati al loro posto: i pacchetti aggiunti dal programma di installazione ({packages}) e l'utente {account}. Rimuovili con apt e userdel se non ti servono più."),
+        Language::Ja => format!("残るもの：インストーラーが追加したパッケージ（{packages}）とユーザー {account}。不要なら apt と userdel で削除してください。"),
+        Language::Zh => format!("保留不动：安装程序添加的软件包（{packages}）和用户 {account}。如不再需要，请用 apt 和 userdel 删除。"),
+    }
+}
+
 pub fn mosquitto_network_address(l: Language) -> String {
     match l {
         Language::En => "this server's address on your network".to_string(),

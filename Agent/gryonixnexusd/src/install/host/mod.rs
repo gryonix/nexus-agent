@@ -74,6 +74,9 @@ pub const CATALOG_ORDER: &[&str] = &[
     "home-assistant",
     "mosquitto",
     "zigbee2mqtt",
+    "shairport-sync",
+    "uxplay",
+    "odio",
 ];
 
 /// The VPN's catalog ids — the panel plus the five protocols

@@ -97,7 +97,11 @@ fn parse_lockdown_answer(output: &str) -> pb::LockdownState {
     pb::LockdownState { mode: pb::LockdownMode::Off as i32, hosts: Vec::new() }
 }
 
-fn build_set_args(mode: pb::LockdownMode, hosts: &[String]) -> Result<Vec<String>, Rejection> {
+fn build_set_args(
+    mode: pb::LockdownMode,
+    hosts: &[String],
+    deny_vpn: Option<&[String]>,
+) -> Result<Vec<String>, Rejection> {
     match mode {
         pb::LockdownMode::Unspecified => Err(Rejection::UnspecifiedMode),
         pb::LockdownMode::Off => Ok(vec!["off".to_string()]),
@@ -109,6 +113,10 @@ fn build_set_args(mode: pb::LockdownMode, hosts: &[String]) -> Result<Vec<String
             } else {
                 let mut args = vec!["only".to_string()];
                 args.extend(valid);
+                if let Some(deny) = deny_vpn {
+                    args.push("--no-vpn".to_string());
+                    args.extend(deny.iter().filter(|h| is_valid_host(h)).cloned());
+                }
                 Ok(args)
             }
         }
@@ -175,7 +183,7 @@ pub async fn refresh_guard() -> Result<bool, String> {
     if mode == pb::LockdownMode::Off {
         return Ok(rewritten);
     }
-    let args = build_set_args(mode, &state.hosts).map_err(|_| "the guard's mode is unreadable".to_string())?;
+    let args = build_set_args(mode, &state.hosts, None).map_err(|_| "the guard's mode is unreadable".to_string())?;
     let args: Vec<&str> = args.iter().map(String::as_str).collect();
     run_wrapper(&args).await?;
     Ok(true)
@@ -194,7 +202,8 @@ pub async fn get_lockdown(codec: Codec, _req: pb::GetLockdownRequest) -> Resp {
 /// Change the guard state
 pub async fn set_lockdown(codec: Codec, req: pb::SetLockdownRequest) -> Resp {
     let mode = pb::LockdownMode::try_from(req.mode).unwrap_or(pb::LockdownMode::Unspecified);
-    let args = match build_set_args(mode, &req.hosts) {
+    let deny = req.set_deny_vpn_hosts.then_some(req.deny_vpn_hosts.as_slice());
+    let args = match build_set_args(mode, &req.hosts, deny) {
         Ok(args) => args,
         Err(rejection) => return rejection.response(),
     };
@@ -227,6 +236,20 @@ mod tests {
     }
 
     // ─────────────────────────── parse_lockdown_answer ───────────────────────────
+
+    #[test]
+    fn a_deny_list_follows_the_no_vpn_flag() {
+        let hosts = vec!["a.example.com".to_string(), "b.example.com".to_string()];
+        let deny = vec!["b.example.com".to_string(), "bad;host".to_string()];
+        assert_eq!(
+            build_set_args(pb::LockdownMode::Only, &hosts, Some(&deny)).unwrap(),
+            vec!["only", "a.example.com", "b.example.com", "--no-vpn", "b.example.com"]
+        );
+        assert_eq!(
+            build_set_args(pb::LockdownMode::Only, &hosts, Some(&[])).unwrap(),
+            vec!["only", "a.example.com", "b.example.com", "--no-vpn"]
+        );
+    }
 
     #[test]
     fn bare_on_is_all() {
@@ -280,16 +303,16 @@ mod tests {
 
     #[test]
     fn unspecified_mode_is_refused_before_anything_runs() {
-        assert_eq!(build_set_args(pb::LockdownMode::Unspecified, &[]), Err(Rejection::UnspecifiedMode));
+        assert_eq!(build_set_args(pb::LockdownMode::Unspecified, &[], None), Err(Rejection::UnspecifiedMode));
     }
 
     #[test]
     fn off_and_all_build_their_bare_subcommand() {
-        assert_eq!(build_set_args(pb::LockdownMode::Off, &[]), Ok(vec!["off".to_string()]));
-        assert_eq!(build_set_args(pb::LockdownMode::All, &[]), Ok(vec!["on".to_string()]));
+        assert_eq!(build_set_args(pb::LockdownMode::Off, &[], None), Ok(vec!["off".to_string()]));
+        assert_eq!(build_set_args(pb::LockdownMode::All, &[], None), Ok(vec!["on".to_string()]));
         // Hosts are ignored outside ONLY.
         assert_eq!(
-            build_set_args(pb::LockdownMode::Off, &["a.example.com".to_string()]),
+            build_set_args(pb::LockdownMode::Off, &["a.example.com".to_string()], None),
             Ok(vec!["off".to_string()])
         );
     }
@@ -298,7 +321,7 @@ mod tests {
     fn only_builds_the_subcommand_plus_every_valid_host() {
         let hosts = vec!["a.example.com".to_string(), "b.example.com".to_string()];
         assert_eq!(
-            build_set_args(pb::LockdownMode::Only, &hosts),
+            build_set_args(pb::LockdownMode::Only, &hosts, None),
             Ok(vec!["only".to_string(), "a.example.com".to_string(), "b.example.com".to_string()])
         );
     }
@@ -311,18 +334,18 @@ mod tests {
             "has space.example.com".to_string(),
             "$(whoami).example.com".to_string(),
         ];
-        assert_eq!(build_set_args(pb::LockdownMode::Only, &hosts), Ok(vec!["only".to_string(), "a.example.com".to_string()]));
+        assert_eq!(build_set_args(pb::LockdownMode::Only, &hosts, None), Ok(vec!["only".to_string(), "a.example.com".to_string()]));
     }
 
     #[test]
     fn only_with_an_empty_host_list_becomes_off() {
-        assert_eq!(build_set_args(pb::LockdownMode::Only, &[]), Ok(vec!["off".to_string()]));
+        assert_eq!(build_set_args(pb::LockdownMode::Only, &[], None), Ok(vec!["off".to_string()]));
     }
 
     #[test]
     fn only_where_every_host_fails_the_charset_check_also_becomes_off() {
         let hosts = vec!["evil;rm -rf /".to_string(), "has space".to_string()];
-        assert_eq!(build_set_args(pb::LockdownMode::Only, &hosts), Ok(vec!["off".to_string()]));
+        assert_eq!(build_set_args(pb::LockdownMode::Only, &hosts, None), Ok(vec!["off".to_string()]));
     }
 
     // ─────────────────────────── get_lockdown, against a real stub ───────────────────────────
@@ -388,7 +411,7 @@ mod tests {
         let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         std::env::set_var("GRYONIXNEXUSD_LOCKDOWN_WRAPPER", "/nonexistent/gryonixnexus-admin-lockdown.sh");
         std::env::set_var("GRYONIXNEXUSD_ADMIN_GUARD", "/nonexistent/gryonixnexus-admin-guard");
-        let resp = set_lockdown(Codec::Proto, pb::SetLockdownRequest { mode: pb::LockdownMode::All as i32, hosts: Vec::new() }).await;
+        let resp = set_lockdown(Codec::Proto, pb::SetLockdownRequest { mode: pb::LockdownMode::All as i32, hosts: Vec::new(), ..Default::default() }).await;
         assert_eq!(resp.status(), StatusCode::UNPROCESSABLE_ENTITY);
         std::env::remove_var("GRYONIXNEXUSD_LOCKDOWN_WRAPPER");
         std::env::remove_var("GRYONIXNEXUSD_ADMIN_GUARD");
@@ -397,7 +420,7 @@ mod tests {
     #[tokio::test]
     async fn set_lockdown_refuses_unspecified_mode_without_touching_the_host() {
         let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-        let resp = set_lockdown(Codec::Proto, pb::SetLockdownRequest { mode: 0, hosts: Vec::new() }).await;
+        let resp = set_lockdown(Codec::Proto, pb::SetLockdownRequest { mode: 0, hosts: Vec::new(), ..Default::default() }).await;
         assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
     }
 
@@ -414,7 +437,7 @@ mod tests {
 
         let resp = set_lockdown(
             Codec::Json,
-            pb::SetLockdownRequest { mode: pb::LockdownMode::Only as i32, hosts: vec!["a.example.com".to_string()] },
+            pb::SetLockdownRequest { mode: pb::LockdownMode::Only as i32, hosts: vec!["a.example.com".to_string()], ..Default::default() },
         )
         .await;
         assert_eq!(resp.status(), StatusCode::OK);
@@ -433,7 +456,7 @@ mod tests {
         let script = write_stub(&dir, "admin-lockdown.sh", "#!/bin/sh\necho \"args: $*\" >&2\necho off\n");
         std::env::set_var("GRYONIXNEXUSD_LOCKDOWN_WRAPPER", &script);
 
-        let resp = set_lockdown(Codec::Proto, pb::SetLockdownRequest { mode: pb::LockdownMode::Only as i32, hosts: Vec::new() }).await;
+        let resp = set_lockdown(Codec::Proto, pb::SetLockdownRequest { mode: pb::LockdownMode::Only as i32, hosts: Vec::new(), ..Default::default() }).await;
         assert_eq!(resp.status(), StatusCode::OK);
 
         std::env::remove_var("GRYONIXNEXUSD_LOCKDOWN_WRAPPER");
@@ -447,7 +470,7 @@ mod tests {
         let script = write_stub(&dir, "admin-lockdown.sh", "#!/bin/sh\necho 'no caddyfile found' >&2\nexit 1\n");
         std::env::set_var("GRYONIXNEXUSD_LOCKDOWN_WRAPPER", &script);
 
-        let resp = set_lockdown(Codec::Proto, pb::SetLockdownRequest { mode: pb::LockdownMode::All as i32, hosts: Vec::new() }).await;
+        let resp = set_lockdown(Codec::Proto, pb::SetLockdownRequest { mode: pb::LockdownMode::All as i32, hosts: Vec::new(), ..Default::default() }).await;
         assert_eq!(resp.status(), StatusCode::INTERNAL_SERVER_ERROR);
         let body = http_body_util::BodyExt::collect(resp.into_body()).await.unwrap().to_bytes();
         let parsed: serde_json::Value = serde_json::from_slice(&body).unwrap();

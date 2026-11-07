@@ -68,6 +68,20 @@ pub struct Input {
     pub zigbee2mqtt_path: String,
     /// `ServiceSettings.zigbee2MQTTHostname`; empty means `zigbee.<domain>`.
     pub zigbee2mqtt_hostname: String,
+    /// `ServiceSettings.shairportPath`, Swift default `/opt/shairport-sync`.
+    pub shairport_path: String,
+    /// `ServiceSettings.shairportMode`: "airplay2" or "airplay1".
+    pub shairport_mode: String,
+    /// `ServiceSettings.shairportName`, the speaker's name on the phones.
+    pub shairport_name: String,
+    /// `ServiceSettings.shairportOutput`, the ALSA device.
+    pub shairport_output: String,
+    /// `ServiceSettings.uxplayName`, the screen's name on the phones.
+    pub uxplay_name: String,
+    /// `ServiceSettings.odioPath`, Swift default `/opt/odio`.
+    pub odio_path: String,
+    /// `ServiceSettings.odioHostname`; empty means `odio.<domain>`.
+    pub odio_hostname: String,
     // The game servers and the panel in front of them.
     pub minecraft_java_path: String,
     pub minecraft_java_version: String,
@@ -181,6 +195,9 @@ impl Default for Input {
             home_assistant_usb_device: String::new(),
             mosquitto_path: "/opt/mosquitto".to_string(),
             zigbee2mqtt_path: "/opt/zigbee2mqtt".to_string(), zigbee2mqtt_hostname: String::new(),
+            shairport_path: "/opt/shairport-sync".to_string(), shairport_mode: "airplay2".to_string(),
+            shairport_name: "gryonix".to_string(), shairport_output: "default".to_string(),
+            uxplay_name: "gryonix TV".to_string(), odio_path: "/opt/odio".to_string(), odio_hostname: String::new(),
             minecraft_java_path: "/opt/minecraft-java".to_string(), minecraft_java_version: String::new(),
             minecraft_java_flavour: "PAPER".to_string(), minecraft_java_memory_mb: 2048, minecraft_java_port: 25565,
             minecraft_java_accepts_eula: false, minecraft_java_whitelist: String::new(),

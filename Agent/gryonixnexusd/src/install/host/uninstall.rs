@@ -258,6 +258,29 @@ fn spec_for_3(id: &str, input: &Input, backups: &BackupPaths) -> Option<Spec> {
             pre_steps: Vec::new(),
             post_steps: Vec::new(),
         }),
+        "shairport-sync" => Some(Spec {
+            compose_project: Some(crate::install::shairport_sync::COMPOSE_PROJECT),
+            config_directory: Some(input.shairport_path.clone()),
+            data_paths: Vec::new(),
+            backup_dirs: Vec::new(),
+            pre_steps: Vec::new(),
+            post_steps: Vec::new(),
+        }),
+        "uxplay" => Some(Spec {
+            pre_steps: vec![
+                format!("systemctl disable --now {}.service >/dev/null 2>&1 || true", crate::install::uxplay::UNIT),
+                format!("rm -f {}", crate::install::uxplay::UNIT_PATH),
+                "systemctl daemon-reload || true".to_string(),
+                format!("{} remove -yq {} >/dev/null 2>&1 || true", crate::install::packages::apt_quiet(), crate::install::uxplay::PACKAGE),
+                format!("userdel {} >/dev/null 2>&1 || true", crate::install::uxplay::ACCOUNT),
+            ],
+            ..Spec::empty()
+        }),
+        "odio" => Some(Spec {
+            data_paths: vec![input.odio_path.clone()],
+            pre_steps: crate::install::odio::uninstall_steps(input),
+            ..Spec::empty()
+        }),
         "zigbee2mqtt" => Some(Spec {
             compose_project: Some(crate::install::zigbee2mqtt::COMPOSE_PROJECT),
             config_directory: Some(input.zigbee2mqtt_path.clone()),
@@ -493,6 +516,7 @@ pub(crate) fn hostname_for(id: &str, input: &Input) -> Option<String> {
         "jellyfin" => Some(crate::install::jellyfin::hostname(input)),
         "home-assistant" => Some(crate::install::home_assistant::hostname(input)),
         "zigbee2mqtt" => Some(crate::install::zigbee2mqtt::hostname(input)),
+        "odio" => Some(crate::install::odio::hostname(input)),
         "crafty-controller" => Some(crate::install::crafty::hostname(input)),
         "open-webui" => Some(crate::install::open_webui::hostname(input)),
         "litellm" => Some(crate::install::litellm::hostname(input)),

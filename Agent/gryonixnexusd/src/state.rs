@@ -131,6 +131,7 @@ impl Store {
             home_doors: Vec::new(),
             wake_on_lan: None,
             mesh_address: String::new(),
+            agent_health: None,
         })
     }
 

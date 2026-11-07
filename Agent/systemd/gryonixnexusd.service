@@ -9,6 +9,11 @@ Type=simple
 ExecStart=/usr/local/bin/gryonixnexusd
 Restart=always
 RestartSec=2
+# The agent turns its own watchdog on through this.
+NotifyAccess=main
+# Squeezed, never killed, past this much memory.
+MemoryAccounting=yes
+MemoryHigh=256M
 # The agent manages docker and service data, so it runs as root. The socket is
 # local-only (/run/gryonixnexusd.sock); reachability comes through the SSH tunnel,
 # never a network port.
@@ -88,6 +93,10 @@ ProtectSystem=full
 # built minutes earlier. The bootstrap therefore creates it before the unit
 # starts, the same answer /etc/caddy and /etc/nftables.d already have.
 #
+# /etc/hosts is the ninth: SetHostName rewrites its 127.0.1.1 line in place.
+# Optional by the usual rule; the write truncates the file, never renames it,
+# because a bind-mounted single file cannot be replaced.
+#
 # /usr/local/bin is the eighth, and unlike the rest it is a DIRECTORY grant
 # for a single-file reason: `agent_update.rs`'s ApplyAgentUpdate replaces the
 # live binary with `rename()`, and rename(2) needs its destination's PARENT
@@ -106,7 +115,7 @@ ProtectSystem=full
 # jump still has to arrive through the existing app-triggered SSH rebuild,
 # which also rewrites this unit file and reloads it; every apply after that
 # one runs under a namespace that already has this entry.
-ReadWritePaths=-/etc/gryonixnexus /etc/systemd/system -/etc/caddy -/etc/nftables.d -/etc/wireguard -/etc/sysctl.d -/etc/modules-load.d -/etc/sudoers.d -/etc/crowdsec -/usr/local/bin
+ReadWritePaths=-/etc/gryonixnexus /etc/systemd/system -/etc/caddy -/etc/nftables.d -/etc/wireguard -/etc/sysctl.d -/etc/modules-load.d -/etc/sudoers.d -/etc/crowdsec -/etc/hosts -/usr/local/bin
 
 [Install]
 WantedBy=multi-user.target

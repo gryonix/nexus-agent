@@ -212,6 +212,14 @@ pub async fn control_service(
 }
 
 async fn run_project(project: &str, action: pb::ServiceAction, sink: &EventSink) -> Result<(), String> {
+    if let Some(id) = project.strip_prefix(crate::native::PROJECT_PREFIX) {
+        let native = crate::native::find(id).ok_or_else(|| format!("{id} is not a systemd service"))?;
+        let output = native.run(verb(action)).await?;
+        for line in output.lines() {
+            let _ = sink.progress("stdout", line.to_string()).await;
+        }
+        return Ok(());
+    }
     let args = docker_args(project, action);
     let mut child = tokio::process::Command::new("docker")
         .args(&args)

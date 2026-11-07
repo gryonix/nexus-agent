@@ -3,6 +3,7 @@
 use super::caddy;
 use super::context::Input;
 use super::mail::{dockermailserver, mailcow, mailu};
+use super::odio;
 use super::vpn::panel;
 use super::*;
 use std::path::Path;
@@ -34,6 +35,7 @@ fn sites(input: &Input) -> Vec<(Vec<String>, String)> {
         (jellyfin::caddy_site_names(input), jellyfin::caddy_site(input)),
         (home_assistant::caddy_site_names(input), home_assistant::caddy_site(input)),
         (zigbee2mqtt::caddy_site_names(input), zigbee2mqtt::caddy_site(input)),
+        (odio::caddy_site_names(input), odio::caddy_site(input)),
         (open_webui::caddy_site_names(input), open_webui::caddy_site(input)),
         (openclaw::caddy_site_names(input), openclaw::caddy_site(input)),
         (anythingllm::caddy_site_names(input), anythingllm::caddy_site(input)),
@@ -80,6 +82,7 @@ fn validate(dir: &Path, caddyfile: &str) -> Result<(), String> {
     let etc = dir.join("etc-caddy");
     std::fs::create_dir_all(etc.join("gryonixnexus-setup")).unwrap();
     std::fs::write(etc.join("gryonixnexus-admin-guard"), GUARD_ON).unwrap();
+    std::fs::write(etc.join("gryonixnexus-odio-auth"), "basic_auth {\n    odio $2a$14$W2XOo2aUpljVbaajaOPzwuk0CzeWmdfbN/ei6swX0VO3l.YTkU0FS\n}\n").unwrap();
     for owner in caddy::FIRST_VISITOR_ADMIN {
         std::fs::write(etc.join("gryonixnexus-setup").join(owner), caddy::SETUP_GUARD_RULES).unwrap();
     }

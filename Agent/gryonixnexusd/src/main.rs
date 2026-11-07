@@ -19,12 +19,16 @@ mod cert_watch;
 mod control;
 mod discover;
 mod dkim;
+mod exposure;
+mod docker_assets;
+mod health;
 mod history;
 mod install;
 mod jobs;
 mod language;
 mod lockdown;
 mod mailbox;
+mod native;
 mod security;
 /// Dynamic DNS — the host keeps its own A records current
 mod ddns;
@@ -50,6 +54,7 @@ mod storage_array;
 mod storage_cache;
 mod storage_task;
 mod system_ctl;
+mod system_settings;
 mod restore;
 mod serial;
 mod setup_guard;
@@ -69,6 +74,7 @@ mod util;
 mod vault;
 mod vaultwarden_2fa;
 mod wake;
+mod watchdog;
 
 /// Types generated from ../proto/gryonixnexusd/v1/gryonixnexusd.proto at build time.
 pub mod pb {
@@ -104,8 +110,20 @@ fn bind_socket(path: &str) -> std::io::Result<tokio::net::UnixListener> {
     Ok(listener)
 }
 
-#[tokio::main]
-async fn main() -> anyhow::Result<()> {
+fn main() -> anyhow::Result<()> {
+    tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(worker_threads())
+        .enable_all()
+        .build()?
+        .block_on(run())
+}
+
+/// Two workers are plenty for a control plane
+fn worker_threads() -> usize {
+    std::thread::available_parallelism().map_or(1, |n| n.get()).clamp(1, 2)
+}
+
+async fn run() -> anyhow::Result<()> {
     tracing_subscriber::fmt::init();
 
     let socket_path = std::env::var("GRYONIXNEXUSD_SOCKET").unwrap_or_else(|_| SOCKET_PATH.to_string());
@@ -141,7 +159,9 @@ async fn main() -> anyhow::Result<()> {
     }
 
     let store = Arc::new(Mutex::new(store));
+    health::mark_start();
     spawn_background_work(&store);
+    watchdog::spawn(store.clone());
 
     let listener = bind_socket(&socket_path)?;
     tracing::info!(socket = %socket_path, "gryonixnexusd listening");
@@ -244,19 +264,89 @@ where
 
     let stream = tokio::net::UnixStream::connect(socket_path).await?;
     let (mut socket_read, mut socket_write) = stream.into_split();
+    let activity = Activity::new();
+    let seen = activity.clone();
 
     tokio::spawn(async move {
-        let _ = tokio::io::copy(&mut input, &mut socket_write).await;
+        let _ = copy_noting(&mut input, &mut socket_write, &seen).await;
         socket_write.forget();
     });
 
-    tokio::io::copy(&mut socket_read, &mut output).await?;
+    tokio::select! {
+        copied = copy_noting(&mut socket_read, &mut output, &activity) => { copied?; }
+        _ = activity.idle_for(bridge_idle_limit()) => {}
+    }
     output.flush().await?;
     Ok(())
 }
 
+/// A silent channel is closed after this long
+fn bridge_idle_limit() -> std::time::Duration {
+    let secs = std::env::var("GRYONIXNEXUSD_BRIDGE_IDLE_SECS").ok().and_then(|s| s.parse().ok()).unwrap_or(30 * 60);
+    std::time::Duration::from_secs(secs)
+}
+
+/// When bytes last moved through a bridge
+#[derive(Clone)]
+struct Activity(std::sync::Arc<std::sync::Mutex<tokio::time::Instant>>);
+
+impl Activity {
+    fn new() -> Self {
+        Activity(std::sync::Arc::new(std::sync::Mutex::new(tokio::time::Instant::now())))
+    }
+
+    fn touch(&self) {
+        *self.0.lock().unwrap_or_else(|e| e.into_inner()) = tokio::time::Instant::now();
+    }
+
+    /// Resolves once nothing moved for `limit`
+    async fn idle_for(&self, limit: std::time::Duration) {
+        loop {
+            let last = *self.0.lock().unwrap_or_else(|e| e.into_inner());
+            let due = last + limit;
+            if tokio::time::Instant::now() >= due {
+                return;
+            }
+            tokio::time::sleep_until(due).await;
+        }
+    }
+}
+
+/// Copies until EOF, noting each chunk
+async fn copy_noting<R, W>(reader: &mut R, writer: &mut W, activity: &Activity) -> std::io::Result<()>
+where
+    R: tokio::io::AsyncRead + Unpin,
+    W: tokio::io::AsyncWrite + Unpin,
+{
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let mut buffer = vec![0u8; 16 * 1024];
+    loop {
+        let read = reader.read(&mut buffer).await?;
+        if read == 0 {
+            return Ok(());
+        }
+        activity.touch();
+        writer.write_all(&buffer[..read]).await?;
+        writer.flush().await?;
+    }
+}
+
 #[cfg(test)]
 mod tests {
+    #[tokio::test]
+    async fn a_silent_bridge_ends_and_a_busy_one_waits() {
+        let activity = super::Activity::new();
+        let limit = std::time::Duration::from_millis(600);
+        let toucher = activity.clone();
+        let started = tokio::time::Instant::now();
+        tokio::spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+            toucher.touch();
+        });
+        activity.idle_for(limit).await;
+        assert!(started.elapsed() >= std::time::Duration::from_millis(1100), "a touch pushes the end out");
+    }
+
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
     #[tokio::test]

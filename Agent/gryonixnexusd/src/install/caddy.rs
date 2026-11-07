@@ -178,6 +178,14 @@ pub fn site_with_public_paths(
     }
 }
 
+/// A guarded site that also imports a password snippet
+pub fn site_with_basic_auth(owner: &str, hostname: &str, upstream_port: u16, tls_internal: bool, snippet: &str) -> String {
+    let proxy = proxy_block(upstream_port, false, false);
+    let tls_line = if tls_internal { "tls internal\n    " } else { "" };
+    let owner = format!("{}\n    ", owner_line(owner));
+    format!("{hostname} {{\n    {owner}{tls_line}import {ADMIN_GUARD_PATH}\n    import {snippet}\n    {proxy}\n}}")
+}
+
 /// A notice at the root, the rest goes upstream
 pub fn with_root_notice(site: &str, notice: &str) -> String {
     let Some(at) = site.rfind("\n    reverse_proxy ") else { return site.to_string() };

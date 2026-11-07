@@ -67,6 +67,13 @@ service Control {
   // constant (/dev/serial/by-id), so there is no client string to turn into a
   // path, and the answer names only what the kernel already put there.
   rpc ListSerialDevices(ListSerialDevicesRequest) returns (SerialDeviceList);
+
+  // The host's time zone, name and clock sync. Each setter returns the settings
+  // as they stand afterwards, so the screen shows what the machine reports.
+  rpc GetSystemSettings(GetSystemSettingsRequest) returns (SystemSettings);
+  rpc SetTimeZone(SetTimeZoneRequest) returns (SystemSettings);
+  rpc SetHostName(SetHostNameRequest) returns (SystemSettings);
+  rpc SetTimeSync(SetTimeSyncRequest) returns (SystemSettings);
 }
 
 // Backups of one catalog service: what exists, what a run would cost, running
@@ -344,6 +351,36 @@ service Lockdown {
   // Replaces one service's open paths and rewrites its sites. The answer is
   // the state read back from the Caddyfile afterwards.
   rpc SetOpenAPI(SetOpenAPIRequest) returns (OpenAPIState);
+}
+
+// Read-only checks of what the internet can reach on this server.
+service Exposure {
+  // Tries a TCP connect to each requested port on this server's public address.
+  rpc ProbePublicPorts(ProbePublicPortsRequest) returns (ProbePublicPortsResponse);
+  // The public key of the local certificate authority Caddy signs internal sites with.
+  rpc GetLocalRootCA(GetLocalRootCARequest) returns (GetLocalRootCAResponse);
+}
+
+message ProbePublicPortsRequest {
+  // Names are not resolved here; the agent probes its own public address.
+  string host = 1;
+  repeated uint32 ports = 2;
+}
+
+message PortProbe {
+  uint32 port = 1;
+  bool open = 2;
+}
+
+message ProbePublicPortsResponse {
+  repeated PortProbe ports = 1;
+}
+
+message GetLocalRootCARequest {}
+
+message GetLocalRootCAResponse {
+  // PEM text of the root certificate; empty when Caddy has none.
+  string pem = 1;
 }
 
 // The host's own intrusion defence — CrowdSec and its nftables bouncer.
@@ -1121,6 +1158,16 @@ service Containers {
   //
   // Read-only, deliberately.
   rpc ListContainerGroupBackups(ListContainerGroupBackupsRequest) returns (ContainerBackupList);
+
+  // Images and volumes the engine holds, with whether a container uses them.
+  rpc ListImages(ListImagesRequest) returns (ImageInventory);
+  rpc ListVolumes(ListVolumesRequest) returns (VolumeInventory);
+  // Remove one unused image or volume named as the host reported it. Anything
+  // in use, or a volume of a managed service, is refused.
+  rpc RemoveImage(RemoveImageRequest) returns (DockerRemovalResult);
+  rpc RemoveVolume(RemoveVolumeRequest) returns (DockerRemovalResult);
+  // Remove every unused image and volume except managed services' volumes.
+  rpc PruneUnused(PruneUnusedRequest) returns (PruneUnusedResult);
 }
 
 // Multi-device control of one server: pair a new pult, list them, revoke, and
@@ -1182,6 +1229,30 @@ message State {
   WakeOnLANInfo wake_on_lan = 6;
   // This host's IPv4 address in the Tailscale mesh; empty when not joined.
   string mesh_address = 7;
+  // How the agent itself is doing.
+  AgentHealth agent_health = 8;
+}
+
+// The agent's own footprint on the host.
+message AgentHealth {
+  // Resident memory of the daemon, in bytes.
+  uint64 memory_bytes = 1;
+  // Highest resident memory since the daemon started.
+  uint64 peak_memory_bytes = 2;
+  // App connections open through the bridge right now.
+  uint32 open_channels = 3;
+  // When the daemon started (Unix ms).
+  int64 started_at = 4;
+  // Add-on programs installed beside the core.
+  repeated AgentModule modules = 5;
+}
+
+// An add-on program the core installed.
+message AgentModule {
+  string name = 1;
+  string version = 2;
+  uint64 size_bytes = 3;
+  bool running = 4;
 }
 
 message WakeOnLANInfo {
@@ -1800,6 +1871,9 @@ message MetricsHistoryPoint {
   optional double power_watts = 13;
   // Which sensor: rapl, hwmon, ipmi, ups or pi.
   string power_source = 14;
+  // Swap in use and total; absent for rows written before the collector tracked swap.
+  optional int64 swap_used_bytes = 15;
+  optional int64 swap_total_bytes = 16;
 }
 
 // ─────────────────────────── Serial device types ───────────────────────────
@@ -1827,6 +1901,34 @@ message SerialDevice {
   // The by-id name with its usb- prefix, -ifNN-portN suffix and underscores
   // taken out, for the menu row.
   string label = 3;
+}
+
+// ─────────────────────────── System settings types ───────────────────────────
+
+message GetSystemSettingsRequest {}
+
+message SystemSettings {
+  // IANA zone name such as Europe/Berlin.
+  string time_zone = 1;
+  string host_name = 2;
+  // Whether time synchronisation is switched on.
+  bool ntp_enabled = 3;
+  // Whether the clock is currently in sync.
+  bool ntp_synchronized = 4;
+  // Every zone the host knows, for the picker.
+  repeated string time_zones = 5;
+}
+
+message SetTimeZoneRequest {
+  string time_zone = 1;
+}
+
+message SetHostNameRequest {
+  string host_name = 1;
+}
+
+message SetTimeSyncRequest {
+  bool enabled = 1;
 }
 
 // ─────────────────────────── Backup types ───────────────────────────
@@ -2278,6 +2380,10 @@ message SetLockdownRequest {
   // charset check is treated the same as an empty list — see SetLockdown's
   // doc comment on the service above.
   repeated string hosts = 2;
+  // Hosts whose VPN clients are also refused; read only when
+  // set_deny_vpn_hosts is true, so an empty list can clear the choice.
+  repeated string deny_vpn_hosts = 3;
+  bool set_deny_vpn_hosts = 4;
 }
 
 message GetOpenAPIRequest {}
@@ -4125,4 +4231,67 @@ enum InstallPlanItemState {
   INSTALL_PLAN_ITEM_STATE_FAILED = 4;
   // Not begun because the plan was stopped.
   INSTALL_PLAN_ITEM_STATE_SKIPPED = 5;
+}
+
+message ListImagesRequest {}
+
+message DockerImage {
+  string id = 1;
+  string repository = 2;
+  string tag = 3;
+  uint64 size_bytes = 4;
+  uint32 containers = 5;
+  bool in_use = 6;
+  string created_since = 7;
+  // The string RemoveImage takes: repository:tag, or the id when untagged.
+  string reference = 8;
+}
+
+message ImageInventory {
+  repeated DockerImage images = 1;
+  string unavailable_reason = 2;
+}
+
+message ListVolumesRequest {}
+
+message DockerVolume {
+  string name = 1;
+  string driver = 2;
+  uint64 size_bytes = 3;
+  uint32 containers = 4;
+  bool in_use = 5;
+  // Belongs to a compose project of a catalog service.
+  bool managed = 6;
+}
+
+message VolumeInventory {
+  repeated DockerVolume volumes = 1;
+  string unavailable_reason = 2;
+}
+
+message RemoveImageRequest {
+  string reference = 1;
+}
+
+message RemoveVolumeRequest {
+  string name = 1;
+}
+
+message DockerRemovalResult {
+  bool removed = 1;
+  // Why nothing was removed, or the engine's own message.
+  string message = 2;
+}
+
+message PruneUnusedRequest {
+  bool images = 1;
+  bool volumes = 2;
+}
+
+message PruneUnusedResult {
+  uint32 images_removed = 1;
+  uint32 volumes_removed = 2;
+  uint64 reclaimed_bytes = 3;
+  // Items the engine refused, one line each.
+  repeated string failures = 4;
 }

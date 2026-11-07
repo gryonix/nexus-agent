@@ -47,6 +47,9 @@ use super::crafty;
 use super::home_assistant;
 use super::mosquitto;
 use super::zigbee2mqtt;
+use super::shairport_sync;
+use super::uxplay;
+use super::odio;
 use super::jellyfin;
 use super::minecraft;
 use super::mail::dockermailserver as dms;
@@ -103,6 +106,9 @@ const IMPLEMENTED_SERVICE_IDS: &[&str] = &[
     // Its add-ons, refused without it — see `add_on_without_the_hub`.
     "mosquitto",
     "zigbee2mqtt",
+    "shairport-sync",
+    "uxplay",
+    "odio",
     "minecraft-java",
     "minecraft-bedrock",
     "crafty-controller",
@@ -816,6 +822,9 @@ fn home_only_service_away(
 ) -> Option<&'static str> {
     match label {
         "home-assistant" if !machine_is_at_home(input, role, dynamic_dns) => Some("Home Assistant"),
+        "shairport-sync" if !machine_is_at_home(input, role, dynamic_dns) => Some("AirPlay speaker"),
+        "uxplay" if !machine_is_at_home(input, role, dynamic_dns) => Some("AirPlay screen"),
+        "odio" if !machine_is_at_home(input, role, dynamic_dns) => Some("Audio hub (odio)"),
         _ => None,
     }
 }
@@ -922,6 +931,9 @@ fn compose_project(label: &str) -> &'static str {
         "home-assistant" => home_assistant::COMPOSE_PROJECT,
         "mosquitto" => mosquitto::COMPOSE_PROJECT,
         "zigbee2mqtt" => zigbee2mqtt::COMPOSE_PROJECT,
+        "shairport-sync" => shairport_sync::COMPOSE_PROJECT,
+        "uxplay" => uxplay::UNIT,
+        "odio" => "gryonixnexus-odio",
         "ollama" => ollama::COMPOSE_PROJECT,
         "open-webui" => open_webui::COMPOSE_PROJECT,
         "litellm" => litellm::COMPOSE_PROJECT,
@@ -1012,6 +1024,7 @@ fn build_input(req: &pb::InstallServiceRequest) -> Result<Input, String> {
     };
     apply_paths(&mut input, req)?;
     apply_usb_device(&mut input, req)?;
+    apply_shairport(&mut input, req);
     apply_texts(&mut input, req);
     apply_flags(&mut input, req);
     apply_numbers(&mut input, req);
@@ -1071,6 +1084,8 @@ fn apply_paths(input: &mut Input, req: &pb::InstallServiceRequest) -> Result<(),
         ("home_assistant_path", &mut input.home_assistant_path),
         ("mosquitto_path", &mut input.mosquitto_path),
         ("zigbee2mqtt_path", &mut input.zigbee2mqtt_path),
+        ("odio_path", &mut input.odio_path),
+        ("shairport_path", &mut input.shairport_path),
         ("minecraft_java_path", &mut input.minecraft_java_path),
         ("minecraft_bedrock_path", &mut input.minecraft_bedrock_path),
         ("crafty_path", &mut input.crafty_path),
@@ -1123,6 +1138,14 @@ fn apply_usb_device(input: &mut Input, req: &pb::InstallServiceRequest) -> Resul
     Ok(())
 }
 
+/// Speaker mode, name and sound device
+fn apply_shairport(input: &mut Input, req: &pb::InstallServiceRequest) {
+    input.shairport_mode = setting_or(req, "shairport_mode", &input.shairport_mode);
+    input.shairport_name = setting_or(req, "shairport_name", &input.shairport_name);
+    input.shairport_output = setting_or(req, "shairport_output", &input.shairport_output);
+    input.uxplay_name = setting_or(req, "uxplay_name", &input.uxplay_name);
+}
+
 /// Names, versions and lists: absent means empty, never a default
 fn apply_texts(input: &mut Input, req: &pb::InstallServiceRequest) {
     let slots = [
@@ -1140,6 +1163,7 @@ fn apply_texts(input: &mut Input, req: &pb::InstallServiceRequest) {
         ("jellyfin_hostname", &mut input.jellyfin_hostname),
         ("home_assistant_hostname", &mut input.home_assistant_hostname),
         ("zigbee2mqtt_hostname", &mut input.zigbee2mqtt_hostname),
+        ("odio_hostname", &mut input.odio_hostname),
         ("minecraft_java_version", &mut input.minecraft_java_version),
         ("minecraft_java_whitelist", &mut input.minecraft_java_whitelist),
         ("minecraft_java_operators", &mut input.minecraft_java_operators),
@@ -1308,6 +1332,7 @@ fn compose_text_of(label: &str, input: &Input) -> Option<String> {
         "home-assistant" => Some(home_assistant::compose_contents(input)),
         "mosquitto" => Some(mosquitto::compose_contents(input)),
         "zigbee2mqtt" => Some(zigbee2mqtt::compose_contents(input)),
+        "shairport-sync" => Some(shairport_sync::compose_contents(input)),
         "ollama" => Some(ollama::compose_contents(input)),
         "minecraft-java" => Some(minecraft::java_compose_contents(input)),
         "minecraft-bedrock" => Some(minecraft::bedrock_compose_contents(input)),
@@ -1437,7 +1462,7 @@ fn refuse_unworkable_request(req: &pb::InstallServiceRequest, label: &str, input
     if let Some((service, device)) = stick_missing(label, input) {
         return Err(Rejection::StickMissing { service, device });
     }
-    if !caddy_is_installed() && !can_install_packages() {
+    if label != "uxplay" && !caddy_is_installed() && !can_install_packages() {
         return Err(Rejection::NoReverseProxy);
     }
     Ok(())
@@ -1769,6 +1794,9 @@ async fn dispatch_install_1(
         "home-assistant" => Some(install_home_assistant_steps(input, sink).await),
         "mosquitto" => Some(install_mosquitto_steps(input, sink).await),
         "zigbee2mqtt" => Some(install_zigbee2mqtt_steps(input, sink).await),
+        "shairport-sync" => Some(install_shairport_sync_steps(input, sink).await),
+        "uxplay" => Some(install_uxplay_steps(input, sink).await),
+        "odio" => Some(install_odio_steps(input, sink).await),
         "ollama" => Some(install_ollama_steps(input, sink).await),
         "open-webui" => Some({
             let services = host_service_ids(label, protocols).await;
@@ -1850,7 +1878,8 @@ async fn install(
         remember_relay_home(&host_ctx);
     }
 
-    let outcome = match packages::ensure_for(crate::vpn_dns_priority::is_relay(), &sink).await {
+    let web_stack = if label == "uxplay" { Ok(()) } else { packages::ensure_for(crate::vpn_dns_priority::is_relay(), &sink).await };
+    let outcome = match web_stack {
         Err(why) => Err(why),
         Ok(()) => {
             firewall_base::ensure_ruleset(
@@ -3747,6 +3776,59 @@ async fn install_qdrant_steps(input: &Input, sink: &EventSink) -> Result<(), Str
     ensure_ai_network(sink).await;
     compose_up(qdrant::COMPOSE_PROJECT, &dir, sink).await?;
 
+    Ok(())
+}
+
+/// A port of `ShairportSyncService.setupSteps`
+async fn install_shairport_sync_steps(input: &Input, sink: &EventSink) -> Result<(), String> {
+    if !Path::new("/dev/snd").exists() {
+        return Err("this machine has no sound card (/dev/snd), so there is nothing for the speaker to play through".to_string());
+    }
+    let dir = PathBuf::from(&input.shairport_path);
+
+    let _ = sink.step("creating service directories").await;
+    create_dir_0755(&dir).map_err(|err| format!("could not create {}: {err}", dir.display()))?;
+
+    let compose_path = dir.join("docker-compose.yml");
+    write_managed_text(&compose_path, shairport_sync::compose_contents(input))
+        .map_err(|err| format!("could not write {}: {err}", compose_path.display()))?;
+
+    let _ = sink.step("pulling the AirPlay speaker image").await;
+    run_docker_streaming(&compose_pull_args(shairport_sync::COMPOSE_PROJECT, &dir), sink).await?;
+    let _ = sink.step("starting the AirPlay speaker").await;
+    compose_up(shairport_sync::COMPOSE_PROJECT, &dir, sink).await?;
+
+    open_service_firewall_ports(shairport_sync::SERVICE_ID, &shairport_sync::firewall_ports(), sink).await;
+
+    Ok(())
+}
+
+/// A port of `UxPlayService.setupSteps`
+async fn install_uxplay_steps(input: &Input, sink: &EventSink) -> Result<(), String> {
+    if !packages::have_binary("apt-get") {
+        return Err("the AirPlay screen is installed from Debian packages, and this host has no apt-get".to_string());
+    }
+    let _ = sink.step("installing UxPlay and its GStreamer plugins").await;
+    packages::run_outside_sandbox(&uxplay::setup_script(input), "installing the AirPlay screen", sink).await?;
+    open_service_firewall_ports(uxplay::SERVICE_ID, &uxplay::firewall_ports(), sink).await;
+    Ok(())
+}
+
+/// A port of `OdioService.setupSteps`
+async fn install_odio_steps(input: &Input, sink: &EventSink) -> Result<(), String> {
+    if !packages::have_binary("apt-get") {
+        return Err("the audio hub is installed from Debian packages, and this host has no apt-get".to_string());
+    }
+    let dir = PathBuf::from(&input.odio_path);
+    create_dir_0755(&dir).map_err(|err| format!("could not create {}: {err}", dir.display()))?;
+    let airplay_taken = input.installed_services.iter().any(|id| id == "shairport-sync")
+        || Path::new(&input.shairport_path).join("docker-compose.yml").exists();
+    let _ = sink.step("running the pinned odio installer — this takes several minutes").await;
+    odio::run_installer(&odio::installer_script(airplay_taken), sink).await?;
+    let _ = sink.step("binding odio to this machine and setting its password").await;
+    packages::run_outside_sandbox(&odio::finish_script(input), "finishing the audio hub", sink).await?;
+    write_caddy_site(&odio::caddy_site_names(input), &odio::caddy_site(input))?;
+    reload_caddy(sink).await?;
     Ok(())
 }
 
@@ -8221,7 +8303,8 @@ mod tests {
         "jellyfin_hostname", "jellyfin_path", "jellyfin_media_path",
         "home_assistant_hostname", "home_assistant_path", "machine_at_home",
         "home_assistant_usb_device", "mosquitto_path",
-        "zigbee2mqtt_path", "zigbee2mqtt_hostname",
+        "shairport_path", "shairport_mode", "shairport_name", "shairport_output",
+        "zigbee2mqtt_path", "zigbee2mqtt_hostname", "uxplay_name", "odio_path", "odio_hostname",
         "minecraft_java_path", "minecraft_java_version", "minecraft_java_flavour",
         "minecraft_java_memory_mb", "minecraft_java_port", "minecraft_java_accepts_eula",
         "minecraft_java_whitelist", "minecraft_java_operators", "minecraft_java_mods",

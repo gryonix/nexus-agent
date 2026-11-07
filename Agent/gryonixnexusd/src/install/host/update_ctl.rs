@@ -7,7 +7,7 @@ use crate::install::mail::{dockermailserver, mailu};
 use crate::install::{
     adguard, authelia, cloudflared, forgejo, headscale, home_assistant, homepage, immich, jellyfin,
     mosquitto, nextcloud,
-    passbolt, photoprism, pihole, psono, seafile, tailscale, vaultwarden, zigbee2mqtt,
+    passbolt, photoprism, pihole, psono, seafile, shairport_sync, tailscale, vaultwarden, zigbee2mqtt,
 };
 
 use super::HostInput;
@@ -181,6 +181,13 @@ fn classify_2(id: &str, input: &Input) -> Option<Entry> {
             directory: input.zigbee2mqtt_path.clone(),
             backup_target: "zigbee2mqtt",
             images: vec![zigbee2mqtt::IMAGE.to_string()],
+        })),
+        "shairport-sync" => Some(Entry::Target(Target {
+            id: "shairport-sync",
+            project: shairport_sync::COMPOSE_PROJECT.to_string(),
+            directory: input.shairport_path.clone(),
+            backup_target: "",
+            images: vec![shairport_sync::image(input)],
         })),
         "home-assistant" => Some(Entry::Target(Target {
             id: "home-assistant",
@@ -397,6 +404,7 @@ pub const UPDATE_CAPABLE_SERVICE_IDS: &[&str] = &[
     "home-assistant",
     "mosquitto",
     "zigbee2mqtt",
+    "shairport-sync",
 ];
 
 fn ordered_services(input: &HostInput) -> Vec<&'static str> {

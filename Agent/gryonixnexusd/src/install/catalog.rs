@@ -11,7 +11,7 @@ const PASSWORDS: &[(&str, &str)] =
     &[("vaultwarden", "Vaultwarden"), ("psono", "Psono"), ("passbolt", "Passbolt")];
 const FILES: &[(&str, &str)] = &[("nextcloud", "Nextcloud"), ("seafile", "Seafile")];
 const PHOTOS: &[(&str, &str)] = &[("immich", "Immich"), ("photoprism", "PhotoPrism")];
-const MEDIA: &[(&str, &str)] = &[("jellyfin", "Jellyfin")];
+const MEDIA: &[(&str, &str)] = &[("jellyfin", "Jellyfin"), ("shairport-sync", "AirPlay speaker"), ("uxplay", "AirPlay screen"), ("odio", "Audio hub (odio)")];
 const CODE: &[(&str, &str)] = &[("gitlab", "GitLab"), ("forgejo", "Forgejo")];
 const NETWORK: &[(&str, &str)] = &[("adguard-home", "AdGuard Home"), ("pihole", "Pi-hole")];
 const VPN: &[(&str, &str)] = &[
@@ -126,6 +126,7 @@ pub fn web_ingress_for(id: &str, input: &Input) -> Option<WebIngress> {
         "jellyfin" => Some(super::jellyfin::web_ingress(input)),
         "home-assistant" => Some(super::home_assistant::web_ingress(input)),
         "zigbee2mqtt" => Some(super::zigbee2mqtt::web_ingress(input)),
+        "odio" => Some(super::odio::web_ingress(input)),
         "crafty-controller" => Some(super::crafty::web_ingress(input)),
         "adguard-home" => Some(super::adguard::web_ingress(input)),
         "pihole" => Some(super::pihole::web_ingress(input)),

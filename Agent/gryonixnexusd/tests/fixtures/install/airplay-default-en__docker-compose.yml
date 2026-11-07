@@ -1,0 +1,10 @@
+services:
+  shairport-sync:
+    image: mikebrady/shairport-sync:latest
+    container_name: shairport-sync
+    restart: unless-stopped
+    # Finding the speaker and streaming to it use the host's network.
+    network_mode: host
+    devices:
+      - /dev/snd
+    command: -a "gryonix" -o alsa -- -d default

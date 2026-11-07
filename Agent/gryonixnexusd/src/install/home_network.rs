@@ -43,7 +43,7 @@ pub fn lan_access(id: &str) -> Option<LanAccess> {
         "mailcow" | "mailu" | "docker-mailserver" => BrowserOnly("mail apps use IMAP and SMTP"),
         "headscale" => BrowserOnly("Tailscale clients need its HTTPS control address"),
         "authelia" => BrowserOnly("it signs people in for other sites"),
-        "zigbee2mqtt" | "crafty-controller" | "adguard-home" | "pihole" | "homepage" | "vpn-panel" | "n8n"
+        "zigbee2mqtt" | "odio" | "crafty-controller" | "adguard-home" | "pihole" | "homepage" | "vpn-panel" | "n8n"
         | "openclaw" => BrowserOnly("it has no apps"),
         _ => return None,
     })

@@ -6,6 +6,7 @@
 #        gryonixnexus-system-ctl.sh at-stop <system|apps> <on|off>
 #        gryonixnexus-system-ctl.sh swap <1-256|off>
 #        gryonixnexus-system-ctl.sh schedule <off|every:<n>h@HH:MM|every:<n>d@HH:MM>
+#        gryonixnexus-system-ctl.sh reboot-schedule <off|daily@HH:MM|weekly:<1-7>@HH:MM>
 #        gryonixnexus-system-ctl.sh run | boot-run | stop-run | scheduled-run
 set -euo pipefail
 
@@ -25,6 +26,10 @@ TIMER_NAME=gryonixnexus-system-scheduled.timer
 TIMER=/etc/systemd/system/$TIMER_NAME
 SCHEDULED_NAME=gryonixnexus-system-scheduled.service
 SCHEDULED=/etc/systemd/system/$SCHEDULED_NAME
+REBOOT_CONF=/etc/gryonixnexus/reboot-schedule.conf
+REBOOT_TIMER_NAME=gryonixnexus-reboot.timer
+REBOOT_TIMER=/etc/systemd/system/$REBOOT_TIMER_NAME
+REBOOT_SERVICE=/etc/systemd/system/gryonixnexus-reboot.service
 
 # Packages only; configuration files the owner changed are kept.
 upgrade() {
@@ -52,6 +57,7 @@ status() {
   echo "swap=$(awk '/^SwapTotal:/ {printf "%.0f", $2 * 1024}' /proc/meminfo)"
   echo "swapfile=$(stat -c %s "$SWAPFILE" 2>/dev/null || echo 0)"
   echo "schedule=$(sed -n 's/^schedule=//p' "$SCHEDULE_CONF" 2>/dev/null | tail -n 1 | grep . || echo off)"
+  echo "reboot_schedule=$(sed -n 's/^schedule=//p' "$REBOOT_CONF" 2>/dev/null | tail -n 1 | grep . || echo off)"
   echo "log:"
   tail -n 80 "$LOG" 2>/dev/null || true
 }
@@ -230,6 +236,63 @@ set_schedule() {
   status
 }
 
+# The OnCalendar of daily@HH:MM or weekly:<1-7>@HH:MM, 1 being Monday
+reboot_calendar_of() {
+  local spec="$1" at="${1#*@}" day
+  case "$at" in [0-2][0-9]:[0-5][0-9]) ;; *) return 1 ;; esac
+  [ "${at%%:*}" -le 23 ] || return 1
+  case "$spec" in
+    daily@*) echo "*-*-* ${at}:00" ;;
+    weekly:[1-7]@*)
+      day="${spec#weekly:}"; day="${day%%@*}"
+      case "$day" in 1) day=Mon ;; 2) day=Tue ;; 3) day=Wed ;; 4) day=Thu ;; 5) day=Fri ;; 6) day=Sat ;; 7) day=Sun ;; esac
+      echo "$day *-*-* ${at}:00" ;;
+    *) return 1 ;;
+  esac
+}
+
+write_reboot_timer() {
+  cat > "$REBOOT_SERVICE" <<EOF_UNIT
+[Unit]
+Description=gryonixNexus scheduled reboot
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/systemctl reboot
+EOF_UNIT
+  cat > "$REBOOT_TIMER" <<EOF_UNIT
+[Unit]
+Description=gryonixNexus scheduled reboot
+[Timer]
+OnCalendar=$1
+[Install]
+WantedBy=timers.target
+EOF_UNIT
+  systemctl daemon-reload
+  systemctl enable --now "$REBOOT_TIMER_NAME" >/dev/null 2>&1
+}
+
+drop_reboot_timer() {
+  systemctl disable --now "$REBOOT_TIMER_NAME" >/dev/null 2>&1 || true
+  rm -f "$REBOOT_TIMER" "$REBOOT_SERVICE"
+  systemctl daemon-reload
+}
+
+set_reboot_schedule() {
+  local spec="${1:-off}" calendar=""
+  if [ "$spec" != off ]; then
+    calendar=$(reboot_calendar_of "$spec") || { echo "invalid schedule: $spec" >&2; exit 2; }
+    if command -v systemd-analyze >/dev/null 2>&1 && ! systemd-analyze calendar "$calendar" >/dev/null 2>&1; then
+      echo "invalid schedule: $spec" >&2; exit 2
+    fi
+  fi
+  install -d -m 755 "$(dirname "$REBOOT_CONF")"
+  echo "schedule=$spec" > "$REBOOT_CONF.new"
+  chmod 644 "$REBOOT_CONF.new"
+  mv "$REBOOT_CONF.new" "$REBOOT_CONF"
+  if [ "$spec" = off ]; then drop_reboot_timer; else write_reboot_timer "$calendar"; fi
+  status
+}
+
 # The timer's run: the system only; the apps have their own schedule
 scheduled_run() {
   : > "$LOG"
@@ -272,6 +335,7 @@ case "${1:-}" in
   at-stop) shift; at_stop "$@" ;;
   swap) shift; set_swap "$@" ;;
   schedule) shift; set_schedule "$@" ;;
+  reboot-schedule) shift; set_reboot_schedule "$@" ;;
   scheduled-run) scheduled_run ;;
   run) upgrade ;;
   boot-run) boot_run ;;

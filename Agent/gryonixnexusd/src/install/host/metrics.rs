@@ -19,7 +19,7 @@ pub const BUCKETS: &[(&str, u32, u32)] = &[
 
 pub const COLUMNS: &[&str] = &[
     "epoch", "cpu%", "memUsed", "memTotal", "diskUsed", "diskTotal", "netRx/s", "netTx/s", "ioRead/s", "ioWrite/s",
-    "load1", "tempC",
+    "load1", "tempC", "swapUsed", "swapTotal",
 ];
 
 pub fn collector_script() -> String {
@@ -27,7 +27,7 @@ pub fn collector_script() -> String {
 # Managed by gryonixNexus — samples host metrics every 10 seconds and keeps
 # downsampled history buckets as CSV files under /var/lib/gryonixnexus/metrics.
 # Columns: epoch,cpu%,memUsed,memTotal,diskUsed,diskTotal,netRx/s,netTx/s,
-# ioRead/s,ioWrite/s,load1,tempC. Empty field = no data for that sample.
+# ioRead/s,ioWrite/s,load1,tempC,swapUsed,swapTotal. Empty field = no data for that sample.
 # Power: power-<bucket>.csv, columns epoch,watts,sensor, when a sensor exists.
 # Disks: disks-<bucket>.csv, columns epoch,mount,used,total, one row per filesystem.
 set -euo pipefail
@@ -38,6 +38,7 @@ install -d -m 755 /var/lib/gryonixnexus "$DIR"
 
 cpu_ticks() { awk '$1=="cpu"{t=0; for(i=2;i<=9;i++) t+=$i; print t, $5+$6; exit}' /proc/stat; }
 mem_bytes() { awk '/^MemTotal:/{t=$2*1024} /^MemAvailable:/{a=$2*1024} END{print t-a, t}' /proc/meminfo; }
+swap_bytes() { awk '/^SwapTotal:/{t=$2*1024} /^SwapFree:/{f=$2*1024} END{print t-f, t}' /proc/meminfo; }
 disk_bytes() {
   { df -B1 --output=target,size,used -x tmpfs -x devtmpfs -x overlay 2>/dev/null || true; } \
     | awk 'NR>1 { if ($1=="/") {s=$2; u=$3; f=1} else if (!f && $2+0>s+0) {s=$2; u=$3} } END{print u+0, s+0}'
@@ -158,6 +159,7 @@ aggregate() {
       if ($10!="") {iw+=$10; iwn++}
       l+=$11
       if ($12!="") {tp+=$12; tn++}
+      if ($13!="") {su+=$13; st=$14; sn++}
     }
     END {
       if (!n) exit 0
@@ -173,6 +175,9 @@ aggregate() {
       if (iwn) printf "%d", iw/iwn
       printf ",%.2f,", l/n
       if (tn) printf "%.1f", tp/tn
+      printf ","
+      if (sn) printf "%d,%d", su/sn, st
+      else printf ","
       printf "\n"
     }' "$source")
   [ -n "$row" ] || return 0
@@ -231,6 +236,7 @@ while :; do
   now=$(date +%s)
   read -r total idle < <(cpu_ticks)
   read -r mem_used mem_total < <(mem_bytes)
+  read -r swap_used swap_total < <(swap_bytes)
   read -r disk_used disk_total < <(disk_bytes)
   read -r rx tx < <(net_bytes)
   read -r io_r io_w < <(io_bytes)
@@ -247,9 +253,9 @@ while :; do
     iw_rate=$(rate "$io_w" "$prev_iw")
   fi
 
-  printf '%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s\n' \
+  printf '%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s\n' \
     "$now" "$cpu" "$mem_used" "$mem_total" "$disk_used" "$disk_total" \
-    "$rx_rate" "$tx_rate" "$ir_rate" "$iw_rate" "$load" "$temp" >> "$DIR/10s.csv"
+    "$rx_rate" "$tx_rate" "$ir_rate" "$iw_rate" "$load" "$temp" "$swap_used" "$swap_total" >> "$DIR/10s.csv"
   chmod 644 "$DIR/10s.csv"
   trim "$DIR/10s.csv" 720
 
@@ -369,7 +375,7 @@ mod tests {
 
     #[test]
     fn the_column_count_matches_the_raw_row_printf() {
-        assert_eq!(COLUMNS.len(), 12);
+        assert_eq!(COLUMNS.len(), 14);
         let script = collector_script();
         let placeholders = "%s,".repeat(COLUMNS.len() - 1) + "%s\\n";
         assert!(

@@ -25,8 +25,8 @@ use crate::ddns;
 use crate::mesh;
 use crate::notify;
 use crate::{
-    agent_update, backup, backup_drive, container_backup, container_backup_run, container_removal, container_update, container_schedule, containers, control, discover, dkim, history, lockdown, mailbox,
-    metrics, models, mods, pb, restore, security, serial,
+    agent_update, backup, backup_drive, container_backup, container_backup_run, container_removal, container_update, container_schedule, containers, control, discover, dkim, docker_assets, history, lockdown, mailbox,
+    metrics, models, mods, pb, restore, security, serial, system_settings,
     uninstall, update,
 };
 
@@ -103,6 +103,7 @@ async fn route_control(path: &str, codec: Codec, bytes: Bytes, store: Arc<Mutex<
                 .collect();
             state.wake_on_lan = crate::wake::current();
             state.mesh_address = crate::mesh::own_address().await.unwrap_or_default();
+            state.agent_health = Some(crate::health::read());
             codec.encode(&state)
         }).map(Some),
         "/gryonixnexusd.v1.Control/Discover" => ({
@@ -127,6 +128,22 @@ async fn route_control(path: &str, codec: Codec, bytes: Bytes, store: Arc<Mutex<
         "/gryonixnexusd.v1.Control/ListSerialDevices" => ({
             let _req: pb::ListSerialDevicesRequest = codec.decode(&bytes)?;
             codec.encode(&serial::list())
+        }).map(Some),
+        "/gryonixnexusd.v1.Control/GetSystemSettings" => ({
+            let _req: pb::GetSystemSettingsRequest = codec.decode(&bytes)?;
+            Ok(system_settings::get(codec).await)
+        }).map(Some),
+        "/gryonixnexusd.v1.Control/SetTimeZone" => ({
+            let req: pb::SetTimeZoneRequest = codec.decode(&bytes)?;
+            Ok(system_settings::set_time_zone(codec, req).await)
+        }).map(Some),
+        "/gryonixnexusd.v1.Control/SetHostName" => ({
+            let req: pb::SetHostNameRequest = codec.decode(&bytes)?;
+            Ok(system_settings::set_host_name(codec, req).await)
+        }).map(Some),
+        "/gryonixnexusd.v1.Control/SetTimeSync" => ({
+            let req: pb::SetTimeSyncRequest = codec.decode(&bytes)?;
+            Ok(system_settings::set_time_sync(codec, req).await)
         }).map(Some),
         "/gryonixnexusd.v1.Control/HostMetrics" => ({
             let req: pb::HostMetricsRequest = codec.decode_enveloped(&bytes)?;
@@ -187,6 +204,29 @@ async fn route_containers(path: &str, codec: Codec, bytes: Bytes, store: Arc<Mut
                 Err(refusal) => Ok(refusal.response()),
                 Ok((label, list)) => Ok(tail_all(codec, list, label, req.tail)),
             }
+        }).map(Some),
+        "/gryonixnexusd.v1.Containers/ListImages" => ({
+            let _req: pb::ListImagesRequest = codec.decode(&bytes)?;
+            Ok(docker_assets::list_images(codec).await)
+        }).map(Some),
+        "/gryonixnexusd.v1.Containers/ListVolumes" => ({
+            let _req: pb::ListVolumesRequest = codec.decode(&bytes)?;
+            let names = lock(&store).container_names()?;
+            Ok(docker_assets::list_volumes(codec, &names).await)
+        }).map(Some),
+        "/gryonixnexusd.v1.Containers/RemoveImage" => ({
+            let req: pb::RemoveImageRequest = codec.decode(&bytes)?;
+            Ok(docker_assets::remove_image(codec, req).await)
+        }).map(Some),
+        "/gryonixnexusd.v1.Containers/RemoveVolume" => ({
+            let req: pb::RemoveVolumeRequest = codec.decode(&bytes)?;
+            let names = lock(&store).container_names()?;
+            Ok(docker_assets::remove_volume(codec, req, &names).await)
+        }).map(Some),
+        "/gryonixnexusd.v1.Containers/PruneUnused" => ({
+            let req: pb::PruneUnusedRequest = codec.decode(&bytes)?;
+            let names = lock(&store).container_names()?;
+            Ok(docker_assets::prune_unused(codec, req, &names).await)
         }).map(Some),
         "/gryonixnexusd.v1.Containers/InspectContainer" => ({
             let req: pb::InspectContainerRequest = codec.decode(&bytes)?;
@@ -509,6 +549,14 @@ async fn route_update(path: &str, codec: Codec, bytes: Bytes) -> anyhow::Result<
         "/gryonixnexusd.v1.Lockdown/SetOpenAPI" => ({
             let req: pb::SetOpenApiRequest = codec.decode(&bytes)?;
             Ok(crate::open_api::set_open_api(codec, req).await)
+        }).map(Some),
+        "/gryonixnexusd.v1.Exposure/ProbePublicPorts" => ({
+            let req: pb::ProbePublicPortsRequest = codec.decode(&bytes)?;
+            Ok(crate::exposure::probe_public_ports(codec, req).await)
+        }).map(Some),
+        "/gryonixnexusd.v1.Exposure/GetLocalRootCA" => ({
+            let req: pb::GetLocalRootCaRequest = codec.decode(&bytes)?;
+            Ok(crate::exposure::get_local_root_ca(codec, req).await)
         }).map(Some),
         "/gryonixnexusd.v1.Security/GetSecurityStatus" => ({
             let req: pb::GetSecurityStatusRequest = codec.decode(&bytes)?;
@@ -895,8 +943,26 @@ pub fn stream_response(json: bool, rx: tokio::sync::mpsc::Receiver<Bytes>) -> Re
 }
 
 async fn logs_stream(codec: Codec, req: pb::LogsRequest) -> anyhow::Result<Resp> {
+    if let Some(native) = crate::native::find(&req.service_id) {
+        return Ok(native_logs(codec, native, req.service_id.clone()).await);
+    }
     let containers = discover::containers_of_service(&req.service_id).await?;
     Ok(tail_all(codec, containers, req.service_id, req.tail))
+}
+
+/// The journal of a systemd service, sent once
+async fn native_logs(codec: Codec, native: &'static crate::native::Native, service_id: String) -> Resp {
+    let json = matches!(codec, Codec::Json);
+    let (tx, rx) = tokio::sync::mpsc::channel::<Bytes>(64);
+    tokio::spawn(async move {
+        let text = native.run("logs").await.unwrap_or_else(|err| err);
+        for line in text.lines() {
+            if send_log(&tx, &service_id, native.id, "stdout", line.to_string(), json).await.is_err() {
+                break;
+            }
+        }
+    });
+    stream_response(json, rx)
 }
 
 /// Follow a resolved set of containers, whatever resolved them

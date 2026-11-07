@@ -46,6 +46,7 @@ const SOLE: &[(&str, &str)] = &[
     ("jellyfin", "media"),
     ("home-assistant", "home"),
     ("zigbee2mqtt", "zigbee"),
+    ("odio", "odio"),
     ("authelia", "auth"),
     ("homepage", "start"),
     ("headscale", "mesh"),

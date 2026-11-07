@@ -104,14 +104,9 @@ NEW="$(missing "linux-headers-$(uname -r)" dkms build-essential curl ca-certific
 [ -z "$NEW" ] || apt-get install -y -qq $NEW >/dev/null
 echo "INSTALLED $NEW"
 step 2/5 "adding the Amnezia package source"
-install -d -m 0755 /etc/apt/keyrings
-KEY=/etc/apt/keyrings/amnezia-ppa.asc
-curl -fsSL 'https://keyserver.ubuntu.com/pks/lookup?op=get&options=mr&search=0x{AMNEZIA_KEY}' > "$KEY" \
-  || curl -fsSL 'https://api.launchpad.net/devel/~amnezia/+archive/ubuntu/ppa?ws.op=getSigningKeyData' \
-  | sed -e 's/^"//' -e 's/"$//' -e 's/\\n/\n/g' > "$KEY"
-grep -q 'BEGIN PGP PUBLIC KEY BLOCK' "$KEY" || {{ echo "the Amnezia signing key could not be downloaded" >&2; exit 1; }}
-echo "deb [signed-by=/etc/apt/keyrings/amnezia-ppa.asc] https://ppa.launchpadcontent.net/amnezia/ppa/ubuntu {suite} main" \
-  > /etc/apt/sources.list.d/gryonixnexus-amnezia.list
+{key}
+echo "deb [signed-by={KEY_PATH}] https://ppa.launchpadcontent.net/amnezia/ppa/ubuntu {suite} main" \
+  > {LIST_PATH}
 apt-get update -qq
 step 3/5 "building the AmneziaWG module"
 NEW="$(missing amneziawg)"
@@ -125,9 +120,60 @@ step 5/5 "restarting AmneziaWG on the module"
 {restart}
 echo "{DONE_ON}"
 "#,
+        key = key_lines(KEY_PATH, LIST_PATH),
         tools = tools_lines(),
         restart = restart_lines(),
     )
+}
+
+/// Where apt reads the Amnezia signing key
+const KEY_PATH: &str = "/etc/apt/keyrings/amnezia-ppa.asc";
+/// The package source this agent adds
+const LIST_PATH: &str = "/etc/apt/sources.list.d/gryonixnexus-amnezia.list";
+const PGP_BLOCK: &str = "BEGIN PGP PUBLIC KEY BLOCK";
+const DONE_KEY: &str = "DONE key";
+
+/// Replaces the key only with a checked download
+pub fn key_lines(key: &str, list: &str) -> String {
+    format!(
+        r#"KEY='{key}'
+install -d -m 0755 "$(dirname "$KEY")"
+NEW_KEY="$(mktemp)"
+curl -fsSL 'https://keyserver.ubuntu.com/pks/lookup?op=get&options=mr&search=0x{AMNEZIA_KEY}' > "$NEW_KEY" 2>/dev/null || true
+grep -q '{PGP_BLOCK}' "$NEW_KEY" || curl -fsSL 'https://api.launchpad.net/devel/~amnezia/+archive/ubuntu/ppa?ws.op=getSigningKeyData' 2>/dev/null \
+  | sed -e 's/^"//' -e 's/"$//' -e 's/\\n/\n/g' > "$NEW_KEY" || true
+if grep -q '{PGP_BLOCK}' "$NEW_KEY"; then install -m 0644 "$NEW_KEY" "$KEY"; fi
+rm -f "$NEW_KEY"
+grep -q '{PGP_BLOCK}' "$KEY" 2>/dev/null || {{ rm -f '{list}'; echo "the Amnezia signing key could not be downloaded" >&2; exit 1; }}"#
+    )
+}
+
+/// The source is listed but apt has no usable key
+pub fn lacks_key(list: &std::path::Path, key: &std::path::Path) -> bool {
+    list.exists() && !std::fs::read_to_string(key).is_ok_and(|text| text.contains(PGP_BLOCK))
+}
+
+/// Fetches the key again, or drops the source
+pub fn key_script() -> String {
+    format!("set -eu\necho \"STEP repairing the Amnezia signing key\"\n{}\necho \"{DONE_KEY}\"\n", key_lines(KEY_PATH, LIST_PATH))
+}
+
+/// Mends a source left without its key
+fn heal_source() {
+    if WORKING.swap(true, Ordering::SeqCst) {
+        return;
+    }
+    let Ok(runtime) = tokio::runtime::Handle::try_current() else {
+        WORKING.store(false, Ordering::SeqCst);
+        return;
+    };
+    runtime.spawn(async move {
+        let (ok, output) = run(&key_script(), DONE_KEY).await;
+        if !ok {
+            tracing::warn!("the Amnezia source had no key and was removed: {}", tail(&output));
+        }
+        WORKING.store(false, Ordering::SeqCst);
+    });
 }
 
 /// The amneziawg-tools release built into the container
@@ -194,7 +240,7 @@ echo "STEP moving AmneziaWG back to the program"
 docker exec {CONTAINER} sh -c '[ ! -e /usr/bin/awg.image ] || cp /usr/bin/awg.image /usr/bin/awg; rm -f {TOOLS_MARK}' 2>/dev/null || true
 docker stop {CONTAINER} >/dev/null 2>&1 || true
 modprobe -r amneziawg 2>/dev/null || true
-rm -f /etc/apt/sources.list.d/gryonixnexus-amnezia.list /etc/apt/keyrings/amnezia-ppa.asc
+rm -f {LIST_PATH} {KEY_PATH}
 [ -n "{packages}" ] && apt-get purge -y -qq {packages} >/dev/null 2>&1 || true
 apt-get autoremove -y -qq >/dev/null 2>&1 || true
 docker start {CONTAINER} >/dev/null
@@ -405,6 +451,11 @@ pub async fn refresh() {
         switch(state.wanted.unwrap_or(true));
         return;
     }
+    if !busy() && lacks_key(std::path::Path::new(LIST_PATH), std::path::Path::new(KEY_PATH)) {
+        tracing::info!("fetching the Amnezia signing key apt is missing");
+        heal_source();
+        return;
+    }
     if state.status == "on" && !busy() && module_loaded() && container_running().await && !tools_current().await {
         tracing::info!("putting AmneziaWG's tools back into a recreated container");
         keep_tools();
@@ -527,6 +578,51 @@ mod tests {
         assert!(script.contains("keyserver.ubuntu.com/pks/lookup?op=get&options=mr&search=0x75C9DD72C799870E310542E24166F2C257290828"));
         assert!(script.contains("api.launchpad.net/devel/~amnezia"));
         assert!(script.contains("grep -q 'BEGIN PGP PUBLIC KEY BLOCK'"), "an empty key must stop the run");
+        assert!(!script.contains("> \"$KEY\""), "the live key is never truncated by a download");
+    }
+
+    fn key_host(name: &str, key: &str) -> (std::path::PathBuf, String) {
+        let dir = std::env::temp_dir().join(format!("gryonixnexusd-awg-key-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("bin")).unwrap();
+        stub(&dir.join("bin"), "curl", "#!/bin/sh\nexit 22\n");
+        std::fs::write(dir.join("key.asc"), key).unwrap();
+        std::fs::write(dir.join("src.list"), "deb x focal main\n").unwrap();
+        let script = format!("set -eu\n{}\necho ok", key_lines(&dir.join("key.asc").display().to_string(), &dir.join("src.list").display().to_string()));
+        (dir, script)
+    }
+
+    fn run_offline(dir: &std::path::Path, script: &str) -> bool {
+        let path = format!("{}:{}", dir.join("bin").display(), std::env::var("PATH").unwrap_or_default());
+        std::process::Command::new("bash").args(["-c", script]).env("PATH", path).output().unwrap().status.success()
+    }
+
+    #[test]
+    fn an_unreachable_keyserver_keeps_the_good_key() {
+        let good = "-----BEGIN PGP PUBLIC KEY BLOCK-----\nabc\n";
+        let (dir, script) = key_host("keep", good);
+        assert!(run_offline(&dir, &script));
+        assert_eq!(std::fs::read_to_string(dir.join("key.asc")).unwrap(), good);
+        assert!(dir.join("src.list").exists());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn no_key_at_all_takes_the_source_away() {
+        let (dir, script) = key_host("drop", "");
+        assert!(!run_offline(&dir, &script));
+        assert!(!dir.join("src.list").exists(), "apt must not keep a source it cannot verify");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_listed_source_with_an_empty_key_is_noticed() {
+        let (dir, _) = key_host("notice", "");
+        assert!(lacks_key(&dir.join("src.list"), &dir.join("key.asc")));
+        std::fs::write(dir.join("key.asc"), "-----BEGIN PGP PUBLIC KEY BLOCK-----\n").unwrap();
+        assert!(!lacks_key(&dir.join("src.list"), &dir.join("key.asc")));
+        assert!(!lacks_key(&dir.join("none.list"), &dir.join("none.asc")), "no source, nothing to mend");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
@@ -592,6 +688,11 @@ mod tests {
             stub(&dir, "systemd-run", "#!/bin/sh\necho \"$@\" > \"$(dirname \"$0\")/args\"\nwhile [ \"$1\" != /bin/bash ]; do shift; done\nexec \"$@\"\n"),
         );
         std::env::set_var("GRYONIXNEXUSD_AWG_SYSTEMCTL_BIN", stub(&dir, "systemctl", "#!/bin/sh\nexit 3\n"));
+        stub(&dir, "docker", "#!/bin/sh\nexit 0\n");
+        let path = std::env::var("PATH").unwrap_or_default();
+        if !path.starts_with(&dir.display().to_string()) {
+            std::env::set_var("PATH", format!("{}:{path}", dir.display()));
+        }
         dir
     }
 
@@ -651,7 +752,7 @@ mod tests {
 
     #[test]
     fn both_scripts_parse_as_bash() {
-        for script in [enable_script("focal"), disable_script(&["amneziawg".to_string()])] {
+        for script in [enable_script("focal"), disable_script(&["amneziawg".to_string()]), key_script()] {
             let out = std::process::Command::new("bash").args(["-n", "-c", &script]).output().expect("bash runs");
             assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
         }
