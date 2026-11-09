@@ -10,6 +10,8 @@ pub struct AudioOutput {
     pub mixers: Vec<String>,
 }
 
+/// Card ids of the Pi's HDMI outputs
+const PI_HDMI: &str = "vc4hdmi";
 const CARDS: &str = "/proc/asound/cards";
 const PCM: &str = "/proc/asound/pcm";
 
@@ -28,7 +30,7 @@ pub async fn list() -> Vec<AudioOutput> {
 
 /// The card id inside an hw:CARD=…,DEV=… name
 fn card_id(device: &str) -> Option<&str> {
-    device.strip_prefix("hw:CARD=")?.split(',').next()
+    device.split_once("CARD=")?.1.split(',').next()
 }
 
 async fn card_mixers(card: &str) -> Vec<String> {
@@ -68,7 +70,8 @@ fn outputs(cards: &str, pcm: &str) -> Vec<AudioOutput> {
         let Some((_, id, long)) = names.iter().find(|(number, _, _)| *number == card) else { continue };
         let device_name = rest.split(" : ").next().unwrap_or("").trim();
         let title = if device_name.is_empty() || device_name == long { long.clone() } else { format!("{long} — {device_name}") };
-        found.push(AudioOutput { device: format!("hw:CARD={id},DEV={device}"), title, mixers: Vec::new() });
+        let kind = if id.starts_with(PI_HDMI) { "hdmi" } else { "hw" };
+        found.push(AudioOutput { device: format!("{kind}:CARD={id},DEV={device}"), title, mixers: Vec::new() });
     }
     found
 }
@@ -84,7 +87,7 @@ mod tests {
     fn a_pi_lists_hdmi_and_headphones_after_default() {
         let found = outputs(PI_CARDS, PI_PCM);
         let devices: Vec<&str> = found.iter().map(|o| o.device.as_str()).collect();
-        assert_eq!(devices, ["default", "hw:CARD=vc4hdmi,DEV=0", "hw:CARD=Headphones,DEV=0"]);
+        assert_eq!(devices, ["default", "hdmi:CARD=vc4hdmi,DEV=0", "hw:CARD=Headphones,DEV=0"]);
         assert_eq!(found[1].title, "vc4-hdmi — MAI PCM i2s-hifi-0");
         assert_eq!(found[2].title, "bcm2835 Headphones");
     }
@@ -94,6 +97,7 @@ mod tests {
         let text = "Simple mixer control 'PCM',0\nSimple mixer control 'Headphone',0\n";
         assert_eq!(mixer_names(text), ["PCM", "Headphone"]);
         assert_eq!(card_id("hw:CARD=Headphones,DEV=0"), Some("Headphones"));
+        assert_eq!(card_id("hdmi:CARD=vc4hdmi1,DEV=0"), Some("vc4hdmi1"));
         assert_eq!(card_id("default"), None);
     }
 

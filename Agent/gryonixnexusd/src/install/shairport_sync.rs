@@ -35,7 +35,15 @@ pub fn speaker_name(input: &Input) -> String {
 /// A port of `ShairportSyncService.outputDevice(_:)`
 pub fn output_device(input: &Input) -> String {
     let device: String = input.shairport_output.chars().filter(|c| ALLOWED_OUTPUT.contains(*c)).collect();
-    if device.is_empty() { DEFAULT_OUTPUT.to_string() } else { device }
+    if device.is_empty() { DEFAULT_OUTPUT.to_string() } else { playable(&device) }
+}
+
+/// Pi HDMI cards play only through their hdmi name
+fn playable(device: &str) -> String {
+    match device.strip_prefix("hw:").filter(|rest| rest.starts_with("CARD=vc4hdmi")) {
+        Some(rest) => format!("hdmi:{rest}"),
+        None => device.to_string(),
+    }
 }
 
 /// A port of `ShairportSyncService.composeFile(_:).composeContents`
@@ -172,6 +180,10 @@ mod tests {
         assert_eq!(output_device(&input), "hw:0,0rm");
         input.shairport_output = ";".to_string();
         assert_eq!(output_device(&input), DEFAULT_OUTPUT);
+        input.shairport_output = "hw:CARD=vc4hdmi1,DEV=0".to_string();
+        assert_eq!(output_device(&input), "hdmi:CARD=vc4hdmi1,DEV=0");
+        input.shairport_output = "hw:CARD=Headphones,DEV=0".to_string();
+        assert_eq!(output_device(&input), "hw:CARD=Headphones,DEV=0");
     }
 
     #[test]

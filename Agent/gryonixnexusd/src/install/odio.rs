@@ -38,7 +38,9 @@ fn systemd_run_bin() -> String {
 pub async fn run_installer(script: &str, sink: &super::execute::EventSink) -> Result<(), String> {
     let log = install_log();
     let _ = std::fs::remove_file(&log);
-    let wrapped = format!("exec >'{}' 2>&1\n{script}", log.display());
+    let staged = crate::util::state_dir().join("odio-install.sh");
+    std::fs::write(&staged, format!("exec >'{}' 2>&1\n{script}", log.display()))
+        .map_err(|err| format!("could not stage the odio installer: {err}"))?;
     let args = [
         "--quiet".to_string(),
         "--collect".to_string(),
@@ -47,8 +49,7 @@ pub async fn run_installer(script: &str, sink: &super::execute::EventSink) -> Re
         "--service-type=oneshot".to_string(),
         format!("--property=TimeoutStartSec={}", INSTALL_LIMIT.as_secs()),
         "/bin/bash".to_string(),
-        "-c".to_string(),
-        wrapped,
+        staged.display().to_string(),
     ];
     let mut child = tokio::process::Command::new(systemd_run_bin())
         .args(&args)
@@ -144,7 +145,7 @@ pub fn control_script() -> String {
 pub fn installer_script(airplay_taken: bool) -> String {
     let airplay = if airplay_taken { "N" } else { "Y" };
     format!(
-        "set -e\nodio_tmp=\"$(mktemp -d)\"\ncurl -fsSL -o \"$odio_tmp/install.sh\" '{INSTALLER_URL}'\necho '{INSTALLER_SHA256}  '\"$odio_tmp/install.sh\" | sha256sum -c - >/dev/null || {{ echo 'the odio installer does not match its pinned checksum'; exit 1; }}\nprintf 'APT::Get::Assume-Yes \"true\";\\n' > \"$odio_tmp/apt.conf\"\nodio_mympd=Y\nif grep -qE '^ID=(debian|raspbian)$' /etc/os-release && [ \"$(. /etc/os-release; echo \"${{VERSION_ID%%.*}}\")\" -lt 13 ] 2>/dev/null; then\n  odio_mympd=N\n  echo 'myMPD needs Debian 13 or newer; installing the hub without it'\nfi\nDEBIAN_FRONTEND=noninteractive apt-get install -yq python3-jinja2 python3-cryptography\nTARGET_USER={ACCOUNT} ODIOS_VERSION={VERSION} INSTALL_BRANDING=N INSTALL_SHAIRPORT_SYNC={airplay} INSTALL_MYMPD=\"$odio_mympd\" APT_CONFIG=\"$odio_tmp/apt.conf\" DEBIAN_FRONTEND=noninteractive bash -s < \"$odio_tmp/install.sh\"\nrm -rf \"$odio_tmp\"\nid -u {ACCOUNT} >/dev/null 2>&1 || {{ echo 'the odio installer finished without creating the {ACCOUNT} user'; exit 1; }}\n"
+        "set -e\nodio_tmp=\"$(mktemp -d)\"\ncurl -fsSL -o \"$odio_tmp/install.sh\" '{INSTALLER_URL}'\necho '{INSTALLER_SHA256}  '\"$odio_tmp/install.sh\" | sha256sum -c - >/dev/null || {{ echo 'the odio installer does not match its pinned checksum'; exit 1; }}\nprintf 'APT::Get::Assume-Yes \"true\";\\n' > \"$odio_tmp/apt.conf\"\nodio_mympd=Y\nif grep -qE '^ID=(debian|raspbian)$' /etc/os-release && [ \"$(. /etc/os-release; echo \"$VERSION_ID\" | cut -d. -f1)\" -lt 13 ] 2>/dev/null; then\n  odio_mympd=N\n  echo 'myMPD needs Debian 13 or newer; installing the hub without it'\nfi\nDEBIAN_FRONTEND=noninteractive apt-get install -yq python3-jinja2 python3-cryptography\nTARGET_USER={ACCOUNT} ODIOS_VERSION={VERSION} INSTALL_BRANDING=N INSTALL_SHAIRPORT_SYNC={airplay} INSTALL_MYMPD=\"$odio_mympd\" APT_CONFIG=\"$odio_tmp/apt.conf\" DEBIAN_FRONTEND=noninteractive bash -s < \"$odio_tmp/install.sh\"\nrm -rf \"$odio_tmp\"\nid -u {ACCOUNT} >/dev/null 2>&1 || {{ echo 'the odio installer finished without creating the {ACCOUNT} user'; exit 1; }}\n"
     )
 }
 
@@ -212,6 +213,7 @@ mod tests {
         assert!(text.contains("bash -s < \"$odio_tmp/install.sh\""), "the installer reads itself from stdin");
         assert!(text.contains("id -u odio"), "a silent no-op run must fail");
         assert!(text.contains("APT::Get::Assume-Yes"), "apt must not stop to ask");
+        assert!(!text.contains("${"), "systemd-run empties brace expansions in its command line");
         assert!(text.contains("-lt 13 ] 2>/dev/null; then\n  odio_mympd=N") && text.contains("INSTALL_MYMPD=\"$odio_mympd\""), "{text}");
         let deps = text.find("apt-get install -yq python3-jinja2 python3-cryptography").expect("deps first");
         assert!(deps < text.find("bash -s").unwrap(), "its own sudo apt-get drops APT_CONFIG and would ask");
