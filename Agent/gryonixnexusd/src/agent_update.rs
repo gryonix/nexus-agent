@@ -190,10 +190,25 @@ async fn fetch_manifest() -> Result<String, String> {
 }
 
 fn is_newer(candidate: &str, installed: &str) -> bool {
+    let today = (std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0) / 86_400) as i64;
+    is_newer_on(candidate, installed, today)
+}
+
+fn is_newer_on(candidate: &str, installed: &str, today: i64) -> bool {
     match (parse_version(candidate), parse_version(installed)) {
-        (Some(candidate), Some(installed)) => candidate > installed,
+        (Some(candidate), Some(installed)) => ordering_key(candidate, today) > ordering_key(installed, today),
         _ => false,
     }
+}
+
+/// Old November counters sort below dated 26.11.D versions
+fn ordering_key(parts: Vec<u64>, today: i64) -> Vec<u64> {
+    let counter_era = parts.len() >= 3 && parts[0] == 26 && parts[1] == 11
+        && crate::update::days_from_civil(2026, 11, parts[2] as i64) > today;
+    if counter_era {
+        return [vec![26, 11, 0], parts[2..].to_vec()].concat();
+    }
+    parts
 }
 
 fn parse_version(value: &str) -> Option<Vec<u64>> {
@@ -839,6 +854,12 @@ mod tests {
     #[test]
     fn version_comparison_is_numeric_not_lexicographic() {
         assert!(is_newer("0.0.109", "0.0.108"));
+        let nov9 = crate::update::days_from_civil(2026, 11, 9);
+        assert!(is_newer_on("26.11.9", "26.11.25", nov9), "dated beats an old counter");
+        assert!(!is_newer_on("26.11.25", "26.11.9", nov9), "an old counter is never an update");
+        assert!(is_newer_on("26.11.10", "26.11.9", nov9 + 1));
+        assert!(is_newer_on("26.11.9-2", "26.11.9", nov9));
+        assert!(is_newer_on("26.12.1", "26.11.25", nov9));
         assert!(!is_newer("0.0.9", "0.0.10"));
         assert!(is_newer("0.0.10", "0.0.9"));
         assert!(is_newer("26.10.12-1", "26.10.12"));
