@@ -151,6 +151,9 @@ pub fn site_names_for(id: &str, input: &Input) -> Vec<String> {
 }
 
 pub fn site_for(id: &str, input: &Input, sso: bool) -> Option<(Vec<String>, String)> {
+    if id == super::odio::SERVICE_ID {
+        return Some((super::odio::caddy_site_names(input), super::odio::caddy_site(input)));
+    }
     let ingress = web_ingress_for(id, input)?;
     let names = site_names_for(id, input);
     let text = super::caddy::site_with_public_paths(

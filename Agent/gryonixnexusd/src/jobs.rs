@@ -417,6 +417,18 @@ fn ids_in(dir: PathBuf) -> Vec<String> {
         .collect()
 }
 
+/// The plan a service run belongs to
+fn owning_plan(parsed: &Parsed) -> Option<String> {
+    let plan = crate::install::plan::part_of(&parsed.job_id);
+    let install = parsed.kind == pb::JobKind::Install as i32;
+    plan.or_else(|| {
+        (install && !parsed.closed)
+            .then(|| crate::install::plan::card_of(&parsed.subject))
+            .flatten()
+            .filter(|card| card != &parsed.job_id)
+    })
+}
+
 fn job_of(parsed: &Parsed) -> pb::Job {
     pb::Job {
         job_id: parsed.job_id.clone(),
@@ -427,7 +439,7 @@ fn job_of(parsed: &Parsed) -> pb::Job {
         outcome: outcome_of(parsed) as i32,
         failure: parsed.failure.clone(),
         events: parsed.events.len() as u64,
-        part_of: crate::install::plan::part_of(&parsed.job_id).unwrap_or_default(),
+        part_of: owning_plan(parsed).unwrap_or_default(),
         plan_purpose: crate::install::plan::purpose_of(&parsed.job_id).unwrap_or_default(),
     }
 }

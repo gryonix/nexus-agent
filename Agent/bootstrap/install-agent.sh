@@ -595,9 +595,12 @@ fetch_prebuilt() {
 
 # Add-on programs: left ready in a cache, put in place by the agent when needed
 MODULES_ROOT="$PREFIX/usr/local/lib/gryonixnexus"
+MODULES_ACTIVE="$PREFIX/var/lib/gryonixnexus/agent/modules"
+MODULES_UPDATED="$PREFIX/var/lib/gryonixnexus/agent/modules-cache"
 install_modules() {
   local module built core_prebuilt="$PREBUILT"
   install -d -m 0755 "$MODULES_ROOT/modules-cache"
+  rm -rf "$MODULES_ROOT/modules"
   # shellcheck disable=SC2043
   for module in gryonixnexus-audio; do
     built="$CRATE_DIR/target/release/$module"
@@ -607,7 +610,8 @@ install_modules() {
     fi
     if [ -n "$built" ] && [ -x "$built" ]; then
       install -m 0755 "$built" "$MODULES_ROOT/modules-cache/$module"
-      [ -f "$MODULES_ROOT/modules/$module" ] && install -m 0755 "$built" "$MODULES_ROOT/modules/$module"
+      [ -f "$MODULES_ACTIVE/$module" ] && install -m 0755 "$built" "$MODULES_ACTIVE/$module"
+      rm -f "$MODULES_UPDATED/$module"
       [ -n "$core_prebuilt" ] && rm -rf "$(dirname "$built")"
     else
       log "no $module for $VERSION here; its features wait for the next update"
