@@ -3832,7 +3832,7 @@ async fn install_shairport_sync_steps(input: &Input, sink: &EventSink) -> Result
     let _ = sink.step("starting the AirPlay speaker").await;
     compose_up(shairport_sync::COMPOSE_PROJECT, &dir, sink).await?;
 
-    open_service_firewall_ports(shairport_sync::SERVICE_ID, &shairport_sync::firewall_ports(), sink).await;
+    open_service_firewall_ports(shairport_sync::SERVICE_ID, &shairport_sync::firewall_ports(input), sink).await;
 
     Ok(())
 }
@@ -4265,7 +4265,7 @@ async fn install_minecraft_bedrock_steps(input: &Input, sink: &EventSink) -> Res
     // UDP, and a TCP rule would open nothing at all.
     let ports: Vec<firewall::Port> = minecraft::bedrock_firewall_ports(input)
         .into_iter()
-        .map(|(port, _)| firewall::Port { proto: firewall::Proto::Udp, port })
+        .map(|(port, _)| firewall::Port { proto: firewall::Proto::Udp, port, last: port })
         .collect();
     open_service_firewall_ports("minecraft-bedrock", &ports, sink).await;
 
@@ -5250,6 +5250,7 @@ fn mail_firewall_ports(ports: &[super::mail::FirewallPort]) -> Vec<firewall::Por
         .iter()
         .map(|port| firewall::Port {
             port: port.port,
+            last: port.port,
             proto: match port.proto {
                 super::mail::Proto::Tcp => firewall::Proto::Tcp,
                 super::mail::Proto::Udp => firewall::Proto::Udp,

@@ -60,12 +60,14 @@ pub async fn run_installer(script: &str, sink: &super::execute::EventSink) -> Re
         .spawn()
         .map_err(|err| format!("could not start systemd-run: {err}"))?;
     let mut tick = tokio::time::interval(std::time::Duration::from_secs(10));
+    let started = std::time::Instant::now();
+    let mut shown = (String::new(), started);
     let status = loop {
         tokio::select! {
             status = child.wait() => break status.map_err(|err| format!("the odio installer did not finish: {err}"))?,
             _ = tick.tick() => {
-                if let Some(line) = last_line(&log) {
-                    let _ = sink.step(line).await;
+                if let Some(text) = progress_text(&mut shown, last_line(&log), started) {
+                    let _ = sink.step(text).await;
                 }
             }
         }
@@ -75,6 +77,22 @@ pub async fn run_installer(script: &str, sink: &super::execute::EventSink) -> Re
     }
     let text = std::fs::read_to_string(&log).unwrap_or_default();
     Err(format!("the odio installer failed: {}", failure_summary(&text)))
+}
+
+/// A new line at once, a repeat once a minute
+fn progress_text(shown: &mut (String, std::time::Instant), line: Option<String>, started: std::time::Instant) -> Option<String> {
+    let line = line?;
+    let now = std::time::Instant::now();
+    if line == shown.0 && now.duration_since(shown.1) < std::time::Duration::from_secs(60) {
+        return None;
+    }
+    let repeat = line == shown.0;
+    *shown = (line.clone(), now);
+    if !repeat {
+        return Some(line);
+    }
+    let name = line.split('*').next().unwrap_or(&line).trim();
+    Some(format!("still on {name} — {} min since the install began", now.duration_since(started).as_secs() / 60))
 }
 
 fn last_line(log: &std::path::Path) -> Option<String> {
@@ -145,7 +163,7 @@ pub fn control_script() -> String {
 pub fn installer_script(airplay_taken: bool) -> String {
     let airplay = if airplay_taken { "N" } else { "Y" };
     format!(
-        "set -e\nodio_tmp=\"$(mktemp -d)\"\ncurl -fsSL -o \"$odio_tmp/install.sh\" '{INSTALLER_URL}'\necho '{INSTALLER_SHA256}  '\"$odio_tmp/install.sh\" | sha256sum -c - >/dev/null || {{ echo 'the odio installer does not match its pinned checksum'; exit 1; }}\nprintf 'APT::Get::Assume-Yes \"true\";\\n' > \"$odio_tmp/apt.conf\"\nodio_mympd=Y\nif grep -qE '^ID=(debian|raspbian)$' /etc/os-release && [ \"$(. /etc/os-release; echo \"$VERSION_ID\" | cut -d. -f1)\" -lt 13 ] 2>/dev/null; then\n  odio_mympd=N\n  echo 'myMPD needs Debian 13 or newer; installing the hub without it'\nfi\nDEBIAN_FRONTEND=noninteractive apt-get install -yq python3-jinja2 python3-cryptography\nTARGET_USER={ACCOUNT} ODIOS_VERSION={VERSION} INSTALL_BRANDING=N INSTALL_SHAIRPORT_SYNC={airplay} INSTALL_MYMPD=\"$odio_mympd\" APT_CONFIG=\"$odio_tmp/apt.conf\" DEBIAN_FRONTEND=noninteractive bash -s < \"$odio_tmp/install.sh\"\nrm -rf \"$odio_tmp\"\nid -u {ACCOUNT} >/dev/null 2>&1 || {{ echo 'the odio installer finished without creating the {ACCOUNT} user'; exit 1; }}\n"
+        "set -e\nodio_tmp=\"$(mktemp -d)\"\ncurl -fsSL -o \"$odio_tmp/install.sh\" '{INSTALLER_URL}'\necho '{INSTALLER_SHA256}  '\"$odio_tmp/install.sh\" | sha256sum -c - >/dev/null || {{ echo 'the odio installer does not match its pinned checksum'; exit 1; }}\nprintf 'APT::Get::Assume-Yes \"true\";\\n' > \"$odio_tmp/apt.conf\"\nodio_new=Y\nif grep -qE '^ID=(debian|raspbian)$' /etc/os-release && [ \"$(. /etc/os-release; echo \"$VERSION_ID\" | cut -d. -f1)\" -lt 13 ] 2>/dev/null; then\n  odio_new=N\n  echo 'myMPD and the disc player need Debian 13 or newer; installing the hub without them'\nfi\nDEBIAN_FRONTEND=noninteractive apt-get install -yq python3-jinja2 python3-cryptography\nTARGET_USER={ACCOUNT} ODIOS_VERSION={VERSION} INSTALL_BRANDING=N INSTALL_SHAIRPORT_SYNC={airplay} INSTALL_MYMPD=\"$odio_new\" INSTALL_MPD_DISCPLAYER=\"$odio_new\" APT_CONFIG=\"$odio_tmp/apt.conf\" DEBIAN_FRONTEND=noninteractive bash -s < \"$odio_tmp/install.sh\"\nrm -rf \"$odio_tmp\"\nid -u {ACCOUNT} >/dev/null 2>&1 || {{ echo 'the odio installer finished without creating the {ACCOUNT} user'; exit 1; }}\n"
     )
 }
 
@@ -204,6 +222,18 @@ mod tests {
     }
 
     #[test]
+    fn a_repeated_line_is_shown_once_then_as_a_minute_note() {
+        let begun = std::time::Instant::now();
+        let mut shown = (String::new(), begun);
+        let line = || Some("TASK [common : Update apt cache] ****".to_string());
+        assert_eq!(progress_text(&mut shown, line(), begun).as_deref(), Some("TASK [common : Update apt cache] ****"));
+        assert_eq!(progress_text(&mut shown, line(), begun), None);
+        shown.1 -= std::time::Duration::from_secs(61);
+        let note = progress_text(&mut shown, line(), begun).expect("a minute note");
+        assert!(note.starts_with("still on TASK [common : Update apt cache] — "), "{note}");
+    }
+
+    #[test]
     fn the_installer_is_pinned_and_checked() {
         let text = installer_script(false);
         assert!(text.contains(INSTALLER_URL) && text.contains(INSTALLER_SHA256));
@@ -214,7 +244,7 @@ mod tests {
         assert!(text.contains("id -u odio"), "a silent no-op run must fail");
         assert!(text.contains("APT::Get::Assume-Yes"), "apt must not stop to ask");
         assert!(!text.contains("${"), "systemd-run empties brace expansions in its command line");
-        assert!(text.contains("-lt 13 ] 2>/dev/null; then\n  odio_mympd=N") && text.contains("INSTALL_MYMPD=\"$odio_mympd\""), "{text}");
+        assert!(text.contains("-lt 13 ] 2>/dev/null; then\n  odio_new=N") && text.contains("INSTALL_MYMPD=\"$odio_new\" INSTALL_MPD_DISCPLAYER=\"$odio_new\""), "{text}");
         let deps = text.find("apt-get install -yq python3-jinja2 python3-cryptography").expect("deps first");
         assert!(deps < text.find("bash -s").unwrap(), "its own sudo apt-get drops APT_CONFIG and would ask");
     }

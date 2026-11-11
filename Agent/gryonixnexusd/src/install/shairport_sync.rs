@@ -134,12 +134,19 @@ pub fn config_contents(input: &Input) -> String {
     out
 }
 
-/// A port of `ShairportSyncService.firewallPorts(_:)`
-pub fn firewall_ports() -> Vec<firewall::Port> {
+/// The home-network ports; AirPlay 2 adds the ephemeral range
+pub fn firewall_ports(input: &Input) -> Vec<firewall::Port> {
     let tcp = [3689u16, 5000, 7000].into_iter().map(firewall::Port::tcp);
     let udp = [319u16, 320, 5353].into_iter().chain(6000..=6009).map(firewall::Port::udp);
-    tcp.chain(udp).collect()
+    let mut ports: Vec<firewall::Port> = tcp.chain(udp).collect();
+    if input.shairport_mode != AIRPLAY_1 {
+        ports.push(firewall::Port::tcp_range(EPHEMERAL.0, EPHEMERAL.1));
+        ports.push(firewall::Port::udp_range(EPHEMERAL.0, EPHEMERAL.1));
+    }
+    ports
 }
+
+const EPHEMERAL: (u16, u16) = (32768, 60999);
 
 #[cfg(test)]
 mod tests {
@@ -196,10 +203,21 @@ mod tests {
 
     #[test]
     fn every_airplay_port_is_listed() {
-        let ports = firewall_ports();
-        assert_eq!(ports.len(), 3 + 13);
-        assert!(ports.contains(&firewall::Port::udp(6009)));
-        assert!(ports.contains(&firewall::Port::tcp(7000)));
+        let mut input = base();
+        input.shairport_mode = AIRPLAY_1.to_string();
+        let classic = firewall_ports(&input);
+        assert_eq!(classic.len(), 3 + 13);
+        assert!(classic.contains(&firewall::Port::udp(6009)));
+        assert!(classic.contains(&firewall::Port::tcp(7000)));
+    }
+
+    #[test]
+    fn airplay_2_opens_the_ephemeral_range_too() {
+        let ports = firewall_ports(&base());
+        assert!(ports.contains(&firewall::Port::tcp_range(32768, 60999)));
+        assert!(ports.contains(&firewall::Port::udp_range(32768, 60999)));
+        let text = firewall::drop_in_contents("shairport-sync", &ports);
+        assert!(text.contains("tcp dport { 3689, 5000, 7000, 32768-60999 } accept"), "{text}");
     }
 }
 

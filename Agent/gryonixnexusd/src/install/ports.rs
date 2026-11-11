@@ -142,7 +142,7 @@ pub fn parse_published_ports(listing: &str) -> Vec<Published> {
                 project: project.to_string(),
                 container: container.to_string(),
                 address: host_address.to_string(),
-                port: Port { proto, port: host_port },
+                port: Port { proto, port: host_port, last: host_port },
             });
         }
     }
@@ -246,7 +246,7 @@ pub fn compose_entry(raw: &str) -> Option<Wanted> {
     if port == 0 {
         return None;
     }
-    Some(Wanted::new(address, Port { proto, port }))
+    Some(Wanted::new(address, Port { proto, port, last: port }))
 }
 
 /// Read the host: every mapping held according to `/proc/net`
