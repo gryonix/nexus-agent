@@ -159,11 +159,22 @@ pub fn control_script() -> String {
     )
 }
 
+/// Sets aside silent apt sources until exit
+const SKIP_UNREACHABLE_SOURCES: &str = r#"parts=/etc/apt/sources.list.d
+for held in $parts/*.gnx-held; do [ -e "$held" ] && mv "$held" "$(echo "$held" | sed 's/[.]gnx-held$//')"; done
+trap 'for held in /etc/apt/sources.list.d/*.gnx-held; do [ -e "$held" ] && mv "$held" "$(echo "$held" | sed "s/[.]gnx-held$//")"; done' EXIT
+apt-get -o Acquire::https::Timeout=15 -o Acquire::http::Timeout=15 -o Acquire::Retries=0 update 2>&1 | sed -n 's/^Err:[0-9]* \([^ ]*\) .*/\1/p' | sort -u > "$odio_tmp/unreachable" || true
+while read -r source_uri; do
+  for file in $parts/*; do
+    if [ -f "$file" ] && grep -qF "$source_uri" "$file"; then echo "setting aside the apt source $file: $source_uri does not answer"; mv "$file" "$file.gnx-held"; fi
+  done
+done < "$odio_tmp/unreachable""#;
+
 /// Downloads, verifies and runs the pinned installer; takes minutes
 pub fn installer_script(airplay_taken: bool) -> String {
     let airplay = if airplay_taken { "N" } else { "Y" };
     format!(
-        "set -e\nodio_tmp=\"$(mktemp -d)\"\ncurl -fsSL -o \"$odio_tmp/install.sh\" '{INSTALLER_URL}'\necho '{INSTALLER_SHA256}  '\"$odio_tmp/install.sh\" | sha256sum -c - >/dev/null || {{ echo 'the odio installer does not match its pinned checksum'; exit 1; }}\nprintf 'APT::Get::Assume-Yes \"true\";\\n' > \"$odio_tmp/apt.conf\"\nodio_new=Y\nif grep -qE '^ID=(debian|raspbian)$' /etc/os-release && [ \"$(. /etc/os-release; echo \"$VERSION_ID\" | cut -d. -f1)\" -lt 13 ] 2>/dev/null; then\n  odio_new=N\n  echo 'myMPD and the disc player need Debian 13 or newer; installing the hub without them'\nfi\nDEBIAN_FRONTEND=noninteractive apt-get install -yq python3-jinja2 python3-cryptography\nTARGET_USER={ACCOUNT} ODIOS_VERSION={VERSION} INSTALL_BRANDING=N INSTALL_SHAIRPORT_SYNC={airplay} INSTALL_MYMPD=\"$odio_new\" INSTALL_MPD_DISCPLAYER=\"$odio_new\" APT_CONFIG=\"$odio_tmp/apt.conf\" DEBIAN_FRONTEND=noninteractive bash -s < \"$odio_tmp/install.sh\"\nrm -rf \"$odio_tmp\"\nid -u {ACCOUNT} >/dev/null 2>&1 || {{ echo 'the odio installer finished without creating the {ACCOUNT} user'; exit 1; }}\n"
+        "set -e\nodio_tmp=\"$(mktemp -d)\"\ncurl -fsSL -o \"$odio_tmp/install.sh\" '{INSTALLER_URL}'\necho '{INSTALLER_SHA256}  '\"$odio_tmp/install.sh\" | sha256sum -c - >/dev/null || {{ echo 'the odio installer does not match its pinned checksum'; exit 1; }}\nprintf 'APT::Get::Assume-Yes \"true\";\\n' > \"$odio_tmp/apt.conf\"\n{SKIP_UNREACHABLE_SOURCES}\nodio_new=Y\nif grep -qE '^ID=(debian|raspbian)$' /etc/os-release && [ \"$(. /etc/os-release; echo \"$VERSION_ID\" | cut -d. -f1)\" -lt 13 ] 2>/dev/null; then\n  odio_new=N\n  echo 'myMPD and the disc player need Debian 13 or newer; installing the hub without them'\nfi\nDEBIAN_FRONTEND=noninteractive apt-get install -yq python3-jinja2 python3-cryptography\nTARGET_USER={ACCOUNT} ODIOS_VERSION={VERSION} INSTALL_BRANDING=N INSTALL_SHAIRPORT_SYNC={airplay} INSTALL_MYMPD=\"$odio_new\" INSTALL_MPD_DISCPLAYER=\"$odio_new\" APT_CONFIG=\"$odio_tmp/apt.conf\" DEBIAN_FRONTEND=noninteractive bash -s < \"$odio_tmp/install.sh\"\nrm -rf \"$odio_tmp\"\nid -u {ACCOUNT} >/dev/null 2>&1 || {{ echo 'the odio installer finished without creating the {ACCOUNT} user'; exit 1; }}\n"
     )
 }
 
@@ -244,6 +255,7 @@ mod tests {
         assert!(text.contains("id -u odio"), "a silent no-op run must fail");
         assert!(text.contains("APT::Get::Assume-Yes"), "apt must not stop to ask");
         assert!(!text.contains("${"), "systemd-run empties brace expansions in its command line");
+        assert!(text.contains("gnx-held") && text.contains("Acquire::Retries=0"), "an unreachable apt source must not stop the install");
         assert!(text.contains("-lt 13 ] 2>/dev/null; then\n  odio_new=N") && text.contains("INSTALL_MYMPD=\"$odio_new\" INSTALL_MPD_DISCPLAYER=\"$odio_new\""), "{text}");
         let deps = text.find("apt-get install -yq python3-jinja2 python3-cryptography").expect("deps first");
         assert!(deps < text.find("bash -s").unwrap(), "its own sudo apt-get drops APT_CONFIG and would ask");
