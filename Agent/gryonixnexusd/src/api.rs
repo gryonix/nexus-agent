@@ -724,6 +724,10 @@ async fn route_install(path: &str, codec: Codec, bytes: Bytes, store: Arc<Mutex<
             let req: pb::StartInstallPlanRequest = codec.decode(&bytes)?;
             Ok(crate::install::plan::run_start(codec, req, store).await)
         }).map(Some),
+        "/gryonixnexusd.v1.Install/CheckInstall" => ({
+            let req: pb::CheckInstallRequest = codec.decode(&bytes)?;
+            Ok(crate::install::compat::run_check(codec, req).await)
+        }).map(Some),
         "/gryonixnexusd.v1.Install/GetInstallPlan" => ({
             let req: pb::GetInstallPlanRequest = codec.decode(&bytes)?;
             Ok(crate::install::plan::run_get(codec, req).await)

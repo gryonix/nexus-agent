@@ -47,6 +47,7 @@ use super::crafty;
 use super::home_assistant;
 use super::mosquitto;
 use super::zigbee2mqtt;
+use super::compat;
 use super::shairport_sync;
 use super::packaged;
 use super::uxplay;
@@ -657,6 +658,8 @@ pub enum Rejection {
     /// The audio hub already runs this player, or the reverse
     OverlapsAudioHub(&'static str),
     SiteNameTaken(Vec<String>),
+    /// The machine lacks something the service needs
+    Incompatible(Vec<String>),
     /// This host is already installing this service
     InstallAlreadyRunning(String),
     /// No run by that name on this host
@@ -789,6 +792,11 @@ impl Rejection {
                      same player, and two copies fight over the sound card. Use the hub's own, or \
                      remove one of them first. Nothing has been changed"
                 ),
+            ),
+            Rejection::Incompatible(reasons) => (
+                StatusCode::UNPROCESSABLE_ENTITY,
+                "failed_precondition",
+                format!("this machine cannot install it: {}. Nothing has been changed", reasons.join("; ")),
             ),
             Rejection::InstallAlreadyRunning(job) => (
                 StatusCode::CONFLICT,
@@ -1492,6 +1500,17 @@ fn refuse_unworkable_request(req: &pb::InstallServiceRequest, label: &str, input
     Ok(())
 }
 
+/// What this system lacks for the service
+async fn refuse_incompatible(label: &str) -> Result<(), Rejection> {
+    let blocked: Vec<String> = compat::check(label)
+        .await
+        .into_iter()
+        .filter(|found| found.severity == compat::Severity::Blocked)
+        .map(|found| found.message())
+        .collect();
+    if blocked.is_empty() { Ok(()) } else { Err(Rejection::Incompatible(blocked)) }
+}
+
 /// No docker yet, but the install itself will add it
 fn docker_comes_with_the_install() -> bool {
     !packages::have_binary("docker") && can_install_packages()
@@ -1521,6 +1540,7 @@ async fn prepare_install(
     }
     let input = input;
     refuse_unworkable_request(req, label, &input)?;
+    refuse_incompatible(label).await?;
     let protocols = vpn_protocols_from(req)?;
     refuse_conflicts(req, label, &input, &protocols, &existing_projects).await?;
     Ok((input, protocols))

@@ -959,6 +959,9 @@ service Install {
   // itself is a job too (kind INSTALL): it shows in ListJobs, carries one
   // operation card, and CancelJob on it stops the services not yet begun.
   rpc StartInstallPlan(StartInstallPlanRequest) returns (InstallPlan);
+  // What this machine cannot do for the listed services, asked BEFORE
+  // anything is installed. Changes nothing; an empty answer means clear.
+  rpc CheckInstall(CheckInstallRequest) returns (CheckInstallResult);
   // A plan by its id, or the newest one when the id is empty.
   rpc GetInstallPlan(GetInstallPlanRequest) returns (InstallPlan);
   // Has Caddy try every missing certificate again now, for instance
@@ -4305,6 +4308,35 @@ message VaultwardenTwoFactor {
 
 
 // ─────────────────────────── Install plans ───────────────────────────
+
+message CheckInstallRequest {
+  // Catalog ids, as in InstallServiceRequest.service_id.
+  repeated string services = 1;
+}
+
+// One thing the machine lacks for one service.
+message InstallFinding {
+  enum Severity {
+    SEVERITY_UNSPECIFIED = 0;
+    // It installs, but without part of what the service normally brings.
+    SEVERITY_LIMITED = 1;
+    // It will not install here; the agent refuses before changing anything.
+    SEVERITY_BLOCKED = 2;
+  }
+  string service = 1;
+  Severity severity = 2;
+  // A stable id the app turns into its own words: "needs_newer_os",
+  // "package_unavailable", "reduced_on_older_os", "no_sound_card".
+  string code = 3;
+  // The values the words need, in the order the code defines.
+  repeated string args = 4;
+  // The same finding in English, for logs and apps that do not know the code.
+  string message = 5;
+}
+
+message CheckInstallResult {
+  repeated InstallFinding findings = 1;
+}
 
 message StartInstallPlanRequest {
   // In the order they are installed. Each is exactly what InstallService

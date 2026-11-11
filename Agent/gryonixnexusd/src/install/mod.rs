@@ -50,6 +50,7 @@ pub mod mosquitto;
 pub mod zigbee2mqtt;
 pub mod shairport_sync;
 pub mod packaged;
+pub mod compat;
 pub mod uxplay;
 pub mod odio;
 #[cfg(test)]
