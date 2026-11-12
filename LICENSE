@@ -15,8 +15,8 @@ for example through the App Store, Google Play or the Licensor's own website,
 together with everything such a build installs, builds or runs on your devices
 and servers as part of its normal operation.
 
-"Contribution" means a change to the Software that you submit to the Licensor
-under CONTRIBUTING.md.
+"Contribution" means a proposed change to the Software that you send to the
+Licensor under CONTRIBUTING.md as a patch, a pull request or text.
 
 2. What you may do without a license
 
@@ -24,30 +24,34 @@ under CONTRIBUTING.md.
     Service allow.
 (b) Download the Software to read it, to review its security, or to report a
     problem to the Licensor.
-(c) Copy, modify, compile and run the Software privately, only to prepare,
-    test and submit a Contribution. A build made for this purpose may not be
-    used for anything else, and may not be shared with anyone other than the
-    Licensor.
+(c) Write a Contribution and send it to the Licensor. This is the only
+    change to the Software that this section allows: you may not compile,
+    run, keep, publish or share a modified copy for any other purpose.
 (d) Quote short excerpts for commentary, review or discussion, with
     attribution.
 
 3. What needs a commercial license
 
-Everything not allowed by section 2 needs a separate written license from the
-Licensor. This includes, for personal and for business purposes alike:
+Everything not allowed by section 2 is forbidden unless the Licensor agrees in
+writing, by e-mail, beforehand. This holds for personal, commercial,
+charitable, educational and every other purpose alike, with or without
+payment. The Software may not be changed at all, and may not be used at all,
+without that written consent. In particular:
 
-(a) compiling, building or packaging the Software, except as section 2(c)
-    allows;
+(a) compiling, building or packaging the Software;
 (b) installing, running or using the Software, or any build or modified
     version of it that is not an Official Build;
 (c) copying, publishing, distributing, selling, renting, sublicensing or
     hosting the Software or any build of it, or offering it as a service;
-(d) making or distributing modified versions or derivative works, except a
-    Contribution;
+(d) modifying the Software in any way, or making or distributing modified
+    versions or derivative works, except writing a Contribution as section
+    2(c) allows;
 (e) removing or bypassing any license check, payment or activation in the
     Software.
 
-To buy a license, write to license@gryonix.com.
+To ask for consent or a license, write to license@gryonix.com. Consent
+counts only when the Licensor confirms it by e-mail; silence, a reply from
+anyone else, or a verbal answer is not consent.
 
 4. Official Builds
 

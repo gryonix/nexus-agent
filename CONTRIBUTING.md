@@ -3,7 +3,8 @@
 Bug reports, ideas and pull requests are welcome.
 
 The code is source-available, not open source: see [LICENSE](LICENSE). You may
-build and run it privately only to prepare and test a change you send here.
+not change, build or run it without the Licensor's written consent by e-mail;
+you may send a proposed change as a patch or pull request.
 
 ## How a change lands
 
