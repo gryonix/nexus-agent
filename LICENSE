@@ -15,39 +15,44 @@ for example through the App Store, Google Play or the Licensor's own website,
 together with everything such a build installs, builds or runs on your devices
 and servers as part of its normal operation.
 
-"Contribution" means a change to the Software that you submit to the Licensor
-under CONTRIBUTING.md.
+"Contribution" means a change to the Software that you send to the Licensor
+for review under CONTRIBUTING.md.
 
 2. What you may do without a license
 
-(a) Read the Software, and view and fork it on GitHub as GitHub's Terms of
-    Service allow.
+(a) Read and view the Software. Apart from (b), copying it, including
+    forking it on GitHub, is not allowed by this license.
 (b) Download the Software to read it, to review its security, or to report a
     problem to the Licensor.
-(c) Copy, modify, compile and run the Software privately, only to prepare,
-    test and submit a Contribution. A build made for this purpose may not be
-    used for anything else, and may not be shared with anyone other than the
-    Licensor.
+(c) Change the Software only to send the change to the Licensor for review,
+    and send it to the Licensor. Such a change may not be compiled, run,
+    kept, published or shared for any other purpose, and the Licensor may
+    reject it without reason. Problems and ideas may also be sent in words.
 (d) Quote short excerpts for commentary, review or discussion, with
     attribution.
 
 3. What needs a commercial license
 
-Everything not allowed by section 2 needs a separate written license from the
-Licensor. This includes, for personal and for business purposes alike:
+Everything not allowed by section 2 is forbidden unless the Licensor agrees in
+writing, by e-mail, beforehand. This holds for personal, commercial,
+charitable, educational and every other purpose alike, with or without
+payment. The Software may not be changed at all, and may not be used at all,
+without that written consent. In particular:
 
-(a) compiling, building or packaging the Software, except as section 2(c)
-    allows;
+(a) compiling, building or packaging the Software;
 (b) installing, running or using the Software, or any build or modified
     version of it that is not an Official Build;
 (c) copying, publishing, distributing, selling, renting, sublicensing or
     hosting the Software or any build of it, or offering it as a service;
-(d) making or distributing modified versions or derivative works, except a
-    Contribution;
+(d) modifying the Software in any way, or making or distributing modified
+    versions or derivative works, except a change made only to send to the
+    Licensor as section 2(c) allows;
 (e) removing or bypassing any license check, payment or activation in the
     Software.
 
-To buy a license, write to license@gryonix.com.
+To ask for consent or a license, write to license@gryonix.com. Consent
+counts only when the Licensor confirms it by e-mail; silence, a reply from
+anyone else, or a verbal answer is not consent.
 
 4. Official Builds
 
@@ -78,7 +83,14 @@ describe where code came from.
 If you do anything that needs a license under section 3 without one, the
 permissions in section 2 end for you automatically.
 
-9. No warranty, no liability
+9. Changes to this license
+
+The Licensor may change this license at any time. A change takes effect
+immediately for every copy of the Software, from the moment the Licensor
+publishes it, and no notice is owed to anyone. Section 6 still applies to
+versions published before 2 October 2026.
+
+10. No warranty, no liability
 
 The Software is provided "as is", without warranty of any kind, express or
 implied. To the extent the law allows, the Licensor is not liable for any
