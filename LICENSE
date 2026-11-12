@@ -15,18 +15,18 @@ for example through the App Store, Google Play or the Licensor's own website,
 together with everything such a build installs, builds or runs on your devices
 and servers as part of its normal operation.
 
-"Contribution" means a proposed change to the Software that you send to the
-Licensor under CONTRIBUTING.md as a patch, a pull request or text.
+"Contribution" means a change to the Software that the Licensor has agreed in
+writing, beforehand, to receive from you under CONTRIBUTING.md.
 
 2. What you may do without a license
 
-(a) Read the Software, and view and fork it on GitHub as GitHub's Terms of
-    Service allow.
+(a) Read and view the Software. Apart from (b), copying it, including
+    forking it on GitHub, is not allowed by this license.
 (b) Download the Software to read it, to review its security, or to report a
     problem to the Licensor.
-(c) Write a Contribution and send it to the Licensor. This is the only
-    change to the Software that this section allows: you may not compile,
-    run, keep, publish or share a modified copy for any other purpose.
+(c) Describe a problem or an idea to the Licensor in words. This section
+    allows no change to the Software, not even one made only to send to the
+    Licensor; a Contribution needs the Licensor's written consent first.
 (d) Quote short excerpts for commentary, review or discussion, with
     attribution.
 
@@ -44,8 +44,8 @@ without that written consent. In particular:
 (c) copying, publishing, distributing, selling, renting, sublicensing or
     hosting the Software or any build of it, or offering it as a service;
 (d) modifying the Software in any way, or making or distributing modified
-    versions or derivative works, except writing a Contribution as section
-    2(c) allows;
+    versions or derivative works, including one made only to send to the
+    Licensor, except with that written consent;
 (e) removing or bypassing any license check, payment or activation in the
     Software.
 

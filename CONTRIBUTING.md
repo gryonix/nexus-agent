@@ -1,10 +1,10 @@
 # Contributing
 
-Bug reports, ideas and pull requests are welcome.
+Bug reports and ideas, described in words, are welcome. Code changes and pull requests are accepted only after the Licensor agrees to them in writing by e-mail beforehand.
 
 The code is source-available, not open source: see [LICENSE](LICENSE). You may
 not change, build or run it without the Licensor's written consent by e-mail;
-you may send a proposed change as a patch or pull request.
+you may send a proposed change only after that consent.
 
 ## How a change lands
 
