@@ -15,8 +15,8 @@ for example through the App Store, Google Play or the Licensor's own website,
 together with everything such a build installs, builds or runs on your devices
 and servers as part of its normal operation.
 
-"Contribution" means a change to the Software that the Licensor has agreed in
-writing, beforehand, to receive from you under CONTRIBUTING.md.
+"Contribution" means a change to the Software that you send to the Licensor
+for review under CONTRIBUTING.md.
 
 2. What you may do without a license
 
@@ -24,9 +24,10 @@ writing, beforehand, to receive from you under CONTRIBUTING.md.
     forking it on GitHub, is not allowed by this license.
 (b) Download the Software to read it, to review its security, or to report a
     problem to the Licensor.
-(c) Describe a problem or an idea to the Licensor in words. This section
-    allows no change to the Software, not even one made only to send to the
-    Licensor; a Contribution needs the Licensor's written consent first.
+(c) Change the Software only to send the change to the Licensor for review,
+    and send it to the Licensor. Such a change may not be compiled, run,
+    kept, published or shared for any other purpose, and the Licensor may
+    reject it without reason. Problems and ideas may also be sent in words.
 (d) Quote short excerpts for commentary, review or discussion, with
     attribution.
 
@@ -44,8 +45,8 @@ without that written consent. In particular:
 (c) copying, publishing, distributing, selling, renting, sublicensing or
     hosting the Software or any build of it, or offering it as a service;
 (d) modifying the Software in any way, or making or distributing modified
-    versions or derivative works, including one made only to send to the
-    Licensor, except with that written consent;
+    versions or derivative works, except a change made only to send to the
+    Licensor as section 2(c) allows;
 (e) removing or bypassing any license check, payment or activation in the
     Software.
 
@@ -82,7 +83,14 @@ describe where code came from.
 If you do anything that needs a license under section 3 without one, the
 permissions in section 2 end for you automatically.
 
-9. No warranty, no liability
+9. Changes to this license
+
+The Licensor may change this license at any time. A change takes effect
+immediately for every copy of the Software, from the moment the Licensor
+publishes it, and no notice is owed to anyone. Section 6 still applies to
+versions published before 2 October 2026.
+
+10. No warranty, no liability
 
 The Software is provided "as is", without warranty of any kind, express or
 implied. To the extent the law allows, the Licensor is not liable for any
