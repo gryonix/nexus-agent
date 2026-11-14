@@ -75,7 +75,7 @@ fn refuse(message: &str) -> Resp {
 }
 
 fn failed(message: &str) -> Resp {
-    connect_error(StatusCode::UNPROCESSABLE_ENTITY, "failed_precondition", message)
+    crate::api::connect_reason(StatusCode::UNPROCESSABLE_ENTITY, "failed_precondition", message, "move.refused")
 }
 
 fn internal(message: &str) -> Resp {
@@ -387,5 +387,16 @@ mod tests {
         scratch.write("opt/xray/config/config.json", "old");
         assert!(unpack_checked(b"not a tar", &dirs(&["/opt/xray"]), true).await.is_err());
         assert_eq!(scratch.read("opt/xray/config/config.json").as_deref(), Some("old"));
+    }
+}
+
+#[cfg(test)]
+mod reason_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn a_refused_move_carries_the_move_reason_and_a_bad_request_none() {
+        assert_eq!(crate::api::reason_of(failed("not here")).await, "move.refused");
+        assert_eq!(crate::api::reason_of(refuse("bad input")).await, "");
     }
 }

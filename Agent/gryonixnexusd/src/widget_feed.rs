@@ -8,8 +8,15 @@ use serde_json::{json, Value};
 use crate::notify::{self, Config};
 use crate::pb;
 
-/// A summary at least this old is sent again
-const REFRESH_SECS: i64 = 3600;
+/// Minutes between summaries by default
+pub const DEFAULT_MINUTES: u32 = 60;
+const SHORTEST_MINUTES: u32 = 15;
+const LONGEST_MINUTES: u32 = 360;
+
+/// Clamps the minutes between summaries
+pub fn minutes(asked: u32) -> u32 {
+    if asked == 0 { DEFAULT_MINUTES } else { asked.clamp(SHORTEST_MINUTES, LONGEST_MINUTES) }
+}
 
 /// The last steady summary sent, and when
 static LAST: Mutex<Option<(String, i64)>> = Mutex::new(None);
@@ -22,7 +29,7 @@ pub async fn push(config: &mut Config) {
     let summary = summary().await;
     let now = notify::now();
     let steady = steady_part(&summary);
-    if !due(&steady, now, &LAST.lock().unwrap()) {
+    if !due(&steady, now, &LAST.lock().unwrap(), i64::from(minutes(config.widget_minutes)) * 60) {
         return;
     }
     let body = body(&config.server_id, summary, now);
@@ -32,9 +39,9 @@ pub async fn push(config: &mut Config) {
 }
 
 /// Whether the readings moved or the last push is old
-fn due(steady: &str, now: i64, last: &Option<(String, i64)>) -> bool {
+fn due(steady: &str, now: i64, last: &Option<(String, i64)>, refresh_secs: i64) -> bool {
     match last {
-        Some((sent, at)) => sent != steady || now - at >= REFRESH_SECS,
+        Some((sent, at)) => sent != steady || now - at >= refresh_secs,
         None => true,
     }
 }
@@ -135,10 +142,12 @@ mod tests {
 
     #[test]
     fn a_push_goes_when_readings_move_or_an_hour_passes() {
-        assert!(due("a", 100, &None));
-        assert!(!due("a", 100, &Some(("a".into(), 50))));
-        assert!(due("b", 100, &Some(("a".into(), 50))));
-        assert!(due("a", 50 + REFRESH_SECS, &Some(("a".into(), 50))));
+        assert!(due("a", 100, &None, 3600));
+        assert!(!due("a", 100, &Some(("a".into(), 50)), 3600));
+        assert!(due("b", 100, &Some(("a".into(), 50)), 3600));
+        assert!(due("a", 50 + 3600, &Some(("a".into(), 50)), 3600));
+        assert!(due("a", 50 + 900, &Some(("a".into(), 50)), 900));
+        assert_eq!((minutes(0), minutes(1), minutes(30), minutes(9999)), (60, 15, 30, 360));
     }
 
     #[test]

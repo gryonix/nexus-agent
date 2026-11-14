@@ -78,7 +78,16 @@ impl Rejection {
 
     pub fn response(&self) -> Resp {
         let (status, code, message) = self.parts();
-        connect_error(status, code, &message)
+        crate::api::connect_reasoned(status, code, &message, self.reason())
+    }
+
+    /// The stable id the app matches, when there is one
+    fn reason(&self) -> Option<&'static str> {
+        match self {
+            Rejection::NoWrapper => Some("host.needs_repair"),
+            Rejection::NotBackedUp(_) => Some("backup.no_entry"),
+            _ => None,
+        }
     }
 }
 
@@ -198,6 +207,12 @@ pub fn read_directory(dir: &Path) -> std::io::Result<Vec<pb::BackupArchive>> {
     Ok(archives)
 }
 
+/// A backup folder that could not be read
+pub(crate) fn unreadable(directory: &std::path::Path, err: &dyn std::fmt::Display) -> Resp {
+    let message = format!("could not read {}: {err}", directory.display());
+    crate::api::connect_reason(StatusCode::SERVICE_UNAVAILABLE, "unavailable", &message, "backup.unreadable")
+}
+
 fn listing(service_id: &str, target: &Target) -> Result<pb::BackupList, std::io::Error> {
     let mut archives = read_directory(&target.directory)?;
     archives.extend(crate::backup_drive::drive_archives(target.label));
@@ -216,11 +231,7 @@ pub fn list_backups(codec: Codec, req: pb::ListBackupsRequest) -> Resp {
     };
     match listing(&req.service_id, &target) {
         Ok(list) => encode(codec, &list),
-        Err(err) => connect_error(
-            StatusCode::SERVICE_UNAVAILABLE,
-            "unavailable",
-            &format!("could not read {}: {err}", target.directory.display()),
-        ),
+        Err(err) => unreadable(&target.directory, &err),
     }
 }
 
@@ -274,10 +285,12 @@ pub async fn estimate_backup(codec: Codec, req: pb::EstimateBackupRequest) -> Re
         Err(why) => wrapper_failed(&why),
         Ok(output) => match parse_estimate(&output.stdout) {
             Some(estimate) => encode(codec, &estimate),
-            None => connect_error(
+            None => crate::api::connect_refusal(
                 StatusCode::UNPROCESSABLE_ENTITY,
                 "failed_precondition",
                 "the backup wrapper on this server does not report estimates — re-run the setup script",
+                "host.needs_repair",
+                &[],
             ),
         },
     }
@@ -314,11 +327,7 @@ pub async fn delete_backup(codec: Codec, req: pb::DeleteBackupRequest) -> Resp {
     }
     match listing(&req.service_id, &target) {
         Ok(list) => encode(codec, &list),
-        Err(err) => connect_error(
-            StatusCode::SERVICE_UNAVAILABLE,
-            "unavailable",
-            &format!("could not read {}: {err}", target.directory.display()),
-        ),
+        Err(err) => unreadable(&target.directory, &err),
     }
 }
 
@@ -905,10 +914,12 @@ pub(crate) async fn run_quick(args: &[&str], codec: Codec) -> Resp {
 
 fn wrapper_failed(detail: &str) -> Resp {
     if detail.contains(UNSUPPORTED_ACTION) {
-        return connect_error(
+        return crate::api::connect_refusal(
             StatusCode::UNPROCESSABLE_ENTITY,
             "failed_precondition",
             "this server's backup tools are older than this request — run Repair server on it first",
+            "host.needs_repair",
+            &[],
         );
     }
     connect_error(StatusCode::INTERNAL_SERVER_ERROR, "internal", detail)
@@ -1600,5 +1611,17 @@ mod tests {
         .await;
         assert_eq!(resp.status(), StatusCode::UNPROCESSABLE_ENTITY);
         std::env::remove_var("GRYONIXNEXUSD_BACKUP_WRAPPER");
+    }
+}
+
+#[cfg(test)]
+mod unreadable_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn a_folder_that_cannot_be_read_is_unavailable_by_reason() {
+        let resp = unreadable(std::path::Path::new("/srv/backups"), &"permission denied");
+        assert_eq!(resp.status(), StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(crate::api::reason_of(resp).await, "backup.unreadable");
     }
 }

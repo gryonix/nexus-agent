@@ -80,8 +80,17 @@ pub enum Refusal {
     /// A real protocol, but not one THIS host installed.
     NotInstalled(String),
     LoginRefused(String),
+    /// The panel's files are here, but nothing listens.
+    PanelNotRunning,
     /// The panel answered something this cannot use.
     Panel(String),
+}
+
+/// What `request` reports when nothing listens on the port
+const NOT_LISTENING: &str = "nothing listens on the VPN panel's port";
+
+fn panel_failure(detail: String) -> Refusal {
+    if detail == NOT_LISTENING { Refusal::PanelNotRunning } else { Refusal::Panel(detail) }
 }
 
 impl std::fmt::Display for Refusal {
@@ -107,6 +116,13 @@ impl std::fmt::Display for Refusal {
                 "the VPN panel refused the stored administrator password ({detail}). \
                  If it was changed inside the panel, the panel is the only place that \
                  knows it — change it back there or re-install the VPN"
+            ),
+            Refusal::PanelNotRunning => write!(
+                f,
+                "the VPN panel on this server is not running (nothing listens on 127.0.0.1:{}), \
+                 so there are no VPN clients to manage — install a VPN protocol, or start the \
+                 panel again",
+                panel_port()
             ),
             Refusal::Panel(detail) => write!(f, "the VPN panel could not do that: {detail}"),
         }
@@ -172,7 +188,7 @@ impl Panel {
         }
         let port = panel_port();
         let body = serde_json::json!({ "username": user, "password": password }).to_string();
-        let response = request(port, "POST", "/login", None, Some(&body)).await.map_err(Refusal::Panel)?;
+        let response = request(port, "POST", "/login", None, Some(&body)).await.map_err(panel_failure)?;
         if response.status != 200 {
             let detail = parse_error(&response.body).unwrap_or_else(|| format!("HTTP {}", response.status));
             return Err(Refusal::LoginRefused(detail));
@@ -238,7 +254,7 @@ impl Panel {
 
     async fn call(&self, method: &str, path: &str, body: Option<&str>) -> Result<String, Refusal> {
         let response =
-            request(self.port, method, path, Some(&self.cookie), body).await.map_err(Refusal::Panel)?;
+            request(self.port, method, path, Some(&self.cookie), body).await.map_err(panel_failure)?;
         match response.status {
             200..=299 => Ok(response.body),
             status => Err(Refusal::Panel(
@@ -263,7 +279,10 @@ async fn request(
     body: Option<&str>,
 ) -> Result<Response, String> {
     let work = async {
-        let mut stream = TcpStream::connect(("127.0.0.1", port)).await.map_err(|err| err.to_string())?;
+        let mut stream = TcpStream::connect(("127.0.0.1", port)).await.map_err(|err| match err.kind() {
+            std::io::ErrorKind::ConnectionRefused => NOT_LISTENING.to_string(),
+            _ => err.to_string(),
+        })?;
         let mut head = format!(
             "{method} {path} HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\nX-Gryonix-Auth: 1\r\n"
         );
@@ -497,12 +516,20 @@ impl Refusal {
     fn response(&self) -> Resp {
         let (status, code) = match self {
             Refusal::UnknownProtocol(_) => (StatusCode::BAD_REQUEST, "invalid_argument"),
-            Refusal::NoPanel | Refusal::NotInstalled(_) | Refusal::LoginRefused(_) => {
+            Refusal::NoPanel | Refusal::PanelNotRunning | Refusal::NotInstalled(_) | Refusal::LoginRefused(_) => {
                 (StatusCode::UNPROCESSABLE_ENTITY, "failed_precondition")
             }
             Refusal::Panel(_) => (StatusCode::INTERNAL_SERVER_ERROR, "internal"),
         };
-        connect_error(status, code, &self.to_string())
+        let reason = match self {
+            Refusal::UnknownProtocol(_) => "vpn.unknown_protocol",
+            Refusal::NoPanel => "vpn.no_panel",
+            Refusal::PanelNotRunning => "vpn.panel_not_running",
+            Refusal::NotInstalled(_) => "vpn.protocol_not_installed",
+            Refusal::LoginRefused(_) => "vpn.login_refused",
+            Refusal::Panel(_) => "vpn.panel_failed",
+        };
+        crate::api::connect_refusal(status, code, &self.to_string(), reason, &[])
     }
 }
 

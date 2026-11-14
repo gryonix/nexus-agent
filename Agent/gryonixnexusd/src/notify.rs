@@ -64,6 +64,8 @@ pub struct Config {
     pub operations: bool,
     pub ssh_logins: bool,
     pub unusual_load: bool,
+    /// Minutes between widget summaries
+    pub widget_minutes: u32,
     /// The checks are this server's own, not the app defaults
     pub custom_checks: bool,
     /// App public keys whose SSH sign-ins stay quiet, newest last
@@ -99,6 +101,7 @@ impl Default for Config {
             operations: false,
             ssh_logins: true,
             unusual_load: true,
+            widget_minutes: crate::widget_feed::DEFAULT_MINUTES,
             custom_checks: false,
             quiet_keys: Vec::new(),
             ssh_cursor: String::new(),
@@ -119,10 +122,6 @@ impl Default for Config {
 impl Config {
     pub fn channel(&self) -> pb::NotifyChannel {
         pb::NotifyChannel::try_from(self.channel).unwrap_or(pb::NotifyChannel::Off)
-    }
-
-    pub fn russian(&self) -> bool {
-        self.language.starts_with("ru")
     }
 
     pub fn seed_bytes(&self) -> Option<[u8; 32]> {
@@ -216,7 +215,6 @@ pub fn host() -> String {
 }
 
 pub fn settings(config: &Config) -> pb::NotifySettings {
-    let russian = config.russian();
     pb::NotifySettings {
         channel: config.channel,
         relay_url: config.relay_url.clone(),
@@ -233,12 +231,13 @@ pub fn settings(config: &Config) -> pb::NotifySettings {
             operations: config.operations,
             ssh_logins: config.ssh_logins,
             unusual_load: config.unusual_load,
+            widget_refresh_minutes: config.widget_minutes,
         }),
         server_id: config.server_id.clone(),
         devices: config.devices.len() as u32,
         last_error: config.last_error.clone(),
         last_check_at: config.last_check_at,
-        active_problems: config.active.iter().map(|p| notify_send::alert(p, true, &host(), russian).body).collect(),
+        active_problems: config.active.iter().map(|p| notify_send::alert(p, true, &host(), &config.language).body).collect(),
         language: config.language.clone(),
         relay_maintenance: config.relay_maintenance.clone(),
         custom_checks: config.custom_checks,
@@ -376,7 +375,12 @@ pub async fn run_checks(store: &Arc<Mutex<Store>>) {
     let alerts = appeared.iter().map(|p| (p, true)).chain(cleared.map(|p| (p, false)));
     let mut all_sent = true;
     for (problem, is_new) in alerts {
-        let alert = notify_send::alert(problem, is_new, &host, config.russian());
+        let service = match problem.kind {
+            health_watch::Kind::Service => crate::discover::service_of_container(problem.container()).await,
+            _ => None,
+        };
+        let mut alert = notify_send::alert(&given_name(problem, service.as_deref()), is_new, &host, &config.language);
+        alert.service = service;
         let sent = deliver(&mut config, &alert).await;
         all_sent &= sent == Sent::Ok;
         record(&mut config, &sent);
@@ -397,35 +401,44 @@ pub async fn run_checks(store: &Arc<Mutex<Store>>) {
 }
 
 /// What a finished run is called, in the settings' language
-pub fn run_name(kind: i32, russian: bool) -> &'static str {
-    let kind = pb::JobKind::try_from(kind).unwrap_or(pb::JobKind::Unspecified);
-    match (kind, russian) {
-        (pb::JobKind::Install, false) => "Install",
-        (pb::JobKind::Install, true) => "Установка",
-        (pb::JobKind::Repair, false) => "Repair",
-        (pb::JobKind::Repair, true) => "Починка",
-        (pb::JobKind::Reinstall, false) => "Reinstall",
-        (pb::JobKind::Reinstall, true) => "Переустановка",
-        (pb::JobKind::Update | pb::JobKind::ContainerUpdate, false) => "Update",
-        (pb::JobKind::Update | pb::JobKind::ContainerUpdate, true) => "Обновление",
-        (pb::JobKind::Backup | pb::JobKind::ContainerBackup, false) => "Backup",
-        (pb::JobKind::Backup | pb::JobKind::ContainerBackup, true) => "Резервная копия",
-        (pb::JobKind::Restore, false) => "Restore",
-        (pb::JobKind::Restore, true) => "Восстановление",
-        (pb::JobKind::Move, false) => "Move",
-        (pb::JobKind::Move, true) => "Перенос",
-        (pb::JobKind::Uninstall | pb::JobKind::ContainerRemoval, false) => "Removal",
-        (pb::JobKind::Uninstall | pb::JobKind::ContainerRemoval, true) => "Удаление",
-        (_, false) => "Operation",
-        (_, true) => "Операция",
+pub fn run_name(kind: i32, language: &str) -> &'static str {
+    let key = match pb::JobKind::try_from(kind).unwrap_or(pb::JobKind::Unspecified) {
+        pb::JobKind::Install => "run.install",
+        pb::JobKind::Repair => "run.repair",
+        pb::JobKind::Reinstall => "run.reinstall",
+        pb::JobKind::Update | pb::JobKind::ContainerUpdate => "run.update",
+        pb::JobKind::Backup | pb::JobKind::ContainerBackup => "run.backup",
+        pb::JobKind::Restore => "run.restore",
+        pb::JobKind::Move => "run.move",
+        pb::JobKind::Uninstall | pb::JobKind::ContainerRemoval => "run.removal",
+        _ => "run.operation",
+    };
+    crate::messages::text(key, language)
+}
+
+/// The problem under its service's given name
+fn given_name(problem: &health_watch::Problem, service: Option<&str>) -> health_watch::Problem {
+    named(problem, service, &crate::service_names::read())
+}
+
+/// The problem named from a set of given names
+fn named(
+    problem: &health_watch::Problem,
+    service: Option<&str>,
+    names: &std::collections::HashMap<String, String>,
+) -> health_watch::Problem {
+    let mut shown = problem.clone();
+    if let Some(name) = service.and_then(|id| names.get(id)) {
+        shown.subject = format!("{name} ({})", problem.container());
     }
+    shown
 }
 
 /// Runs shorter than this are not worth a notification
 const LONG_RUN_SECS: i64 = 60;
 
 /// A long run ended while no island showed it
-pub fn job_ended(kind: i32, subject: &str, seconds: i64, failure: Option<&str>) {
+pub fn job_ended(kind: i32, subject: &str, seconds: i64, failure: Option<&str>, job_id: &str) {
     let Ok(runtime) = tokio::runtime::Handle::try_current() else { return };
     let Some(store) = crate::live::shared_store() else { return };
     let mut config = load(&store);
@@ -433,7 +446,8 @@ pub fn job_ended(kind: i32, subject: &str, seconds: i64, failure: Option<&str>) 
         return;
     }
     let key = if failure.is_some() { "gnx.alert.operation.failed" } else { "gnx.alert.operation" };
-    let alert = notify_send::event_alert(key, &host(), subject, run_name(kind, config.russian()), config.russian());
+    let mut alert = notify_send::event_alert(key, &host(), subject, run_name(kind, &config.language), &config.language);
+    alert.job_id = Some(job_id.to_string());
     runtime.spawn(async move {
         let sent = deliver(&mut config, &alert).await;
         if let Sent::Failed(why) = sent {
@@ -468,7 +482,7 @@ pub fn job_started(kind: i32, subject: &str, job_id: &str) {
             return;
         }
         let mut alert = notify_send::event_alert(
-            "gnx.alert.operation.started", &host(), &subject, run_name(kind, config.russian()), config.russian(),
+            "gnx.alert.operation.started", &host(), &subject, run_name(kind, &config.language), &config.language,
         );
         alert.job_id = Some(job_id);
         if let Sent::Failed(why) = deliver(&mut config, &alert).await {
@@ -546,6 +560,7 @@ fn apply(config: &mut Config, req: pb::SetNotifySettingsRequest) -> Result<(), &
         config.operations = checks.operations;
         config.ssh_logins = checks.ssh_logins;
         config.unusual_load = checks.unusual_load;
+        config.widget_minutes = crate::widget_feed::minutes(checks.widget_refresh_minutes);
     }
     config.custom_checks = req.custom_checks;
     crate::ssh_watch::remember_key(&mut config.quiet_keys, &req.app_public_key);
@@ -680,7 +695,7 @@ pub async fn send_test(codec: Codec, store: Arc<Mutex<Store>>) -> Resp {
     let sent = match config.channel() {
         pb::NotifyChannel::Off | pb::NotifyChannel::Unspecified => Sent::Failed("notifications are off".into()),
         _ => {
-            let alert = notify_send::test_alert(&host(), config.russian());
+            let alert = notify_send::test_alert(&host(), &config.language);
             deliver(&mut config, &alert).await
         }
     };
@@ -707,8 +722,8 @@ mod tests {
 
     #[test]
     fn runs_are_named_in_the_settings_language() {
-        assert_eq!(run_name(pb::JobKind::Install as i32, true), "Установка");
-        assert_eq!(run_name(pb::JobKind::ContainerBackup as i32, false), "Backup");
+        assert_eq!(run_name(pb::JobKind::Install as i32, "ru"), "Установка");
+        assert_eq!(run_name(pb::JobKind::ContainerBackup as i32, "en"), "Backup");
     }
     use super::*;
 
@@ -722,7 +737,7 @@ mod tests {
             relay_url: relay.into(),
             ntfy_url: "https://ntfy.sh".into(),
             ntfy_topic: topic.into(),
-            checks: Some(pb::NotifyChecks { raid: true, smart: false, disk_space: true, disk_space_percent: 120, services: true, backups: false, agent_update: true, operations: true, ssh_logins: false, unusual_load: false }),
+            checks: Some(pb::NotifyChecks { raid: true, smart: false, disk_space: true, disk_space_percent: 120, services: true, backups: false, agent_update: true, operations: true, ssh_logins: false, unusual_load: false, widget_refresh_minutes: 0 }),
             language: "ru".into(),
             custom_checks: true,
             app_public_key: "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIMjhZbMLa1yPZt87ATUHLO4OUNZoQu6+22Re+KW7HKUl phone".into(),
@@ -817,7 +832,7 @@ mod tests {
         apply(&mut config, request(pb::NotifyChannel::Relay, &format!("http://127.0.0.1:{port}"), "")).unwrap();
         config.devices.push(Device { platform: "apns".into(), token: "aa".repeat(32), app_version: "1.0".into(), locale: "ru".into(), muted: Vec::new(), proof: String::new(), name: String::new(), added_at: 0, sounds: Default::default() });
         let registered = register(&mut config).await;
-        let sent = deliver(&mut config, &notify_send::test_alert("test", true)).await;
+        let sent = deliver(&mut config, &notify_send::test_alert("test", "ru")).await;
         let live_body = serde_json::json!({ "token": "activity", "state": crate::live::content_state("x", None, false, None) });
         let path = format!("/v1/servers/{}/live", config.server_id);
         let live = relay_call(&config, "POST", &path, live_body.to_string().as_bytes()).await;
@@ -859,14 +874,14 @@ mod tests {
         let mut config = Config::default();
         apply(&mut config, request(pb::NotifyChannel::Relay, &format!("http://127.0.0.1:{port}"), "")).unwrap();
         config.devices.push(Device { platform: "apns".into(), token: "bb".repeat(32), app_version: "1.0".into(), locale: "ru".into(), muted: Vec::new(), proof: String::new(), name: String::new(), added_at: 0, sounds: Default::default() });
-        let first = deliver(&mut config, &notify_send::test_alert("test", true)).await;
+        let first = deliver(&mut config, &notify_send::test_alert("test", "ru")).await;
         let _ = relay.kill();
         let _ = relay.wait();
 
         let mut relay = start_relay(&binary, &new, port);
         wait_for(port).await;
         let blind = relay_call(&config, "POST", &format!("/v1/servers/{}/events", config.server_id), b"{}").await;
-        let again = deliver(&mut config, &notify_send::test_alert("test", true)).await;
+        let again = deliver(&mut config, &notify_send::test_alert("test", "ru")).await;
         let _ = relay.kill();
         let _ = std::fs::remove_dir_all(&old);
         let _ = std::fs::remove_dir_all(&new);
@@ -900,5 +915,36 @@ mod address_tests {
         assert!(!valid_url("http://ntfy.example.com"));
         assert!(!valid_url("http://8.8.8.8"));
         assert!(!valid_url("https://"));
+    }
+}
+
+#[cfg(test)]
+mod naming_tests {
+    use super::*;
+    use crate::health_watch::{Kind, Problem};
+
+    fn down(container: &str) -> Problem {
+        Problem {
+            id: format!("service:{container}"),
+            kind: Kind::Service,
+            subject: container.to_string(),
+            detail: "stopped".into(),
+            reason: String::new(),
+        }
+    }
+
+    #[test]
+    fn a_named_service_is_told_by_its_name_with_the_container_beside_it() {
+        let names = std::collections::HashMap::from([("vaultwarden".to_string(), "Passwords".to_string())]);
+        let shown = named(&down("vaultwarden-app"), Some("vaultwarden"), &names);
+        assert_eq!(shown.subject, "Passwords (vaultwarden-app)");
+        assert_eq!(shown.container(), "vaultwarden-app", "the alert still names the container it is about");
+    }
+
+    #[test]
+    fn a_service_without_a_name_and_a_stranger_container_keep_their_words() {
+        let names = std::collections::HashMap::from([("vaultwarden".to_string(), "Passwords".to_string())]);
+        assert_eq!(named(&down("nextcloud-app"), Some("nextcloud"), &names).subject, "nextcloud-app");
+        assert_eq!(named(&down("stranger"), None, &names).subject, "stranger");
     }
 }

@@ -322,20 +322,24 @@ async fn render_relay(topology: &super::firewall_relay::Topology, dir: &str, sin
 }
 
 fn forwards_moved(existing: &str, plan: &Plan, home_discovery: bool) -> bool {
-    let dir = firewall::drop_in_dir_display();
+    forwards_moved_in(existing, plan, home_discovery, &firewall::drop_in_dir_display())
+}
+
+/// The same check against a given drop-in directory
+fn forwards_moved_in(existing: &str, plan: &Plan, home_discovery: bool, dir: &str) -> bool {
     match plan {
         Plan::SingleHost => false,
         Plan::Relay(topology) => {
             topology.is_complete()
                 && rules_without_interface(existing)
-                    != rules_without_interface(&super::firewall_relay::relay_ruleset(topology, "", &dir))
+                    != rules_without_interface(&super::firewall_relay::relay_ruleset(topology, "", dir))
         }
         Plan::HomeBackend(topology) => match topology.as_ref().filter(|t| !t.all_tcp_ports().is_empty()) {
             None => false,
             Some(topology) => {
                 super::firewall_relay::tunnel_accepted_ports(existing)
                     != super::firewall_relay::tunnel_accepted_ports(&super::firewall_relay::home_ruleset(
-                        &dir,
+                        dir,
                         Some(topology),
                         home_discovery,
                     ))
@@ -651,16 +655,16 @@ mod tests {
     #[test]
     fn a_pair_file_is_rewritten_when_its_forwards_move() {
         use super::super::firewall_relay::{home_ruleset, relay_ruleset, Topology};
-        let dir = firewall::drop_in_dir_display();
+        let dir = "/etc/nftables.d".to_string();
         let old = Topology::single("10.8.0.2".into(), "203.0.113.9".into(), 51820, vec![25, 80, 443], vec![]);
         let new = Topology::single("10.8.0.2".into(), "203.0.113.9".into(), 51820, vec![25, 80, 443, 2222], vec![]);
         let relay_file = relay_ruleset(&old, "eth0", &dir).replace(AGENT_MARKER, "");
-        assert!(forwards_moved(&relay_file, &Plan::Relay(new.clone()), false));
-        assert!(!forwards_moved(&relay_file, &Plan::Relay(old.clone()), false));
+        assert!(forwards_moved_in(&relay_file, &Plan::Relay(new.clone()), false, &dir));
+        assert!(!forwards_moved_in(&relay_file, &Plan::Relay(old.clone()), false, &dir));
         let home_file = home_ruleset(&dir, Some(&old), false).replace(AGENT_MARKER, "");
-        assert!(forwards_moved(&home_file, &Plan::HomeBackend(Some(new)), false));
-        assert!(!forwards_moved(&home_file, &Plan::HomeBackend(Some(old)), false));
-        assert!(!forwards_moved(&home_file, &Plan::SingleHost, false));
+        assert!(forwards_moved_in(&home_file, &Plan::HomeBackend(Some(new)), false, &dir));
+        assert!(!forwards_moved_in(&home_file, &Plan::HomeBackend(Some(old)), false, &dir));
+        assert!(!forwards_moved_in(&home_file, &Plan::SingleHost, false, &dir));
     }
 }
 

@@ -143,13 +143,8 @@ pub fn content_state(text: &str, progress: Option<f64>, finished: bool, failure:
     state
 }
 
-fn headline(failed: bool, russian: bool) -> &'static str {
-    match (failed, russian) {
-        (false, false) => "Completed successfully",
-        (false, true) => "Успешно завершено",
-        (true, false) => "Failed",
-        (true, true) => "Ошибка",
-    }
+fn headline(failed: bool, language: &str) -> &'static str {
+    crate::messages::text(if failed { "live.failed" } else { "live.done" }, language)
 }
 
 // MARK: hooks from the journal
@@ -209,9 +204,8 @@ pub fn job_began(kind: i32, subject: &str, job_id: &str) {
         return;
     }
     let Some(config) = config().filter(relay_ready) else { return };
-    let russian = config.russian();
-    let title = format!("{} · {}", notify::run_name(kind, russian), subject);
-    let text = if russian { "Запуск…" } else { "Starting…" }.to_string();
+    let title = format!("{} · {}", notify::run_name(kind, &config.language), subject);
+    let text = crate::messages::text("live.starting", &config.language).to_string();
     watches().lock().unwrap().entry(job_id.to_string()).or_insert_with(|| Watch::new("", false, &title, text));
     let Ok(runtime) = tokio::runtime::Handle::try_current() else { return };
     let job_id = job_id.to_string();
@@ -308,8 +302,8 @@ pub fn line(job_id: &str, text: &str) {
 /// The job ended: the island opens with the outcome
 pub fn finished(job_id: &str, failure: Option<&str>) -> bool {
     let Some(watch) = watches().lock().unwrap().remove(job_id).filter(Watch::is_shown) else { return false };
-    let russian = config().is_some_and(|c| c.language.starts_with("ru"));
-    let (shown, closing) = ending_bodies(&watch, failure, russian, notify::now());
+    let language = config().map(|c| c.language).unwrap_or_default();
+    let (shown, closing) = ending_bodies(&watch, failure, &language, notify::now());
     watch.addressed(job_id, &shown).into_iter().for_each(send);
     let wait = Duration::from_secs(linger_of(failure) as u64);
     for body in watch.addressed(job_id, &closing) {
@@ -323,8 +317,10 @@ const CHECK_STEPS: u32 = 6;
 const CHECK_PAUSE: Duration = Duration::from_secs(5);
 
 /// The sample card's line for one step
-fn check_step(number: u32, russian: bool) -> String {
-    if russian { format!("Шаг {number} из {CHECK_STEPS}") } else { format!("Step {number} of {CHECK_STEPS}") }
+fn check_step(number: u32, language: &str) -> String {
+    crate::messages::text("live.step", language)
+        .replace("{number}", &number.to_string())
+        .replace("{total}", &CHECK_STEPS.to_string())
 }
 
 /// Walks a sample card through its steps from here
@@ -332,13 +328,13 @@ pub fn run_check(token: &str, title: &str) {
     let Ok(runtime) = tokio::runtime::Handle::try_current() else { return };
     let job = format!("island-check-{}", notify::now());
     watch(&job, token, title);
-    let russian = config().is_some_and(|c| c.language.starts_with("ru"));
+    let language = config().map(|c| c.language).unwrap_or_default();
     runtime.spawn(async move {
         for number in 1..=CHECK_STEPS {
             let bodies = {
                 let mut all = watches().lock().unwrap();
                 let Some(watch) = all.get_mut(&job) else { return };
-                watch.text = check_step(number, russian);
+                watch.text = check_step(number, &language);
                 watch.progress = Some(f64::from(number) / f64::from(CHECK_STEPS));
                 watch.last_sent = Some(Instant::now());
                 let body = update_body(watch);
@@ -357,13 +353,13 @@ fn linger_of(failure: Option<&str>) -> i64 {
 }
 
 /// The outcome shown with an alert, then the card's end
-fn ending_bodies(watch: &Watch, failure: Option<&str>, russian: bool, now: i64) -> (Value, Value) {
+fn ending_bodies(watch: &Watch, failure: Option<&str>, language: &str, now: i64) -> (Value, Value) {
     let state = content_state(&watch.text, None, true, failure);
     let shown = json!({
         "token": watch.token,
         "state": state,
         "stale_at": now + linger_of(failure) + STALE_AFTER,
-        "alert": { "title": headline(failure.is_some(), russian), "body": watch.title },
+        "alert": { "title": headline(failure.is_some(), language), "body": watch.title },
     });
     let closing = json!({ "token": watch.token, "end": true, "state": state });
     (shown, closing)
@@ -493,8 +489,10 @@ async fn deliver_now(suffix: &str, mut body: Value) {
             }
         }
     }
-    if let Sent::Failed(why) = sent {
-        tracing::warn!("live activity update not sent: {why}");
+    match sent {
+        Sent::Failed(why) => tracing::warn!(path = %path, "live activity request not sent: {why}"),
+        _ if suffix == START_PATH => tracing::info!(path = %path, "the relay took the request to start cards"),
+        _ => {}
     }
 }
 
@@ -542,12 +540,12 @@ mod tests {
     #[test]
     fn the_outcome_is_shown_before_the_card_ends() {
         let watch = Watch::new("t", false, "Updating Nextcloud", "done".into());
-        let (shown, closing) = ending_bodies(&watch, None, false, 1000);
+        let (shown, closing) = ending_bodies(&watch, None, "en", 1000);
         assert!(shown.get("end").is_none(), "the outcome must not end the card at once");
         assert_eq!(shown["alert"]["title"], "Completed successfully");
         assert_eq!(closing["end"], true);
         assert_eq!(shown["stale_at"], 1000 + LINGER + STALE_AFTER);
-        let (failed_shown, failed) = ending_bodies(&watch, Some("disk full"), false, 1000);
+        let (failed_shown, failed) = ending_bodies(&watch, Some("disk full"), "en", 1000);
         assert!(failed.get("dismiss_at").is_none(), "a failure stays on the lock screen");
         assert_eq!(failed_shown["stale_at"], 1000 + FAILED_LINGER + STALE_AFTER);
     }
@@ -582,8 +580,8 @@ mod tests {
 
     #[test]
     fn the_alert_speaks_the_owners_language() {
-        assert_eq!(headline(false, true), "Успешно завершено");
-        assert_eq!(headline(true, false), "Failed");
+        assert_eq!(headline(false, "ru"), "Успешно завершено");
+        assert_eq!(headline(true, "en"), "Failed");
     }
 
     #[test]
@@ -637,8 +635,8 @@ mod tests {
 
     #[test]
     fn the_sample_card_counts_in_the_owners_language() {
-        assert_eq!(check_step(2, true), "Шаг 2 из 6");
-        assert_eq!(check_step(6, false), "Step 6 of 6");
+        assert_eq!(check_step(2, "ru"), "Шаг 2 из 6");
+        assert_eq!(check_step(6, "en"), "Step 6 of 6");
     }
 
     #[test]

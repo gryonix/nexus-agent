@@ -78,8 +78,8 @@ fn failure(code: i32) -> Option<String> {
     if code == 0 {
         return None;
     }
-    let russian = crate::live::config().is_some_and(|c| c.russian());
-    Some(if russian { format!("Обновление завершилось с кодом {code}") } else { format!("The update ended with code {code}") })
+    let language = crate::live::config().map(|c| c.language).unwrap_or_default();
+    Some(crate::messages::text("live.update_code", &language).replace("{code}", &code.to_string()))
 }
 
 #[cfg(test)]

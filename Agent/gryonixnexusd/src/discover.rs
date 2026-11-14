@@ -120,6 +120,12 @@ async fn build_service(id: &str, display: &str, members: &[&ComposeProject]) -> 
     }
 }
 
+/// The catalog service a container belongs to
+pub async fn service_of_container(container: &str) -> Option<String> {
+    let found = scan().await.ok()?;
+    found.services.into_iter().find(|service| service.containers.iter().any(|c| c.name == container)).map(|service| service.id)
+}
+
 pub async fn scan() -> Result<pb::DiscoverResult> {
     let projects = compose_projects().await?;
     let (groups, notes) = group_projects(&projects);

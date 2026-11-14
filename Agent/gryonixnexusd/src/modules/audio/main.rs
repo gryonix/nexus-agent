@@ -2,6 +2,7 @@
 
 mod odio;
 mod outputs;
+mod settings;
 
 use serde::Deserialize;
 use std::io::Read;
@@ -36,6 +37,9 @@ async fn odio_call() -> Result<String, String> {
     let mut input = String::new();
     std::io::stdin().read_to_string(&mut input).map_err(|err| err.to_string())?;
     let request: OdioRequest = serde_json::from_str(&input).map_err(|err| err.to_string())?;
+    if request.path == settings::PATH {
+        return settings::handle(&request.method, &request.body).await;
+    }
     if !odio::allowed(&request.method, &request.path) {
         return Err("this odio call is not allowed".into());
     }

@@ -23,6 +23,8 @@ pub const LEFT_OUT_ON_OLDER_OS: &str = "myMPD, disc player, Snapcast, UPnP, Spot
 /// The line the hub's packages target
 const NEWEST_DEBIAN: &str = "Debian 13";
 
+const SIMULATION_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+
 pub struct Facts {
     pub os_name: String,
     /// Whether libraries match Debian 13 or newer
@@ -61,6 +63,9 @@ fn finding(service: &str, severity: Severity, code: &'static str, args: &[&str])
     Finding { service: service.to_string(), severity, code, args: args.iter().map(|arg| arg.to_string()).collect() }
 }
 
+/// Services whose packages are built for the newest Debian
+const NEEDS_NEWER_OS: [&str; 2] = ["mympd", "upmpdcli"];
+
 /// Findings for one service on these facts
 pub fn evaluate(service: &str, facts: &Facts, unavailable: &[String]) -> Vec<Finding> {
     let mut found = Vec::new();
@@ -68,7 +73,7 @@ pub fn evaluate(service: &str, facts: &Facts, unavailable: &[String]) -> Vec<Fin
     for package in unavailable {
         found.push(finding(service, Severity::Blocked, "package_unavailable", &[package, &facts.os_name]));
     }
-    if service == "mympd" && older {
+    if NEEDS_NEWER_OS.contains(&service) && older && unavailable.is_empty() {
         found.push(finding(service, Severity::Blocked, "needs_newer_os", &[&facts.os_name, NEWEST_DEBIAN]));
     }
     if service == odio::SERVICE_ID && older {
@@ -109,6 +114,52 @@ fn without_candidate(asked: &[&str], policy: &str) -> Vec<String> {
     asked.iter().filter(|name| !candidates.get(*name).copied().unwrap_or(false)).map(|name| name.to_string()).collect()
 }
 
+/// Packages apt offers but cannot install here
+async fn uninstallable_packages(service: &str) -> Vec<String> {
+    let Some(spec) = packaged::find(service) else { return Vec::new() };
+    if !packages::have_binary("apt-get") {
+        return Vec::new();
+    }
+    let simulation = tokio::process::Command::new("apt-get")
+        .env("LC_ALL", "C")
+        .args(["-s", "install"])
+        .args(spec.packages)
+        .stdin(std::process::Stdio::null())
+        .kill_on_drop(true)
+        .output();
+    let Ok(Ok(output)) = tokio::time::timeout(SIMULATION_TIMEOUT, simulation).await else { return Vec::new() };
+    if output.status.success() {
+        return Vec::new();
+    }
+    let mut text = String::from_utf8_lossy(&output.stdout).into_owned();
+    text.push_str(&String::from_utf8_lossy(&output.stderr));
+    with_unmet_dependencies(&text)
+}
+
+/// Packages apt names as having unmet dependencies
+fn with_unmet_dependencies(simulation: &str) -> Vec<String> {
+    let mut names: Vec<String> = Vec::new();
+    for line in simulation.lines() {
+        let Some((name, rest)) = line.trim_start().split_once(" : ") else { continue };
+        let unmet = rest.starts_with("Depends:") || rest.starts_with("PreDepends:");
+        if unmet && !name.contains(' ') && !names.iter().any(|known| known == name) {
+            names.push(name.to_string());
+        }
+    }
+    names
+}
+
+/// Findings for packages built for a newer system
+fn unmet_findings(service: &str, facts: &Facts, broken: &[String]) -> Vec<Finding> {
+    if broken.is_empty() {
+        return Vec::new();
+    }
+    if facts.libraries_are_current == Some(false) {
+        return vec![finding(service, Severity::Blocked, "needs_newer_os", &[&facts.os_name, NEWEST_DEBIAN])];
+    }
+    broken.iter().map(|package| finding(service, Severity::Blocked, "package_unavailable", &[package, &facts.os_name])).collect()
+}
+
 /// `Install/CheckInstall`
 pub async fn run_check(codec: crate::api::Codec, req: pb::CheckInstallRequest) -> crate::api::Resp {
     let mut findings = Vec::new();
@@ -122,7 +173,14 @@ pub async fn run_check(codec: crate::api::Codec, req: pb::CheckInstallRequest) -
 
 pub async fn check(service: &str) -> Vec<Finding> {
     let facts = Facts::read();
-    evaluate(service, &facts, &unavailable_packages(service).await)
+    let mut found = evaluate(service, &facts, &unavailable_packages(service).await);
+    let broken = unmet_findings(service, &facts, &uninstallable_packages(service).await);
+    for new in broken {
+        if !found.contains(&new) {
+            found.push(new);
+        }
+    }
+    found
 }
 
 impl Finding {
@@ -178,6 +236,8 @@ mod tests {
         let found = evaluate("mympd", &facts(BOOKWORM), &[]);
         assert_eq!((found[0].severity, found[0].code), (Severity::Blocked, "needs_newer_os"));
         assert!(evaluate("mympd", &facts(TRIXIE), &[]).is_empty());
+        let dlna = evaluate("upmpdcli", &facts(BOOKWORM), &[]);
+        assert_eq!((dlna[0].severity, dlna[0].code), (Severity::Blocked, "needs_newer_os"));
     }
 
     #[test]

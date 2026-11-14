@@ -420,6 +420,26 @@ message AppModuleSet {
   repeated string on = 1;
 }
 
+// Names given to services on this server, shared by every device.
+service ServiceNames {
+  rpc GetServiceNames(GetServiceNamesRequest) returns (ServiceNameSet);
+  // Names one service; an empty name puts the catalog name back.
+  rpc SetServiceName(SetServiceNameRequest) returns (ServiceNameSet);
+}
+
+message GetServiceNamesRequest {}
+
+message SetServiceNameRequest {
+  // Catalog id of the service, e.g. "vaultwarden".
+  string service_id = 1;
+  string name = 2;
+}
+
+message ServiceNameSet {
+  // Service id to its given name; a service without one is absent.
+  map<string, string> names = 1;
+}
+
 // Sound hardware of the machine, for the AirPlay speaker.
 service Audio {
   // Playback devices ALSA knows, read from /proc/asound.
@@ -4004,6 +4024,8 @@ message NotifyChecks {
   bool ssh_logins = 9;
   // The machine stays overloaded: load twice its cores, or memory nearly gone.
   bool unusual_load = 10;
+  // Minutes between widget summaries. 0 means the default, 60.
+  uint32 widget_refresh_minutes = 11;
 }
 
 message NotifySettings {

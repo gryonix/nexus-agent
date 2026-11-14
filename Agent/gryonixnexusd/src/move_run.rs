@@ -95,7 +95,7 @@ fn refuse(message: &str) -> Resp {
 }
 
 fn precondition(message: &str) -> Resp {
-    connect_error(StatusCode::UNPROCESSABLE_ENTITY, "failed_precondition", message)
+    crate::api::connect_reason(StatusCode::UNPROCESSABLE_ENTITY, "failed_precondition", message, "move.refused")
 }
 
 fn host_key_lines(text: &str) -> Option<Vec<String>> {
@@ -583,5 +583,16 @@ mod tests {
         for bad in ["", "ssh-ed25519", "ssh-ed25519 AA comment", "rsa AA", "ssh-ed25519 A\"A"] {
             assert!(host_key_lines(bad).is_none(), "{bad}");
         }
+    }
+}
+
+#[cfg(test)]
+mod reason_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn a_refused_move_carries_the_move_reason_and_a_bad_request_none() {
+        assert_eq!(crate::api::reason_of(precondition("not here")).await, "move.refused");
+        assert_eq!(crate::api::reason_of(refuse("bad input")).await, "");
     }
 }

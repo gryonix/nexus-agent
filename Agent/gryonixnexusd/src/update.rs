@@ -66,7 +66,15 @@ impl Rejection {
 
     fn response(&self) -> Resp {
         let (status, code, message) = self.parts();
-        connect_error(status, code, &message)
+        crate::api::connect_reasoned(status, code, &message, self.reason())
+    }
+
+    /// The stable id the app matches, when there is one
+    fn reason(&self) -> Option<&'static str> {
+        match self {
+            Rejection::NoWrapper => Some("host.needs_repair"),
+            _ => None,
+        }
     }
 }
 

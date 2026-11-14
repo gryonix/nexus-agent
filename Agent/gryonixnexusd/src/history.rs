@@ -28,6 +28,12 @@ fn bucket_path(dir: &Path, bucket: &'static str) -> PathBuf {
     dir.join(format!("{bucket}.csv"))
 }
 
+/// A history bucket that could not be read
+fn bucket_unreadable(bucket: &str, err: &dyn std::fmt::Display) -> Resp {
+    let message = format!("could not read the {bucket} history bucket: {err}");
+    crate::api::connect_reason(StatusCode::SERVICE_UNAVAILABLE, "unavailable", &message, "history.unreadable")
+}
+
 /// Read one bucket
 pub fn read_bucket(bucket: &'static str) -> std::io::Result<Vec<pb::MetricsHistoryPoint>> {
     let dir = directory();
@@ -90,11 +96,7 @@ pub fn metrics_history(codec: Codec, req: pb::MetricsHistoryRequest) -> Resp {
     let points = match read_bucket(bucket) {
         Ok(points) => points,
         Err(err) => {
-            return connect_error(
-                StatusCode::SERVICE_UNAVAILABLE,
-                "unavailable",
-                &format!("could not read the {bucket} history bucket: {err}"),
-            )
+            return bucket_unreadable(bucket, &err)
         }
     };
     let response = pb::MetricsHistoryResponse {
@@ -269,5 +271,17 @@ this is not a row
         assert_eq!(points[0].power_source, "rapl");
         assert_eq!(points[1].power_watts, None);
         assert_eq!(points[2].power_source, "ipmi");
+    }
+}
+
+#[cfg(test)]
+mod unreadable_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn a_bucket_that_cannot_be_read_is_unavailable_by_reason() {
+        let resp = bucket_unreadable("hour", &"permission denied");
+        assert_eq!(resp.status(), StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(crate::api::reason_of(resp).await, "history.unreadable");
     }
 }

@@ -242,11 +242,7 @@ enum EngineFailure {
 impl EngineFailure {
     fn response(&self) -> Resp {
         match self {
-            EngineFailure::Unreachable(err) => connect_error(
-                StatusCode::SERVICE_UNAVAILABLE,
-                "unavailable",
-                &format!("container engine unavailable: {err}"),
-            ),
+            EngineFailure::Unreachable(err) => crate::api::engine_unavailable(&err.to_string()),
             EngineFailure::Refused(detail) => connect_error(
                 StatusCode::UNPROCESSABLE_ENTITY,
                 "failed_precondition",
@@ -533,5 +529,16 @@ mod tests {
     #[test]
     fn the_engine_is_addressed_through_the_same_catalog_gate_as_everything_else() {
         assert_eq!(discover::known_service(SERVICE_ID), Some("Docker Mailserver"));
+    }
+}
+
+#[cfg(test)]
+mod reason_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn a_silent_engine_answers_with_the_docker_reason() {
+        let silent = EngineFailure::Unreachable(anyhow::anyhow!("no socket")).response();
+        assert_eq!(crate::api::reason_of(silent).await, "host.docker_unavailable");
     }
 }

@@ -91,7 +91,7 @@ pub async fn set_open_api(codec: Codec, req: pb::SetOpenApiRequest) -> Resp {
         Err(why) => return connect_error(StatusCode::BAD_REQUEST, "invalid_argument", &why),
     };
     if let Err(why) = crate::install::execute::apply_open_paths(&req.service_id, &open).await {
-        return connect_error(StatusCode::UNPROCESSABLE_ENTITY, "failed_precondition", &why);
+        return crate::exposure::caddy_refused(&why);
     }
     if let Err(why) = save_choice(&req.service_id, &open) {
         tracing::warn!(%why, "open API choice not saved");

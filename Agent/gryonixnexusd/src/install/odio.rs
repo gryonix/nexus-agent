@@ -123,10 +123,10 @@ pub const LOCAL_HOSTNAME: &str = "odio.local";
 
 /// A port of `OdioService.hostname(_:)`
 pub fn hostname(input: &Input) -> String {
-    if input.odio_hostname.ends_with(".local") {
-        input.odio_hostname.clone()
-    } else {
+    if input.odio_hostname.trim().is_empty() {
         LOCAL_HOSTNAME.to_string()
+    } else {
+        input.odio_hostname.trim().to_string()
     }
 }
 
@@ -148,7 +148,8 @@ pub fn caddy_site_names(input: &Input) -> Vec<String> {
 
 /// The site on Caddy's own certificate, guarded, with the password
 pub fn caddy_site(input: &Input) -> String {
-    super::caddy::site_with_basic_auth(SERVICE_ID, &hostname(input), WEB_UI_PORT, true, AUTH_SNIPPET_PATH)
+    let host = hostname(input);
+    super::caddy::site_with_basic_auth(SERVICE_ID, &host, WEB_UI_PORT, host.ends_with(".local"), AUTH_SNIPPET_PATH)
 }
 
 /// A port of `OdioService.controlScript()`
@@ -183,7 +184,7 @@ pub fn finish_script(input: &Input) -> String {
     let path = &input.odio_path;
     let ctl = control_script();
     format!(
-        "set -e\nodio_home=\"$(getent passwd {ACCOUNT} | cut -d: -f6)\"\ninstall -d -m 700 -o {ACCOUNT} -g {ACCOUNT} \"$odio_home/.config/odio-api/conf.d\"\nprintf 'bind: lo\\n' > \"$odio_home/.config/odio-api/conf.d/20-gryonixnexus.yml\"\nchown {ACCOUNT}:{ACCOUNT} \"$odio_home/.config/odio-api/conf.d/20-gryonixnexus.yml\"\ncat > {CONTROL_PATH} <<'EOF_ODIO_CTL'\n{ctl}\nEOF_ODIO_CTL\nchmod 755 {CONTROL_PATH}\nif [ ! -f {path}/.env ]; then\n  install -m 600 /dev/null {path}/.env\n  printf 'ODIO_WEB_USER={ACCOUNT}\\nODIO_WEB_PASSWORD=%s\\n' \"$(openssl rand -hex 12)\" > {path}/.env\nfi\n. {path}/.env\nprintf 'basic_auth {{\\n    %s %s\\n}}\\n' \"$ODIO_WEB_USER\" \"$(caddy hash-password --plaintext \"$ODIO_WEB_PASSWORD\")\" > {AUTH_SNIPPET_PATH}\nchmod 644 {AUTH_SNIPPET_PATH}\n{CONTROL_PATH} restart\n"
+        "set -e\nodio_home=\"$(getent passwd {ACCOUNT} | cut -d: -f6)\"\ninstall -d -m 700 -o {ACCOUNT} -g {ACCOUNT} \"$odio_home/.config/odio-api/conf.d\"\nprintf 'bind: lo\\n' > \"$odio_home/.config/odio-api/conf.d/20-gryonixnexus.yml\"\nchown {ACCOUNT}:{ACCOUNT} \"$odio_home/.config/odio-api/conf.d/20-gryonixnexus.yml\"\ncat > {CONTROL_PATH} <<'EOF_ODIO_CTL'\n{ctl}\nEOF_ODIO_CTL\nchmod 755 {CONTROL_PATH}\nif [ ! -f {path}/.env ]; then\n  install -m 600 /dev/null {path}/.env\n  printf 'ODIO_WEB_USER={ACCOUNT}\\nODIO_WEB_PASSWORD=%s\\n' \"$(openssl rand -hex 12)\" > {path}/.env\nfi\n. {path}/.env\nprintf 'basic_auth {{\\n    %s %s\\n}}\\nredir / /ui/\\n' \"$ODIO_WEB_USER\" \"$(caddy hash-password --plaintext \"$ODIO_WEB_PASSWORD\")\" > {AUTH_SNIPPET_PATH}\nchmod 644 {AUTH_SNIPPET_PATH}\n{CONTROL_PATH} restart\n"
     )
 }
 
@@ -216,9 +217,12 @@ mod tests {
     }
 
     #[test]
-    fn only_a_local_name_replaces_the_default() {
+    fn a_public_name_gets_a_real_certificate_and_keeps_the_password() {
         let public = Input { odio_hostname: "music.example.com".to_string(), ..base() };
-        assert_eq!(hostname(&public), "odio.local");
+        assert_eq!(hostname(&public), "music.example.com");
+        let site = caddy_site(&public);
+        assert!(site.starts_with("music.example.com {") && !site.contains("tls internal"), "{site}");
+        assert!(site.contains("import /etc/caddy/gryonixnexus-odio-auth"), "{site}");
         let local = Input { odio_hostname: "hifi.local".to_string(), additional_domains: vec!["second.org".to_string()], ..base() };
         assert_eq!(caddy_site_names(&local), vec!["hifi.local".to_string()]);
     }
@@ -266,6 +270,7 @@ mod tests {
         let text = finish_script(&base());
         assert!(text.contains("printf 'bind: lo\\n'"));
         assert!(text.contains("caddy hash-password --plaintext"));
+        assert!(text.contains("redir / /ui/"), "the bare address must lead to the panel");
         assert!(text.contains("/opt/odio/.env"));
     }
 

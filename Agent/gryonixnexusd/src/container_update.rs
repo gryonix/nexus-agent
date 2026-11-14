@@ -5,7 +5,7 @@ use std::collections::BTreeMap;
 use bytes::Bytes;
 use tokio::sync::mpsc::Sender;
 
-use crate::api::{connect_error, envelope, error_trailer, stream_response, Codec, Resp};
+use crate::api::{envelope, error_trailer, stream_response, Codec, Resp};
 use crate::container_ops::{capture, first_lines, run_streaming};
 use crate::containers::{self, GroupKind};
 use crate::pb;
@@ -71,28 +71,34 @@ struct UpdateJob {
 fn refuse(req: &pb::UpdateContainerGroupRequest, plan: &pb::ContainerBackupPlan, kind: GroupKind) -> Option<Resp> {
     // Refused BEFORE the stream opens, like every other precondition here.
     if req.skip_backup && !plan.databases.is_empty() {
-        return Some(connect_error(
+        return Some(crate::api::connect_refusal(
             StatusCode::UNPROCESSABLE_ENTITY,
             "failed_precondition",
             "this group has a database that would be dumped, so its update cannot skip the backup: \
              a new image that migrates a schema is exactly the case a backup is kept for, and this \
              stack has no install recipe to rebuild it from",
+            "containers.backup_required",
+            &[],
         ));
     }
     if !req.skip_backup && plan_names_nothing(&plan) {
-        return Some(connect_error(
+        return Some(crate::api::connect_refusal(
             StatusCode::UNPROCESSABLE_ENTITY,
             "failed_precondition",
             "nothing_to_archive: this group stores nothing outside its images — no volume, no bind mount and no database — so a backup before the update would archive nothing. Update it without one, or give it a backup plan first",
+            "containers.nothing_to_archive",
+            &[],
         ));
     }
     if kind == GroupKind::Standalone {
-        return Some(connect_error(
+        return Some(crate::api::connect_refusal(
             StatusCode::UNPROCESSABLE_ENTITY,
             "failed_precondition",
             "this is a single container started outside compose, so the agent cannot recreate it \
              from anything: pulling a newer image would change nothing that is running. Recreate it \
              with whatever started it",
+            "containers.standalone",
+            &[],
         ));
     }
     None

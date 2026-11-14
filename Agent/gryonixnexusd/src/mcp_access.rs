@@ -52,7 +52,7 @@ pub async fn set_mcp_access(codec: Codec, req: pb::SetMcpAccessRequest) -> Resp 
     let outcome = if req.enabled { turn_on(&req.public_key).await } else { turn_off().await };
     match outcome {
         Ok(()) => encode(codec, &state()),
-        Err(why) => connect_error(StatusCode::UNPROCESSABLE_ENTITY, "failed_precondition", &why),
+        Err(why) => crate::api::connect_reason(StatusCode::UNPROCESSABLE_ENTITY, "failed_precondition", &why, "mcp.change_failed"),
     }
 }
 
@@ -107,5 +107,18 @@ mod tests {
         let text = sudoers_text(&["admin".to_string()]);
         assert!(text.ends_with("admin ALL=(root) NOPASSWD: /usr/local/bin/gryonixnexusd mcp\n"), "{text}");
         assert_eq!(forced_command(), "sudo -n /usr/local/bin/gryonixnexusd mcp");
+    }
+}
+
+#[cfg(test)]
+mod reason_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn a_key_that_is_not_ed25519_is_refused_by_reason_before_anything_changes() {
+        let req = pb::SetMcpAccessRequest { enabled: true, public_key: "ssh-rsa AAAA".to_string() };
+        let resp = set_mcp_access(Codec::Proto, req).await;
+        assert_eq!(resp.status(), StatusCode::UNPROCESSABLE_ENTITY);
+        assert_eq!(crate::api::reason_of(resp).await, "mcp.change_failed");
     }
 }

@@ -35,7 +35,7 @@ fn refuse(message: &str) -> Resp {
 }
 
 fn failed(message: &str) -> Resp {
-    connect_error(StatusCode::UNPROCESSABLE_ENTITY, "failed_precondition", message)
+    crate::api::connect_reason(StatusCode::UNPROCESSABLE_ENTITY, "failed_precondition", message, "move.refused")
 }
 
 fn internal(message: &str) -> Resp {
@@ -199,7 +199,8 @@ pub async fn prepare_receive(codec: Codec, req: pb::PrepareMoveReceiveRequest) -
         .unwrap_or(0);
     if free < space_needed(req.expected_bytes) {
         let _ = std::fs::remove_dir_all(&dir);
-        return failed("this machine does not have enough free space for the service's data");
+        let message = "this machine does not have enough free space for the service's data";
+        return crate::api::connect_reason(StatusCode::UNPROCESSABLE_ENTITY, "failed_precondition", message, "move.no_space");
     }
     let line = format!(
         "restrict,command=\"cat > {}/{DATA_FILE}\" {key} gryonixnexus-move-{}",
@@ -343,5 +344,16 @@ mod tests {
         std::env::set_var(HOST_KEY_DIR_ENV, &dir);
         assert_eq!(host_keys(), "ssh-ed25519 AAAAhost");
         std::env::remove_var(HOST_KEY_DIR_ENV);
+    }
+}
+
+#[cfg(test)]
+mod reason_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn a_refused_move_carries_the_move_reason_and_a_bad_request_none() {
+        assert_eq!(crate::api::reason_of(failed("not here")).await, "move.refused");
+        assert_eq!(crate::api::reason_of(refuse("bad input")).await, "");
     }
 }

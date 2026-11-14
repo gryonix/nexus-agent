@@ -9,6 +9,8 @@ use crate::api::{connect_error, Codec, Resp};
 use crate::pb;
 
 const COMMAND_TIMEOUT_SECS: u64 = 20;
+const SYNC_SETTLE_READS: usize = 5;
+const SYNC_SETTLE_PAUSE: Duration = Duration::from_millis(400);
 const HOSTS_PATH: &str = "/etc/hosts";
 const HOSTNAME_PATH: &str = "/etc/hostname";
 const KERNEL_HOSTNAME_PATH: &str = "/proc/sys/kernel/hostname";
@@ -168,11 +170,38 @@ pub async fn set_host_name(codec: Codec, req: pb::SetHostNameRequest) -> Resp {
     encode(codec, read_settings().await)
 }
 
+/// Waits until the NTP switch reads as requested
+async fn time_sync_settled(enabled: bool) -> Result<pb::SystemSettings, String> {
+    let mut settings = read_settings().await?;
+    for _ in 0..SYNC_SETTLE_READS {
+        if settings.ntp_enabled == enabled {
+            break;
+        }
+        tokio::time::sleep(SYNC_SETTLE_PAUSE).await;
+        settings = read_settings().await?;
+    }
+    Ok(settings)
+}
+
 pub async fn set_time_sync(codec: Codec, req: pb::SetTimeSyncRequest) -> Resp {
-    if let Err(why) = run("timedatectl", &set_time_sync_args(req.enabled)).await {
+    let args = set_time_sync_args(req.enabled);
+    if let Err(why) = run("timedatectl", &args).await {
         return encode(codec, Err(why));
     }
-    encode(codec, read_settings().await)
+    let mut settled = time_sync_settled(req.enabled).await;
+    if matches!(&settled, Ok(settings) if settings.ntp_enabled != req.enabled) {
+        if let Err(why) = run("timedatectl", &args).await {
+            return encode(codec, Err(why));
+        }
+        settled = time_sync_settled(req.enabled).await;
+    }
+    match settled {
+        Ok(settings) if settings.ntp_enabled != req.enabled => {
+            let asked = if req.enabled { "on" } else { "off" };
+            encode(codec, Err(format!("time synchronisation did not turn {asked}: the system still reports the old state")))
+        }
+        other => encode(codec, other),
+    }
 }
 
 fn update_hosts_file(path: &str, name: &str) -> std::io::Result<()> {

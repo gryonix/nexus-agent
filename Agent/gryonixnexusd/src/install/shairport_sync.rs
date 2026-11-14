@@ -74,7 +74,7 @@ const OPTIONS: &[(&str, &str, Kind)] = &[
     ("general", "ignore_volume_control", Kind::Choice(&["yes", "no"])),
     ("general", "default_airplay_volume", Kind::Number(-30.0, 0.0)),
     ("general", "audio_backend_latency_offset_in_seconds", Kind::Number(-1.0, 1.0)),
-    ("general", "audio_backend_buffer_desired_length_in_seconds", Kind::Number(0.05, 1.5)),
+    ("general", "audio_backend_buffer_desired_length_in_seconds", Kind::Number(0.01, 1.5)),
     ("general", "drift_tolerance_in_seconds", Kind::Number(0.001, 0.02)),
     ("general", "allow_session_interruption", Kind::Choice(&["yes", "no"])),
     ("general", "session_timeout", Kind::Number(20.0, 3600.0)),

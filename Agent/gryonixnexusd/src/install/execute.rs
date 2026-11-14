@@ -657,6 +657,8 @@ pub enum Rejection {
     StickMissing { service: &'static str, device: String },
     /// The audio hub already runs this player, or the reverse
     OverlapsAudioHub(&'static str),
+    /// The hub would duplicate a player installed on its own
+    HubOverlapsPlayer(&'static str),
     SiteNameTaken(Vec<String>),
     /// The machine lacks something the service needs
     Incompatible(Vec<String>),
@@ -793,6 +795,16 @@ impl Rejection {
                      remove one of them first. Nothing has been changed"
                 ),
             ),
+            Rejection::HubOverlapsPlayer(player) => (
+                StatusCode::CONFLICT,
+                "failed_precondition",
+                format!(
+                    "The audio hub (odio) will not be installed: {player} is already installed on \
+                     this machine on its own, and the hub brings the same player — two copies \
+                     fight over the sound card. Remove {player} first, then install the hub. \
+                     Nothing has been changed"
+                ),
+            ),
             Rejection::Incompatible(reasons) => (
                 StatusCode::UNPROCESSABLE_ENTITY,
                 "failed_precondition",
@@ -813,11 +825,40 @@ impl Rejection {
 
     fn response(&self) -> Resp {
         let (status, code, message) = self.parts();
-        connect_error(status, code, &message)
+        let (reason, args) = self.reason();
+        crate::api::connect_refusal(status, code, &message, reason, &args)
     }
 
     pub fn message(&self) -> String {
         self.parts().2
+    }
+
+    /// The stable id the app matches, and its values
+    pub fn reason(&self) -> (&'static str, Vec<String>) {
+        let one = |value: &str| vec![value.to_string()];
+        match self {
+            Rejection::UnknownService(_) => ("install.unknown_service", Vec::new()),
+            Rejection::NotImplemented(_) => ("install.not_implemented", Vec::new()),
+            Rejection::DockerUnavailable(_) => ("install.docker_unavailable", Vec::new()),
+            Rejection::InvalidRequest(_) => ("install.invalid_request", Vec::new()),
+            Rejection::NoReverseProxy => ("install.no_reverse_proxy", Vec::new()),
+            Rejection::PortsInUse(_) => ("install.ports_in_use", Vec::new()),
+            Rejection::AlreadyInstalledOutside { service, holder } => {
+                ("install.installed_outside", vec![service.clone(), holder.clone()])
+            }
+            Rejection::LicenseNotAccepted(edition) => ("install.license_not_accepted", one(edition)),
+            Rejection::EmulatorNeedsSmallPages(_) => ("install.needs_small_pages", Vec::new()),
+            Rejection::MachineNotAtHome(service) => ("install.machine_not_at_home", one(service)),
+            Rejection::AddOnWithoutTheHub(service) => ("install.needs_home_assistant", one(service)),
+            Rejection::ZigbeeWithoutAStick => ("install.zigbee_no_stick", Vec::new()),
+            Rejection::StickMissing { service, device } => ("install.stick_missing", vec![service.to_string(), device.clone()]),
+            Rejection::OverlapsAudioHub(service) => ("install.player_in_hub", one(service)),
+            Rejection::HubOverlapsPlayer(player) => ("install.hub_has_player", one(player)),
+            Rejection::SiteNameTaken(names) => ("install.site_name_taken", names.clone()),
+            Rejection::Incompatible(_) => ("install.incompatible", Vec::new()),
+            Rejection::InstallAlreadyRunning(job) => ("install.already_running", one(job)),
+            Rejection::UnknownJob(_) => ("install.unknown_job", Vec::new()),
+        }
     }
 }
 
@@ -1173,6 +1214,7 @@ fn apply_shairport(input: &mut Input, req: &pb::InstallServiceRequest) {
     input.shairport_output = setting_or(req, "shairport_output", &input.shairport_output);
     input.shairport_options = setting_or(req, "shairport_options", &input.shairport_options);
     input.uxplay_name = setting_or(req, "uxplay_name", &input.uxplay_name);
+    input.speaker_name = setting_or(req, "speaker_name", &input.speaker_name);
 }
 
 /// Names, versions and lists: absent means empty, never a default
@@ -1492,7 +1534,11 @@ fn refuse_unworkable_request(req: &pb::InstallServiceRequest, label: &str, input
         return Err(Rejection::StickMissing { service, device });
     }
     if let Some(service) = packaged::audio_hub_overlap(label) {
-        return Err(Rejection::OverlapsAudioHub(service));
+        return Err(if label == odio::SERVICE_ID {
+            Rejection::HubOverlapsPlayer(service)
+        } else {
+            Rejection::OverlapsAudioHub(service)
+        });
     }
     if label != "uxplay" && packaged::find(label).is_none() && !caddy_is_installed() && !can_install_packages() {
         return Err(Rejection::NoReverseProxy);
@@ -1841,7 +1887,7 @@ async fn dispatch_install_1(
         "shairport-sync" => Some(install_shairport_sync_steps(input, sink).await),
         "uxplay" => Some(install_uxplay_steps(input, sink).await),
         "odio" => Some(install_odio_steps(input, sink).await),
-        id if packaged::find(id).is_some() => Some(install_packaged_steps(id, sink).await),
+        id if packaged::find(id).is_some() => Some(install_packaged_steps(id, &input.speaker_name, sink).await),
         "ollama" => Some(install_ollama_steps(input, sink).await),
         "open-webui" => Some({
             let services = host_service_ids(label, protocols).await;
@@ -1919,6 +1965,7 @@ async fn install(
         sequence: AtomicU64::new(0),
     };
     let _ = sink.started(compose_project(label)).await;
+    take_written_sites(label);
     if matches!(host_ctx.role, Some(HostRole::VpsRelay)) {
         remember_relay_home(&host_ctx);
     }
@@ -1962,6 +2009,7 @@ async fn install(
         return;
     }
 
+    drop_stale_sites(label, &sink).await;
     let status = read_status(&service_id, &store).await;
     crate::vpn_dns::wake();
     let _ = sink.completed(status).await;
@@ -3858,9 +3906,9 @@ async fn install_shairport_sync_steps(input: &Input, sink: &EventSink) -> Result
 }
 
 /// A port of `PackagedAudioService.setupSteps`
-async fn install_packaged_steps(id: &str, sink: &EventSink) -> Result<(), String> {
+async fn install_packaged_steps(id: &str, speaker_name: &str, sink: &EventSink) -> Result<(), String> {
     let Some(spec) = packaged::find(id) else { return Err(format!("unknown service {id}")) };
-    packages::run_outside_sandbox(&packaged::setup_script(spec), &format!("installing {}", spec.display), sink).await?;
+    packages::run_outside_sandbox(&packaged::named_setup_script(spec, speaker_name), &format!("installing {}", spec.display), sink).await?;
     open_service_firewall_ports(spec.id, spec.ports, sink).await;
     Ok(())
 }
@@ -6516,7 +6564,51 @@ fn site_name_conflicts_in(existing: &str, label: &str, input: &Input) -> Vec<Str
 }
 
 fn write_caddy_site(names: &[String], site: &str) -> Result<(), String> {
-    with_caddyfile_lock(|| write_caddy_site_locked(names, site))
+    with_caddyfile_lock(|| write_caddy_site_locked(names, site))?;
+    note_written_sites(&caddy::owner_of(site).unwrap_or_default(), names);
+    Ok(())
+}
+
+/// Names each service wrote during its running install
+static SITES_WRITTEN: std::sync::Mutex<std::collections::BTreeMap<String, Vec<String>>> =
+    std::sync::Mutex::new(std::collections::BTreeMap::new());
+
+fn note_written_sites(owner: &str, names: &[String]) {
+    let mut written = SITES_WRITTEN.lock().unwrap_or_else(|e| e.into_inner());
+    written.entry(owner.to_string()).or_default().extend(names.iter().cloned());
+}
+
+fn take_written_sites(owner: &str) -> Vec<String> {
+    SITES_WRITTEN.lock().unwrap_or_else(|e| e.into_inner()).remove(owner).unwrap_or_default()
+}
+
+/// Takes a service's old web addresses off Caddy
+async fn drop_stale_sites(label: &str, sink: &EventSink) {
+    let current = take_written_sites(label);
+    if current.is_empty() {
+        return;
+    }
+    let changed = with_caddyfile_lock(|| {
+        let existing = std::fs::read_to_string(CADDYFILE_PATH).unwrap_or_default();
+        let pruned = caddy::without_stale_sites(&existing, label, &current);
+        if pruned == existing {
+            return Ok(false);
+        }
+        std::fs::write(CADDYFILE_PREVIOUS, &existing).map_err(|err| err.to_string())?;
+        write_replacing(Path::new(CADDYFILE_PATH), &pruned).map(|()| true)
+    });
+    match changed {
+        Ok(true) => {
+            let _ = sink.step("removing the old web address").await;
+            if let Err(why) = reload_caddy(sink).await {
+                let _ = sink.step(&format!("the old web address stays: {why}")).await;
+            }
+        }
+        Ok(false) => {}
+        Err(why) => {
+            let _ = sink.step(&format!("the old web address stays: {why}")).await;
+        }
+    }
 }
 
 fn write_caddy_site_locked(names: &[String], site: &str) -> Result<(), String> {
@@ -8375,7 +8467,7 @@ mod tests {
         "home_assistant_hostname", "home_assistant_path", "machine_at_home",
         "home_assistant_usb_device", "mosquitto_path",
         "shairport_path", "shairport_mode", "shairport_name", "shairport_output",
-        "shairport_options", "zigbee2mqtt_path", "zigbee2mqtt_hostname", "uxplay_name", "odio_path", "odio_hostname",
+        "shairport_options", "zigbee2mqtt_path", "zigbee2mqtt_hostname", "uxplay_name", "speaker_name", "odio_path", "odio_hostname",
         "minecraft_java_path", "minecraft_java_version", "minecraft_java_flavour",
         "minecraft_java_memory_mb", "minecraft_java_port", "minecraft_java_accepts_eula",
         "minecraft_java_whitelist", "minecraft_java_operators", "minecraft_java_mods",

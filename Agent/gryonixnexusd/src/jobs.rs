@@ -209,7 +209,7 @@ impl Inner {
         running_guard().remove(&self.job_id);
         let shown_on_island = crate::live::finished(&self.job_id, failure);
         if !shown_on_island && !cancelled {
-            crate::notify::job_ended(self.kind, &self.subject, now_unix() - self.started, failure);
+            crate::notify::job_ended(self.kind, &self.subject, now_unix() - self.started, failure, &self.job_id);
         }
     }
 }
@@ -665,10 +665,12 @@ pub async fn run_cancel_job(codec: Codec, req: pb::CancelJobRequest) -> Resp {
         });
     }
     if !ask_to_stop(&req.job_id) {
-        return connect_error(
+        return crate::api::connect_refusal(
             StatusCode::FAILED_DEPENDENCY,
             "failed_precondition",
             "this run cannot be stopped once it has started",
+            "jobs.cannot_stop",
+            &[],
         );
     }
     for _ in 0..50 {

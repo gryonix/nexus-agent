@@ -80,6 +80,8 @@ pub struct Input {
     pub shairport_options: String,
     /// `ServiceSettings.uxplayName`, the screen's name on the phones.
     pub uxplay_name: String,
+    /// `ServiceSettings.speakerName`; empty keeps the machine's name.
+    pub speaker_name: String,
     /// `ServiceSettings.odioPath`, Swift default `/opt/odio`.
     pub odio_path: String,
     /// `ServiceSettings.odioHostname`; empty means `odio.<domain>`.
@@ -199,7 +201,7 @@ impl Default for Input {
             zigbee2mqtt_path: "/opt/zigbee2mqtt".to_string(), zigbee2mqtt_hostname: String::new(),
             shairport_path: "/opt/shairport-sync".to_string(), shairport_mode: "airplay2".to_string(),
             shairport_name: "gryonix".to_string(), shairport_output: "default".to_string(), shairport_options: String::new(),
-            uxplay_name: "gryonix TV".to_string(), odio_path: "/opt/odio".to_string(), odio_hostname: String::new(),
+            uxplay_name: "gryonix TV".to_string(), speaker_name: String::new(), odio_path: "/opt/odio".to_string(), odio_hostname: String::new(),
             minecraft_java_path: "/opt/minecraft-java".to_string(), minecraft_java_version: String::new(),
             minecraft_java_flavour: "PAPER".to_string(), minecraft_java_memory_mb: 2048, minecraft_java_port: 25565,
             minecraft_java_accepts_eula: false, minecraft_java_whitelist: String::new(),

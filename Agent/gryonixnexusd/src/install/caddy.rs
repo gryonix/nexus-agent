@@ -79,6 +79,24 @@ pub fn same_owner(a: &str, b: &str) -> bool {
 
 /// The Caddyfile without the blocks one service owns
 pub fn without_owner(caddyfile: &str, owner: &str) -> String {
+    without_blocks(caddyfile, |block| owner_of(block).is_some_and(|found| same_owner(&found, owner)))
+}
+
+/// The Caddyfile without a service's blocks under other names
+pub fn without_stale_sites(caddyfile: &str, owner: &str, current: &[String]) -> String {
+    without_blocks(caddyfile, |block| {
+        owner_of(block).is_some_and(|found| same_owner(&found, owner))
+            && !header_names(block).iter().any(|name| current.contains(name))
+    })
+}
+
+/// The names a block's first line lists
+fn header_names(block: &str) -> Vec<String> {
+    let header = block.lines().next().unwrap_or_default().trim().trim_end_matches('{');
+    header.split(',').map(|name| name.trim().to_string()).filter(|name| !name.is_empty()).collect()
+}
+
+fn without_blocks(caddyfile: &str, dropped: impl Fn(&str) -> bool) -> String {
     let mut kept = String::new();
     let (mut block, mut depth) = (String::new(), 0i32);
     let mut skip_blank = false;
@@ -93,11 +111,11 @@ pub fn without_owner(caddyfile: &str, owner: &str) -> String {
         block.push_str(line);
         depth += line.matches('{').count() as i32 - line.matches('}').count() as i32;
         if depth <= 0 {
-            let owned = owner_of(&block).is_some_and(|found| same_owner(&found, owner));
-            if !owned {
+            let drop = dropped(&block);
+            if !drop {
                 kept.push_str(&block);
             }
-            skip_blank = owned;
+            skip_blank = drop;
             block.clear();
             depth = 0;
         }
@@ -1098,5 +1116,16 @@ mod tests {
         assert_eq!(SETUP_GUARD_RULES.matches(denial).count(), 3);
         assert!(SETUP_GUARD_RULES.starts_with("@gryonixnexus_setup_relay {\n    remote_ip 10.8.0.0/24\n    not remote_ip 10.8.0.254/32\n}\n"));
         assert!(SETUP_GUARD_RULES.ends_with(" 403\n"));
+    }
+
+    #[test]
+    fn a_moved_site_drops_its_old_name_and_keeps_its_neighbours() {
+        let file = "{\n\temail a@b.c\n}\n\nvault.example.com, vault.local {\n    # gryonixnexus: vaultwarden\n    reverse_proxy 127.0.0.1:8080\n}\n\nkeys.example.com {\n    # gryonixnexus: vaultwarden\n    reverse_proxy 127.0.0.1:8080\n}\n\nfiles.example.com {\n    # gryonixnexus: nextcloud\n    reverse_proxy 127.0.0.1:8081\n}\n";
+        let pruned = without_stale_sites(file, "vaultwarden", &["keys.example.com".to_string()]);
+        assert!(!pruned.contains("vault.example.com"), "{pruned}");
+        assert!(pruned.contains("keys.example.com {"), "{pruned}");
+        assert!(pruned.contains("files.example.com {"), "{pruned}");
+        assert!(pruned.contains("email a@b.c"), "{pruned}");
+        assert_eq!(without_stale_sites(file, "vaultwarden", &["vault.example.com".to_string(), "keys.example.com".to_string()]), file);
     }
 }

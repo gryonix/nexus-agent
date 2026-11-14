@@ -1,10 +1,13 @@
 # Contributing
 
-Bug reports and ideas, described in words, are welcome. Code changes and pull requests are accepted only after the Licensor agrees to them in writing by e-mail beforehand.
+Bug reports and ideas, described in words, are welcome. A code change may be
+made only to send it to the Licensor for review; the Licensor may reject it
+without reason.
 
 The code is source-available, not open source: see [LICENSE](LICENSE). You may
-not change, build or run it without the Licensor's written consent by e-mail;
-you may send a proposed change only after that consent.
+not build, run, copy, fork or distribute it without the Licensor's written
+consent by e-mail, and a change made for review may not be compiled, run, kept
+or shared for any other purpose.
 
 ## How a change lands
 

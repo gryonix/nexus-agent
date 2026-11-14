@@ -165,7 +165,7 @@ mod tests {
         let loopback: IpAddr = "127.0.0.1".parse().unwrap();
         assert!(connects(loopback, open).await);
         drop(listener);
-        assert!(!connects(loopback, open).await);
+        assert!(!connects(loopback, 1).await);
     }
 }
 
@@ -187,12 +187,22 @@ pub async fn get_local_aliases(codec: Codec, _req: pb::GetLocalAliasesRequest) -
     encode_aliases(codec)
 }
 
+/// Caddy kept its settings and did not take the change
+pub(crate) fn caddy_refused(why: &str) -> Resp {
+    crate::api::connect_reason(StatusCode::UNPROCESSABLE_ENTITY, "failed_precondition", why, "sites.caddy_refused")
+}
+
+/// The firewall did not take the rules
+fn rules_refused(why: &str) -> Resp {
+    crate::api::connect_reason(StatusCode::UNPROCESSABLE_ENTITY, "failed_precondition", why, "firewall.rules_refused")
+}
+
 /// Adds or removes one site's .local name
 pub async fn set_local_alias(codec: Codec, req: pb::SetLocalAliasRequest) -> Resp {
     let host = req.host.trim().to_ascii_lowercase();
     let edit = |existing: &str| crate::install::local_alias::with_local_alias(existing, &host, req.on);
     if let Err(why) = crate::install::execute::apply_caddyfile_edit(edit).await {
-        return connect_error(StatusCode::UNPROCESSABLE_ENTITY, "failed_precondition", &why);
+        return caddy_refused(&why);
     }
     encode_aliases(codec)
 }
@@ -207,7 +217,7 @@ pub async fn set_home_only_ports(codec: Codec, req: pb::SetHomeOnlyPortsRequest)
     };
     let text = home_only_ports::rules(&ports);
     if let Err(why) = firewall::apply_rules(home_only_ports::LABEL, &text).await {
-        return connect_error(StatusCode::UNPROCESSABLE_ENTITY, "failed_precondition", &why);
+        return rules_refused(&why);
     }
     if text.is_empty() {
         let _ = tokio::process::Command::new(firewall::nft_bin())
@@ -219,4 +229,17 @@ pub async fn set_home_only_ports(codec: Codec, req: pb::SetHomeOnlyPortsRequest)
     codec
         .encode(&pb::SetHomeOnlyPortsResponse { ports: kept })
         .unwrap_or_else(|err| connect_error(StatusCode::INTERNAL_SERVER_ERROR, "internal", &err.to_string()))
+}
+
+#[cfg(test)]
+mod unreadable_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn caddy_and_the_firewall_refuse_by_their_own_reasons() {
+        let caddy = caddy_refused("caddy validate failed");
+        assert_eq!(caddy.status(), StatusCode::UNPROCESSABLE_ENTITY);
+        assert_eq!(crate::api::reason_of(caddy).await, "sites.caddy_refused");
+        assert_eq!(crate::api::reason_of(rules_refused("nft: syntax error")).await, "firewall.rules_refused");
+    }
 }

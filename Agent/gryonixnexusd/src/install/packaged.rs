@@ -122,14 +122,49 @@ fn unit_list(spec: &Spec) -> String {
     spec.units.iter().map(|unit| format!("{unit}.service")).collect::<Vec<_>>().join(" ")
 }
 
+const NAME_FORBIDDEN: &str = "\"\\$`%'/&|";
+const NAME_LIMIT: usize = 40;
+
+/// A port of `PackagedAudioService.speakerName(_:)`
+pub fn speaker_name(asked: &str) -> String {
+    let kept: String = asked
+        .chars()
+        .filter(|c| (*c as u32) >= 0x20 && *c as u32 != 0x7f && !NAME_FORBIDDEN.contains(*c))
+        .collect();
+    kept.trim().chars().take(NAME_LIMIT).collect::<String>().trim().to_string()
+}
+
+/// A port of `PackagedAudioService.nameSetup(_:)`
+fn name_setup(id: &str, name: &str) -> String {
+    if name.is_empty() {
+        return String::new();
+    }
+    match id {
+        "raspotify" => format!("sed -i 's/^#\\?LIBRESPOT_NAME=.*/LIBRESPOT_NAME=\"{name}\"/' /etc/raspotify/conf\n"),
+        "bluealsa" => format!(
+            "if [ -f /etc/bluetooth/main.conf ]; then sed -i 's/^#\\?Name *=.*/Name = {name}/' /etc/bluetooth/main.conf; fi\nbluetoothctl system-alias '{name}' >/dev/null 2>&1 || true\n"
+        ),
+        "upmpdcli" => format!(
+            "touch /etc/upmpdcli.conf\nsed -i '/^#\\?friendlyname *=/d' /etc/upmpdcli.conf\necho 'friendlyname = {name}' >> /etc/upmpdcli.conf\n"
+        ),
+        _ => String::new(),
+    }
+}
+
 /// A port of `PackagedAudioService.setupSteps(_:)`
 pub fn setup_script(spec: &Spec) -> String {
+    named_setup_script(spec, "")
+}
+
+/// The setup script, with the speaker named
+pub fn named_setup_script(spec: &Spec, asked_name: &str) -> String {
+    let naming = name_setup(spec.id, &speaker_name(asked_name));
     let apt = super::packages::apt_quiet();
     let packages = spec.packages.join(" ");
     let units = unit_list(spec);
     let marker = marker(spec.id);
     format!(
-        "set -e\n{apt} install -yq {packages}\n{extra}systemctl daemon-reload\nsystemctl enable {units}\nsystemctl restart {units}\ninstall -d -m 755 /var/lib/gryonixnexus/packaged\ntouch {marker}\n",
+        "set -e\n{apt} install -yq {packages}\n{extra}{naming}systemctl daemon-reload\nsystemctl enable {units}\nsystemctl restart {units}\ninstall -d -m 755 /var/lib/gryonixnexus/packaged\ntouch {marker}\n",
         extra = spec.extra_setup,
     )
 }

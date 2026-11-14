@@ -574,6 +574,14 @@ async fn route_update(path: &str, codec: Codec, bytes: Bytes) -> anyhow::Result<
             let req: pb::AppModuleSet = codec.decode(&bytes)?;
             Ok(crate::app_modules::set_app_modules(codec, req).await)
         }).map(Some),
+        "/gryonixnexusd.v1.ServiceNames/GetServiceNames" => ({
+            let req: pb::GetServiceNamesRequest = codec.decode(&bytes)?;
+            Ok(crate::service_names::get_service_names(codec, req).await)
+        }).map(Some),
+        "/gryonixnexusd.v1.ServiceNames/SetServiceName" => ({
+            let req: pb::SetServiceNameRequest = codec.decode(&bytes)?;
+            Ok(crate::service_names::set_service_name(codec, req).await)
+        }).map(Some),
         "/gryonixnexusd.v1.Audio/ListAudioOutputs" => ({
             let req: pb::ListAudioOutputsRequest = codec.decode(&bytes)?;
             Ok(crate::audio_outputs::list_audio_outputs(codec, req).await)
@@ -1301,7 +1309,35 @@ fn lock(store: &Arc<Mutex<Store>>) -> std::sync::MutexGuard<'_, Store> {
 }
 
 pub fn connect_error(status: StatusCode, code: &str, message: &str) -> Resp {
-    let body = serde_json::json!({ "code": code, "message": message }).to_string();
+    error_response(status, serde_json::json!({ "code": code, "message": message }))
+}
+
+/// An error with a reason when it has one
+pub fn connect_reasoned(status: StatusCode, code: &str, message: &str, reason: Option<&str>) -> Resp {
+    match reason {
+        Some(reason) => connect_refusal(status, code, message, reason, &[]),
+        None => connect_error(status, code, message),
+    }
+}
+
+/// An error the app can match by its stable reason
+pub fn connect_refusal(status: StatusCode, code: &str, message: &str, reason: &str, args: &[String]) -> Resp {
+    error_response(status, serde_json::json!({ "code": code, "message": message, "reason": reason, "args": args }))
+}
+
+/// An error with a stable reason and no values
+pub fn connect_reason(status: StatusCode, code: &str, message: &str, reason: &str) -> Resp {
+    connect_refusal(status, code, message, reason, &[])
+}
+
+/// The container engine does not answer
+pub fn engine_unavailable(detail: &str) -> Resp {
+    let message = format!("container engine unavailable: {detail}");
+    connect_refusal(StatusCode::SERVICE_UNAVAILABLE, "unavailable", &message, "host.docker_unavailable", &[])
+}
+
+fn error_response(status: StatusCode, body: serde_json::Value) -> Resp {
+    let body = body.to_string();
     Response::builder()
         .status(status)
         .header(CONTENT_TYPE, "application/json")
@@ -1478,5 +1514,50 @@ mod tests {
         assert_eq!(frames.len(), 1);
         assert_eq!(frames[0][0], END_OF_STREAM_FLAG);
         assert_eq!(strip_envelope(&frames[0]), b"{}");
+    }
+}
+
+/// The stable reason an error answer carries, or empty
+#[cfg(test)]
+pub(crate) async fn reason_of(resp: Resp) -> String {
+    let bytes = resp.into_body().collect().await.expect("body").to_bytes();
+    let json: serde_json::Value = serde_json::from_slice(&bytes).expect("json");
+    json["reason"].as_str().unwrap_or_default().to_string()
+}
+
+#[cfg(test)]
+mod reason_tests {
+    use super::*;
+
+    async fn body(resp: Resp) -> serde_json::Value {
+        let bytes = resp.into_body().collect().await.expect("body").to_bytes();
+        serde_json::from_slice(&bytes).expect("json")
+    }
+
+    #[tokio::test]
+    async fn a_reasoned_error_keeps_its_code_and_text_and_adds_the_reason() {
+        let resp = connect_reason(StatusCode::UNPROCESSABLE_ENTITY, "failed_precondition", "no room", "move.no_space");
+        assert_eq!(resp.status(), StatusCode::UNPROCESSABLE_ENTITY);
+        let json = body(resp).await;
+        assert_eq!(json["code"], "failed_precondition");
+        assert_eq!(json["message"], "no room");
+        assert_eq!(json["reason"], "move.no_space");
+        assert_eq!(json["args"], serde_json::json!([]));
+    }
+
+    #[tokio::test]
+    async fn a_silent_container_engine_is_unavailable_with_its_own_reason() {
+        let resp = engine_unavailable("no socket");
+        assert_eq!(resp.status(), StatusCode::SERVICE_UNAVAILABLE);
+        let json = body(resp).await;
+        assert_eq!(json["code"], "unavailable");
+        assert_eq!(json["message"], "container engine unavailable: no socket");
+        assert_eq!(json["reason"], "host.docker_unavailable");
+    }
+
+    #[tokio::test]
+    async fn a_plain_error_carries_no_reason() {
+        let json = body(connect_error(StatusCode::BAD_REQUEST, "invalid_argument", "bad")).await;
+        assert!(json.get("reason").is_none());
     }
 }
