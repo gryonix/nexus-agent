@@ -48,6 +48,7 @@ pub mod jellyfin;
 pub mod home_assistant;
 pub mod mosquitto;
 pub mod zigbee2mqtt;
+pub mod cec_volume;
 pub mod shairport_sync;
 pub mod packaged;
 pub mod compat;

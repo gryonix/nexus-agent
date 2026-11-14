@@ -2,15 +2,29 @@
 
 use super::caddy;
 
-/// The .local name a public site gets
+/// The .local name a site gets beside its own
 pub fn alias_for(host: &str) -> Option<String> {
+    if host.parse::<std::net::IpAddr>().is_ok() {
+        return None;
+    }
     let label = host.split('.').next()?.to_ascii_lowercase();
     let valid = !label.is_empty()
         && label.len() <= 63
         && label.chars().all(|c| c.is_ascii_alphanumeric() || c == '-')
         && !label.starts_with('-')
         && !label.ends_with('-');
-    (valid && !host.ends_with(".local")).then(|| format!("{label}.local"))
+    let alias = format!("{label}.local");
+    (valid && !host.eq_ignore_ascii_case(&alias)).then_some(alias)
+}
+
+/// Whether a listed name is the .local name of another
+pub fn is_alias_among(name: &str, listed: &[String]) -> bool {
+    listed.iter().any(|host| host != name && alias_for(host).as_deref() == Some(name))
+}
+
+/// Gives every listed site its .local name where it is free
+pub fn with_home_names(caddyfile: &str, hosts: &[String]) -> String {
+    hosts.iter().fold(caddyfile.to_string(), |file, host| with_local_alias(&file, host, true).unwrap_or(file))
 }
 
 fn header_names(block: &str) -> Option<Vec<String>> {
@@ -89,6 +103,37 @@ mod tests {
         let clash = format!("{FILE}\nvault.local {{\n    respond 200\n}}\n");
         assert!(with_local_alias(&clash, "vault.example.com", true).is_err());
         assert_eq!(alias_for("Photos.example.com").as_deref(), Some("photos.local"));
-        assert_eq!(alias_for("photos.home.local"), None);
+        assert_eq!(alias_for("photos.home.local").as_deref(), Some("photos.local"));
+        assert_eq!(alias_for("odio.local"), None);
+        assert_eq!(alias_for("192.168.1.5"), None);
+    }
+
+    const HOME: &str = "{\n    email a@b.c\n}\n\nvault.home.lan {\n    # gryonixnexus: vaultwarden\n    tls internal\n    reverse_proxy 127.0.0.1:8082\n}\n\ncloud.home.local {\n    # gryonixnexus: nextcloud\n    tls internal\n    reverse_proxy 127.0.0.1:8080\n}\n\nodio.local {\n    tls internal\n}\n";
+
+    #[test]
+    fn home_sites_get_their_short_names_once() {
+        let hosts = ["vault.home.lan".to_string(), "cloud.home.local".to_string(), "odio.local".to_string()];
+        let named = with_home_names(HOME, &hosts);
+        assert!(named.contains("vault.home.lan, vault.local {"), "{named}");
+        assert!(named.contains("cloud.home.local, cloud.local {"), "{named}");
+        assert!(named.contains("\nodio.local {"), "{named}");
+        assert_eq!(with_home_names(&named, &hosts), named);
+    }
+
+    #[test]
+    fn a_short_name_another_site_holds_is_left_alone() {
+        let taken = HOME.replace("odio.local {", "vault.local {");
+        let named = with_home_names(&taken, &["vault.home.lan".to_string()]);
+        assert!(named.contains("vault.home.lan {"), "{named}");
+    }
+
+    #[test]
+    fn installing_again_keeps_one_block_with_its_short_name() {
+        let hosts = ["cloud.home.local".to_string()];
+        let named = with_home_names(HOME, &hosts);
+        let fresh = "cloud.home.local {\n    # gryonixnexus: nextcloud\n    tls internal\n    reverse_proxy 127.0.0.1:8081\n}";
+        let again = with_home_names(&caddy::merge_site(&named, &hosts, fresh), &hosts);
+        assert_eq!(again.matches("cloud.home.local").count(), 1, "{again}");
+        assert!(again.contains("cloud.home.local, cloud.local {\n    # gryonixnexus: nextcloud\n    tls internal\n    reverse_proxy 127.0.0.1:8081"), "{again}");
     }
 }

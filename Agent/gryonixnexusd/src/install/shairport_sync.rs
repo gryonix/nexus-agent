@@ -51,8 +51,9 @@ pub fn compose_contents(input: &Input) -> String {
     let image = image(input);
     let name = speaker_name(input);
     let device = output_device(input);
+    let mount = if cec_volume(input).enabled { format!("\n      - {CEC_PIPE_DIRECTORY}:{CEC_PIPE_DIRECTORY}") } else { String::new() };
     format!(
-        "services:\n  shairport-sync:\n    image: {image}\n    container_name: {CONTAINER}\n    restart: unless-stopped\n    # Finding the speaker and streaming to it use the host's network.\n    network_mode: host\n    devices:\n      - /dev/snd\n    volumes:\n      - ./{CONFIG_FILE}:/etc/shairport-sync.conf:ro\n    command: -a \"{name}\" -o alsa -- -d {device}"
+        "services:\n  shairport-sync:\n    image: {image}\n    container_name: {CONTAINER}\n    restart: unless-stopped\n    # Finding the speaker and streaming to it use the host's network.\n    network_mode: host\n    devices:\n      - /dev/snd\n    volumes:\n      - ./{CONFIG_FILE}:/etc/shairport-sync.conf:ro{mount}\n    command: -a \"{name}\" -o alsa -- -d {device}"
     )
 }
 
@@ -83,6 +84,9 @@ const OPTIONS: &[(&str, &str, Kind)] = &[
     ("alsa", "output_format", Kind::Choice(&["auto", "S16", "S16_LE", "S24", "S24_3LE", "S32"])),
     ("alsa", "disable_standby_mode", Kind::Choice(&["never", "auto", "always"])),
     ("alsa", "disable_synchronization", Kind::Choice(&["yes", "no"])),
+    ("cec", "cec_volume", Kind::Choice(&["yes", "no"])),
+    ("cec", "cec_volume_min", Kind::Number(0.0, 100.0)),
+    ("cec", "cec_volume_max", Kind::Number(1.0, 100.0)),
 ];
 
 /// The written form of a valid value, or None
@@ -117,19 +121,58 @@ fn parsed_options(options: &str) -> Vec<(String, String)> {
         .collect()
 }
 
+/// The speaker's own volume, moved over HDMI
+pub struct CecVolume {
+    pub enabled: bool,
+    pub lowest: u32,
+    pub highest: u32,
+}
+
+pub const CEC_PIPE_DIRECTORY: &str = "/run/shairport-sync";
+const CEC_DEFAULT_LOWEST: u32 = 1;
+const CEC_DEFAULT_HIGHEST: u32 = 40;
+
+/// HDMI volume settings, defaults where missing or bad
+pub fn cec_volume(input: &Input) -> CecVolume {
+    let given = parsed_options(&input.shairport_options);
+    let find = |key: &str| given.iter().rev().find(|(name, _)| name == key).map(|(_, value)| value.clone());
+    let number = |key: &str, fallback: u32| {
+        let kind = OPTIONS.iter().find(|(_, name, _)| *name == key).map(|(_, _, kind)| *kind);
+        let text = find(key).unwrap_or_default();
+        match kind {
+            Some(kind) if rendered(kind, &text).is_some() => text.parse().unwrap_or(fallback),
+            _ => fallback,
+        }
+    };
+    let lowest = number("cec_volume_min", CEC_DEFAULT_LOWEST);
+    let highest = number("cec_volume_max", CEC_DEFAULT_HIGHEST);
+    CecVolume {
+        enabled: find("cec_volume").as_deref() == Some("yes"),
+        lowest: lowest.min(highest.saturating_sub(1)),
+        highest,
+    }
+}
+
+const METADATA_BLOCK: &str = "metadata = {\n  enabled = \"yes\";\n  include_cover_art = \"no\";\n  pipe_name = \"/run/shairport-sync/metadata\";\n  pipe_timeout = 5000;\n};\n";
+
 /// A port of `ShairportSyncService.configContents(_:)`
 pub fn config_contents(input: &Input) -> String {
     let given = parsed_options(&input.shairport_options);
+    let cec = cec_volume(input).enabled;
     let mut out = String::new();
     for section in ["general", "alsa"] {
         out.push_str(&format!("{section} = {{\n"));
         for (_, key, kind) in OPTIONS.iter().filter(|(owner, _, _)| *owner == section) {
-            let value = given.iter().rev().find(|(name, _)| name == key).map(|(_, value)| value.as_str());
+            let forced = (cec && *key == "ignore_volume_control").then_some("yes");
+            let value = forced.or_else(|| given.iter().rev().find(|(name, _)| name == key).map(|(_, value)| value.as_str()));
             if let Some(line) = value.and_then(|value| rendered(*kind, value)) {
                 out.push_str(&format!("  {key} = {line};\n"));
             }
         }
         out.push_str("};\n");
+    }
+    if cec {
+        out.push_str(METADATA_BLOCK);
     }
     out
 }
@@ -166,6 +209,19 @@ mod tests {
 
     fn base() -> Input {
         Input { domain: "example.com".to_string(), ..Input::default() }
+    }
+
+    #[test]
+    fn hdmi_volume_forces_the_slider_off_and_shares_the_metadata_pipe() {
+        let mut input = base();
+        input.shairport_options = "cec_volume=yes;cec_volume_min=5;cec_volume_max=60".to_string();
+        assert_eq!(config_contents(&input), "general = {\n  ignore_volume_control = \"yes\";\n};\nalsa = {\n};\nmetadata = {\n  enabled = \"yes\";\n  include_cover_art = \"no\";\n  pipe_name = \"/run/shairport-sync/metadata\";\n  pipe_timeout = 5000;\n};\n");
+        assert!(compose_contents(&input).contains(":/etc/shairport-sync.conf:ro\n      - /run/shairport-sync:/run/shairport-sync\n    command:"));
+        input.shairport_options = "cec_volume=no".to_string();
+        assert_eq!(config_contents(&input), "general = {\n};\nalsa = {\n};\n");
+        input.shairport_options = "cec_volume=yes;cec_volume_min=50;cec_volume_max=10".to_string();
+        let volume = cec_volume(&input);
+        assert_eq!((volume.enabled, volume.lowest, volume.highest), (true, 9, 10));
     }
 
     #[test]

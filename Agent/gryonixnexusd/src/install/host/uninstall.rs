@@ -263,7 +263,7 @@ fn spec_for_3(id: &str, input: &Input, backups: &BackupPaths) -> Option<Spec> {
             config_directory: Some(input.shairport_path.clone()),
             data_paths: Vec::new(),
             backup_dirs: Vec::new(),
-            pre_steps: Vec::new(),
+            pre_steps: vec![crate::install::cec_volume::removal_script()],
             post_steps: Vec::new(),
         }),
         id if crate::install::packaged::find(id).is_some() => Some(Spec {

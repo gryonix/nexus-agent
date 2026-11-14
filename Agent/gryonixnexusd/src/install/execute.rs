@@ -48,6 +48,7 @@ use super::home_assistant;
 use super::mosquitto;
 use super::zigbee2mqtt;
 use super::compat;
+use super::cec_volume;
 use super::shairport_sync;
 use super::packaged;
 use super::uxplay;
@@ -3901,6 +3902,7 @@ async fn install_shairport_sync_steps(input: &Input, sink: &EventSink) -> Result
     compose_up(shairport_sync::COMPOSE_PROJECT, &dir, sink).await?;
 
     open_service_firewall_ports(shairport_sync::SERVICE_ID, &shairport_sync::firewall_ports(input), sink).await;
+    packages::run_outside_sandbox(&cec_volume::setup_script(input), "setting up the speaker's HDMI volume", sink).await?;
 
     Ok(())
 }
@@ -6638,6 +6640,7 @@ fn write_caddy_site_locked(names: &[String], site: &str) -> Result<(), String> {
         }
     }
     let merged = crate::open_api::reapplied(&caddy::merge_site(&existing, names, site));
+    let merged = if caddy::serves_own_certificate(site) { super::local_alias::with_home_names(&merged, names) } else { merged };
     if !existing.is_empty() {
         std::fs::write(CADDYFILE_PREVIOUS, &existing)
             .map_err(|err| format!("could not keep a copy of {CADDYFILE_PATH}: {err}"))?;

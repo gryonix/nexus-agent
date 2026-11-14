@@ -408,13 +408,18 @@ pub fn merge_site(existing: &str, new_site_names: &[String], new_site: &str) -> 
     caddyfile(&blocks)
 }
 
+/// Whether the site signs its own certificate
+pub fn serves_own_certificate(site: &str) -> bool {
+    site.lines().any(|line| line.trim() == "tls internal")
+}
+
 /// The .local names of an old block for these sites
 fn replaced_aliases(block: &str, names: &[String]) -> Option<Vec<String>> {
     let header = block.lines().next()?.trim().strip_suffix('{')?;
     let listed: Vec<String> = header.split(',').map(|name| name.trim().to_string()).collect();
-    let (local, public): (Vec<String>, Vec<String>) = listed.into_iter().partition(|name| name.ends_with(".local"));
-    let ours = local.iter().all(|alias| public.iter().any(|host| super::local_alias::alias_for(host).as_ref() == Some(alias)));
-    (!local.is_empty() && ours && public == names).then_some(local)
+    let (local, public): (Vec<String>, Vec<String>) =
+        listed.iter().cloned().partition(|name| super::local_alias::is_alias_among(name, &listed));
+    (!local.is_empty() && public == names).then_some(local)
 }
 
 fn with_aliases(site: &str, header_prefix: &str, aliases: &[String]) -> String {
