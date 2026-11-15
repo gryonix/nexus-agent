@@ -79,7 +79,7 @@ fn move_functions() -> Vec<String> {
         "  if [ -e \"$old\" ]; then old=\"$old.$(date +%s)\"; fi",
         "  mv \"$target\" \"$old\" || return 1",
         "  install -d \"$target\" || return 1",
-        "  grep -qF \" $target none bind\" /etc/fstab || echo \"$source $target none bind,nofail,x-systemd.requires-mounts-for=$FAST 0 0\" >> /etc/fstab || return 1",
+        "  grep -qF \" $target none bind\" /etc/fstab || echo \"$source $target none bind,nofail,x-systemd.requires-mounts-for=$FAST,x-systemd.after=zfs-mount.service 0 0\" >> /etc/fstab || return 1",
         "  mount \"$target\" || return 1",
         "}",
         "move_project() {",

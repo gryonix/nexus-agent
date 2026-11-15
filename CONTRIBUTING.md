@@ -1,9 +1,13 @@
 # Contributing
 
-Bug reports, ideas and pull requests are welcome.
+Bug reports and ideas, described in words, are welcome. A code change may be
+made only to send it to the Licensor for review; the Licensor may reject it
+without reason.
 
 The code is source-available, not open source: see [LICENSE](LICENSE). You may
-build and run it privately only to prepare and test a change you send here.
+not build, run, copy, fork or distribute it without the Licensor's written
+consent by e-mail, and a change made for review may not be compiled, run, kept
+or shared for any other purpose.
 
 ## How a change lands
 

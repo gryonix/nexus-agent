@@ -19,6 +19,8 @@ fn curl_bin() -> PathBuf {
 /// One alert, ready for either channel
 #[derive(Clone, Debug, PartialEq)]
 pub struct Alert {
+    /// The catalog service the alert is about
+    pub service: Option<String>,
     pub job_id: Option<String>,
     /// The remote address a block button would ban
     pub address: Option<String>,
@@ -98,6 +100,9 @@ pub fn event_body(alert: &Alert, server_id: &str) -> Vec<u8> {
     if let Some(job_id) = &alert.job_id {
         data["job_id"] = json!(job_id);
     }
+    if let Some(service) = &alert.service {
+        data["service"] = json!(service);
+    }
     if let Some(address) = &alert.address {
         data["address"] = json!(address);
     }
@@ -138,7 +143,7 @@ pub async fn ntfy(base: &str, topic: &str, alert: &Alert) -> Sent {
 }
 
 /// The alert for a problem appearing or clearing
-pub fn alert(problem: &Problem, appeared: bool, host: &str, russian: bool) -> Alert {
+pub fn alert(problem: &Problem, appeared: bool, host: &str, language: &str) -> Alert {
     let base = match problem.kind {
         Kind::Raid => "gnx.alert.raid",
         Kind::Smart => "gnx.alert.smart",
@@ -148,20 +153,23 @@ pub fn alert(problem: &Problem, appeared: bool, host: &str, russian: bool) -> Al
         Kind::AgentUpdate => "gnx.alert.agent_update",
         Kind::DriveStale => "gnx.alert.drive_stale",
         Kind::DriveReadOnly => "gnx.alert.drive_readonly",
+        Kind::Load if problem.subject == "memory" => "gnx.alert.memory",
+        Kind::Load => "gnx.alert.load",
     };
     let key = if appeared { base.to_string() } else { format!("{base}.ok") };
-    let (title, body) = texts(&key, russian);
-    let detail = state_words(&problem.detail, russian);
+    let (title, body) = crate::messages::alert(&key, language);
+    let detail = state_words(&problem.detail, language);
     let fill = |text: &str| text.replace("{host}", host).replace("{subject}", &problem.subject).replace("{detail}", detail);
     let body = match (appeared, problem.reason.is_empty()) {
         (true, false) => format!("{} {}", fill(body), problem.reason),
         _ => fill(body),
     };
     Alert {
+        service: None,
         job_id: None,
         address: None,
         at: None,
-        args: vec![host.to_string(), problem.subject.clone(), problem.detail.clone()],
+        args: vec![host.to_string(), problem.container().to_string(), problem.detail.clone()],
         title: fill(title),
         body,
         key,
@@ -169,23 +177,21 @@ pub fn alert(problem: &Problem, appeared: bool, host: &str, russian: bool) -> Al
 }
 
 /// A container state said the way people say it
-pub fn state_words(state: &str, russian: bool) -> &str {
-    match (state, russian) {
-        ("restarting", false) => "keeps restarting",
-        ("restarting", true) => "перезапускается по кругу",
-        ("stopped", false) => "stopped with an error",
-        ("stopped", true) => "остановился с ошибкой",
-        ("unhealthy", false) => "fails its health check",
-        ("unhealthy", true) => "не проходит проверку здоровья",
+pub fn state_words<'a>(state: &'a str, language: &str) -> &'a str {
+    match state {
+        "restarting" => crate::messages::text("state.restarting", language),
+        "stopped" => crate::messages::text("state.stopped", language),
+        "unhealthy" => crate::messages::text("state.unhealthy", language),
         _ => state,
     }
 }
 
 /// A one-off event: an ended run or an SSH sign-in
-pub fn event_alert(key: &str, host: &str, subject: &str, detail: &str, russian: bool) -> Alert {
-    let (title, body) = texts(key, russian);
+pub fn event_alert(key: &str, host: &str, subject: &str, detail: &str, language: &str) -> Alert {
+    let (title, body) = crate::messages::alert(key, language);
     let fill = |text: &str| text.replace("{host}", host).replace("{subject}", subject).replace("{detail}", detail);
     Alert {
+        service: None,
         job_id: None,
         address: None,
         at: None,
@@ -196,9 +202,10 @@ pub fn event_alert(key: &str, host: &str, subject: &str, detail: &str, russian: 
     }
 }
 
-pub fn test_alert(host: &str, russian: bool) -> Alert {
-    let (title, body) = texts("gnx.alert.test", russian);
+pub fn test_alert(host: &str, language: &str) -> Alert {
+    let (title, body) = crate::messages::alert("gnx.alert.test", language);
     Alert {
+        service: None,
         job_id: None,
         address: None,
         at: None,
@@ -209,57 +216,19 @@ pub fn test_alert(host: &str, russian: bool) -> Alert {
     }
 }
 
-type AlertText = (&'static str, &'static str);
-
-/// Alert keys with English and Russian title and body
-const TEXTS: &[(&str, AlertText, AlertText)] = &[
-    ("gnx.alert.raid", ("RAID problem on {host}", "{subject} is {detail}. Replace or re-add the failed disk."), ("Проблема RAID на {host}", "{subject}: {detail}. Замените или верните выпавший диск.")),
-    ("gnx.alert.raid.ok", ("RAID recovered on {host}", "{subject} is healthy again."), ("RAID восстановлен на {host}", "{subject} снова в порядке.")),
-    ("gnx.alert.smart", ("Disk failing on {host}", "{subject} failed its SMART check. Back up its data."), ("Диск выходит из строя на {host}", "{subject} не прошёл проверку SMART. Сохраните данные.")),
-    ("gnx.alert.smart.ok", ("Disk check passes on {host}", "{subject} passes its SMART check again."), ("Диск в порядке на {host}", "{subject} снова проходит проверку SMART.")),
-    ("gnx.alert.space", ("Disk almost full on {host}", "{subject} is {detail}% full."), ("Диск почти заполнен на {host}", "{subject} заполнен на {detail}%.")),
-    ("gnx.alert.space.ok", ("Space freed on {host}", "{subject} is below the limit again."), ("Место освободилось на {host}", "{subject} снова ниже порога.")),
-    ("gnx.alert.service", ("Service down on {host}", "{subject} {detail}."), ("Сервис не работает на {host}", "{subject} {detail}.")),
-    ("gnx.alert.service.ok", ("Service back on {host}", "{subject} runs again."), ("Сервис снова работает на {host}", "{subject} снова запущен.")),
-    ("gnx.alert.backup", ("Backup failed on {host}", "{subject}: {detail}"), ("Резервная копия не удалась на {host}", "{subject}: {detail}")),
-    ("gnx.alert.backup.ok", ("Backup works again on {host}", "{subject} backed up successfully."), ("Резервная копия снова работает на {host}", "{subject}: копия сделана.")),
-    ("gnx.alert.drive_stale", ("Backup drive {subject} is out of date on {host}", "No new copy reached it for {detail} days. Plug it in or check it."), ("Накопитель {subject} давно без копий на {host}", "Новых копий на нём нет уже {detail} дн. Подключите его или проверьте.")),
-    ("gnx.alert.drive_stale.ok", ("Backup drive {subject} is up to date on {host}", "A fresh copy is on it."), ("Накопитель {subject} снова с копиями на {host}", "На нём свежая копия.")),
-    ("gnx.alert.drive_readonly", ("Backup drive {subject} went read-only on {host}", "Its filesystem found errors and stopped writing. Check the drive in the app."), ("Накопитель {subject} только для чтения на {host}", "Файловая система нашла ошибки и перестала писать. Проверьте накопитель в приложении.")),
-    ("gnx.alert.drive_readonly.ok", ("Backup drive {subject} is writable again on {host}", "It takes copies again."), ("Накопитель {subject} снова записывается на {host}", "Копии на него снова пишутся.")),
-    ("gnx.alert.agent_update", ("Agent update for {host}", "Version {subject} is out. Update it from the app."), ("Обновление агента для {host}", "Вышла версия {subject}. Обновите её из приложения.")),
-    ("gnx.alert.operation", ("Finished on {host}", "{detail}: {subject}"), ("Готово на {host}", "{detail}: {subject}")),
-    ("gnx.alert.operation.started", ("{detail} started on {host}", "{subject}. Tap to follow it."), ("{detail} запущено на {host}", "{subject}. Нажмите, чтобы следить.")),
-    ("gnx.alert.operation.failed", ("Failed on {host}", "{detail}: {subject}"), ("Ошибка на {host}", "{detail}: {subject}")),
-    ("gnx.alert.ssh_login", ("SSH sign-in on {host}", "{subject} from {detail}"), ("Вход по SSH на {host}", "{subject} с адреса {detail}")),
-];
-
-const TEST_TEXT: (AlertText, AlertText) = (
-    ("Test from {host}", "Notifications from this server work."),
-    ("Проверка от {host}", "Уведомления с этого сервера работают."),
-);
-
-fn texts(key: &str, russian: bool) -> AlertText {
-    let (en, ru) = TEXTS
-        .iter()
-        .find(|(name, _, _)| *name == key)
-        .map_or(TEST_TEXT, |(_, en, ru)| (*en, *ru));
-    if russian { ru } else { en }
-}
-
 #[cfg(test)]
 mod tests {
     #[test]
     fn a_run_alert_carries_the_job_to_open() {
-        let mut alert = event_alert("gnx.alert.operation.started", "orion", "nextcloud", "Update", false);
+        let mut alert = event_alert("gnx.alert.operation.started", "orion", "nextcloud", "Update", "en");
         alert.job_id = Some("job-1".to_string());
         let body: serde_json::Value = serde_json::from_slice(&event_body(&alert, "srv")).unwrap();
         assert_eq!(body["data"]["job_id"], "job-1");
         assert_eq!(body["title"], "Update started on orion");
-        let plain: serde_json::Value = serde_json::from_slice(&event_body(&test_alert("h", false), "srv")).unwrap();
+        let plain: serde_json::Value = serde_json::from_slice(&event_body(&test_alert("h", "en"), "srv")).unwrap();
         assert!(plain["data"].get("job_id").is_none());
         assert!(plain["data"].get("address").is_none());
-        let mut login = event_alert("gnx.alert.ssh_login", "gvps", "root", "1.2.3.4 by key", false);
+        let mut login = event_alert("gnx.alert.ssh_login", "gvps", "root", "1.2.3.4 by key", "en");
         login.address = Some("1.2.3.4".into());
         let body: serde_json::Value = serde_json::from_slice(&event_body(&login, "srv")).unwrap();
         assert_eq!(body["data"]["address"], "1.2.3.4");
@@ -280,8 +249,8 @@ mod tests {
     fn a_looping_service_reads_plainly_in_both_languages() {
         use crate::health_watch::{Kind, Problem};
         let problem = Problem { id: "service:xray".into(), kind: Kind::Service, subject: "xray".into(), detail: "restarting".into(), reason: String::new() };
-        assert_eq!(alert(&problem, true, "vps", true).body, "xray перезапускается по кругу.");
-        assert_eq!(alert(&problem, true, "vps", false).body, "xray keeps restarting.");
+        assert_eq!(alert(&problem, true, "vps", "ru").body, "xray перезапускается по кругу.");
+        assert_eq!(alert(&problem, true, "vps", "en").body, "xray keeps restarting.");
     }
     use super::*;
     use ed25519_dalek::{Signature, Verifier};
@@ -306,9 +275,9 @@ mod tests {
     #[test]
     fn alerts_in_both_languages() {
         let problem = Problem { id: "space:/".into(), kind: Kind::Space, subject: "/".into(), detail: "93".into(), reason: String::new() };
-        let en = alert(&problem, true, "orion", false);
+        let en = alert(&problem, true, "orion", "en");
         assert_eq!((en.key.as_str(), en.title.as_str(), en.body.as_str()), ("gnx.alert.space", "Disk almost full on orion", "/ is 93% full."));
-        let ru = alert(&problem, false, "orion", true);
+        let ru = alert(&problem, false, "orion", "ru");
         assert_eq!((ru.key.as_str(), ru.title.as_str()), ("gnx.alert.space.ok", "Место освободилось на orion"));
         assert_eq!(ru.args, vec!["orion", "/", "93"]);
     }
@@ -320,7 +289,7 @@ mod tests {
 
     #[test]
     fn the_event_carries_the_key_and_the_server() {
-        let body: serde_json::Value = serde_json::from_slice(&event_body(&test_alert("h", false), "srv")).unwrap();
+        let body: serde_json::Value = serde_json::from_slice(&event_body(&test_alert("h", "en"), "srv")).unwrap();
         assert_eq!(body["data"]["kind"], "gnx.alert.test");
         assert!(body.get("loc_key").is_none());
         assert_eq!(body["data"]["server_id"], "srv");

@@ -37,6 +37,7 @@ fail() { log "$*"; exit 1; }
 case "$(uname -m)" in
   aarch64|arm64) ARCH="aarch64" ;;
   x86_64|amd64)  ARCH="x86_64" ;;
+  armv6l|armv7l|armhf) ARCH="arm" ;;
   *) fail "unsupported arch: $(uname -m)" ;;
 esac
 
@@ -548,7 +549,81 @@ install_docker() {
   command -v docker >/dev/null 2>&1
 }
 
-if [ "$NEEDS_BUILD" = 1 ]; then
+# A binary built and signed ahead of time, checked here before it is used:
+# its sha256, an Ed25519 signature by the release key, and its own version.
+# Anything missing or wrong falls back to the build from source below.
+BINARY_KEY_HEX="${GRYONIXNEXUSD_BINARY_KEY_HEX:-22e7be06fa63ad3319c386b23dfefaf0efc1e1f96560582bad42eeadecbb0be5}"
+PREBUILT=""
+fetch_prebuilt() {
+  local key="${1:-$ARCH}" name="${2:-gryonixnexusd}"
+  local list="$AGENT_DIR/binaries.txt" line url sum sig work got
+  [ -f "$list" ] && [ -z "${GRYONIXNEXUSD_NO_PREBUILT:-}" ] || return 1
+  line="$(awk -v v="$VERSION" -v a="$key" '$1 == "binary" && $2 == v && $3 == a { print; exit }' "$list")"
+  [ -n "$line" ] || return 1
+  url="$(echo "$line" | awk '{print $4}')"
+  sum="$(echo "$line" | awk '{print $5}')"
+  sig="$(echo "$line" | awk '{print $6}')"
+  for tool in curl openssl sha256sum base64; do
+    command -v "$tool" >/dev/null 2>&1 || { log "no $tool here, building from source"; return 1; }
+  done
+  work="$(mktemp -d)" || return 1
+  log "downloading the signed $name $VERSION for $key"
+  if ! curl -fsSL --max-time 300 -o "$work/$name" "$url"; then
+    log "the download failed, building from source"; rm -rf "$work"; return 1
+  fi
+  got="$(sha256sum "$work/$name" | cut -d' ' -f1)"
+  if [ "$got" != "$sum" ]; then
+    log "the download's checksum does not match, building from source"; rm -rf "$work"; return 1
+  fi
+  printf 'gryonixnexusd-binary\n%s\n%s\n%s\n' "$VERSION" "$key" "$sum" > "$work/signed"
+  printf '%s' "$sig" | base64 -d > "$work/signature" 2>/dev/null || { rm -rf "$work"; return 1; }
+  {
+    echo "-----BEGIN PUBLIC KEY-----"
+    printf '%b' "$(printf '302a300506032b6570032100%s' "$BINARY_KEY_HEX" | sed 's/../\\x&/g')" | base64
+    echo "-----END PUBLIC KEY-----"
+  } > "$work/key.pem"
+  if ! openssl pkeyutl -verify -pubin -inkey "$work/key.pem" -rawin -in "$work/signed" \
+      -sigfile "$work/signature" >/dev/null 2>&1; then
+    log "the download is not signed by the release key, building from source"; rm -rf "$work"; return 1
+  fi
+  chmod 0755 "$work/$name"
+  if [ "$("$work/$name" version 2>/dev/null | awk -v n="$name" '$1 == n {print $2; exit}')" != "$VERSION" ]; then
+    log "the download does not run as $name $VERSION, building from source"; rm -rf "$work"; return 1
+  fi
+  PREBUILT="$work/$name"
+}
+
+# Add-on programs: left ready in a cache, put in place by the agent when needed
+MODULES_ROOT="$PREFIX/usr/local/lib/gryonixnexus"
+MODULES_ACTIVE="$PREFIX/var/lib/gryonixnexus/agent/modules"
+MODULES_UPDATED="$PREFIX/var/lib/gryonixnexus/agent/modules-cache"
+install_modules() {
+  local module built core_prebuilt="$PREBUILT"
+  install -d -m 0755 "$MODULES_ROOT/modules-cache"
+  rm -rf "$MODULES_ROOT/modules"
+  # shellcheck disable=SC2043
+  for module in gryonixnexus-audio; do
+    built="$CRATE_DIR/target/release/$module"
+    if [ -n "$core_prebuilt" ]; then
+      PREBUILT=""
+      if fetch_prebuilt "$ARCH/${module#gryonixnexus-}" "$module"; then built="$PREBUILT"; else built=""; fi
+    fi
+    if [ -n "$built" ] && [ -x "$built" ]; then
+      install -m 0755 "$built" "$MODULES_ROOT/modules-cache/$module"
+      [ -f "$MODULES_ACTIVE/$module" ] && install -m 0755 "$built" "$MODULES_ACTIVE/$module"
+      rm -f "$MODULES_UPDATED/$module"
+      [ -n "$core_prebuilt" ] && rm -rf "$(dirname "$built")"
+    else
+      log "no $module for $VERSION here; its features wait for the next update"
+    fi
+  done
+  PREBUILT="$core_prebuilt"
+}
+
+if [ "$NEEDS_BUILD" = 1 ] && fetch_prebuilt; then
+  log "using the signed gryonixnexusd $VERSION for $ARCH, no build needed"
+  ARTIFACT="$PREBUILT"
+elif [ "$NEEDS_BUILD" = 1 ]; then
   if ! command -v docker >/dev/null 2>&1 && ! command -v cargo >/dev/null 2>&1; then
     install_docker || fail "no way to build the agent: installing docker failed, and this host has no Rust toolchain either"
   fi
@@ -561,13 +636,20 @@ if [ "$NEEDS_BUILD" = 1 ]; then
   fi
   ARTIFACT="$CRATE_DIR/target/release/gryonixnexusd"
   [ -x "$ARTIFACT" ] || fail "the build produced no binary at $ARTIFACT"
+fi
 
+if [ "$NEEDS_BUILD" = 1 ]; then
   # Stop before replacing: writing over the file of a running process fails with
   # "Text file busy", and a half-installed agent is worse than a stopped one.
+  # The running agent is kept, so a new one that does not start is undone.
   systemctl stop gryonixnexusd.service >/dev/null 2>&1 || true
   install -d -m 0755 "$(dirname "$BIN_DEST")"
+  rm -f "$BIN_DEST.previous"
+  [ -x "$BIN_DEST" ] && cp -p "$BIN_DEST" "$BIN_DEST.previous"
   install -m 0755 "$ARTIFACT" "$BIN_DEST"
+  install_modules
   rm -rf "$CRATE_DIR/target"
+  [ -n "$PREBUILT" ] && rm -rf "$(dirname "$PREBUILT")"
 fi
 
 # The unit is installed on every run, not just after a build: it is the one
@@ -601,10 +683,21 @@ fi
 # Verify rather than assume: `enable --now` succeeds on a unit whose binary dies
 # immediately, and the app's only entry point is the socket. Bounded wait — the
 # agent opens it right after start, so anything slower is a real failure.
-for _ in 1 2 3 4 5 6 7 8 9 10; do
-  systemctl is-active --quiet gryonixnexusd.service && [ -S "$PREFIX/run/gryonixnexusd.sock" ] && break
-  sleep 1
-done
+agent_answers() {
+  for _ in 1 2 3 4 5 6 7 8 9 10; do
+    systemctl is-active --quiet gryonixnexusd.service && [ -S "$PREFIX/run/gryonixnexusd.sock" ] && return 0
+    sleep 1
+  done
+  return 1
+}
+if ! agent_answers && [ "$NEEDS_BUILD" = 1 ] && [ -x "$BIN_DEST.previous" ]; then
+  log "gryonixnexusd $VERSION did not come up; putting the previous agent back"
+  systemctl stop gryonixnexusd.service >/dev/null 2>&1 || true
+  install -m 0755 "$BIN_DEST.previous" "$BIN_DEST"
+  systemctl restart gryonixnexusd.service
+  agent_answers || true
+  fail "gryonixnexusd $VERSION did not start, so the previous agent runs again — journalctl -u gryonixnexusd.service"
+fi
 systemctl is-active --quiet gryonixnexusd.service ||
   fail "gryonixnexusd.service did not stay up — journalctl -u gryonixnexusd.service"
 [ -S "$PREFIX/run/gryonixnexusd.sock" ] || fail "gryonixnexusd is running but never opened its socket"

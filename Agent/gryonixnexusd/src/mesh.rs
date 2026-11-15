@@ -44,7 +44,8 @@ impl Refusal {
             Refusal::BadRequest(_) => (StatusCode::BAD_REQUEST, "invalid_argument"),
             Refusal::Engine(_) => (StatusCode::INTERNAL_SERVER_ERROR, "internal"),
         };
-        connect_error(status, code, &self.to_string())
+        let reason = matches!(self, Refusal::NotInstalled).then_some("mesh.not_installed");
+        crate::api::connect_reasoned(status, code, &self.to_string(), reason)
     }
 }
 

@@ -591,6 +591,8 @@ fn users_script(app_public_key: &str) -> String {
         "set -u\n\
          VERDICT='{verdict}'\n\
          APP_KEY='{app_public_key}'\n\
+         APP_BLOB=\"${{APP_KEY#* }}\"\n\
+         APP_BLOB=\"${{APP_BLOB%% *}}\"\n\
          : > \"$VERDICT\"\n\
          HAS_SSHD=no\n\
          command -v sshd >/dev/null 2>&1 && HAS_SSHD=yes\n\
@@ -603,7 +605,7 @@ fn users_script(app_public_key: &str) -> String {
          \x20 OPEN=unknown\n\
          \x20 if [ -n \"$HOME_DIR\" ] && [ -s \"$HOME_DIR/.ssh/authorized_keys\" ]; then\n\
          \x20   KEYS=yes\n\
-         \x20   if [ -n \"$APP_KEY\" ] && grep -qxF \"$APP_KEY\" \"$HOME_DIR/.ssh/authorized_keys\"; then\n\
+         \x20   if [ -n \"$APP_KEY\" ] && grep -qF \" $APP_BLOB\" \"$HOME_DIR/.ssh/authorized_keys\"; then\n\
          \x20     APPKEY=yes\n\
          \x20   fi\n\
          \x20 fi\n\
@@ -1640,6 +1642,44 @@ mod accounts {
             std::fs::read_to_string(&verdict_path).unwrap_or_default().trim().to_string(),
             drop_in,
         )
+    }
+
+    fn list(root: &Path, keys: &[(&str, &str)]) -> Vec<UserAccess> {
+        let passwd = root.join("passwd");
+        let mut lines = String::new();
+        for (name, text) in keys {
+            let home = root.join("home").join(name);
+            std::fs::create_dir_all(home.join(".ssh")).expect("a home");
+            std::fs::write(home.join(".ssh/authorized_keys"), text).expect("keys");
+            lines.push_str(&format!("{name}:x:1000:1000::{}:/bin/bash\n", home.display()));
+        }
+        std::fs::write(&passwd, lines).expect("passwd");
+        stub(root, "sshd", "exit 1");
+        let verdict = root.join("users");
+        let text = super::users_script(FAKE_KEY)
+            .replace(&super::users_verdict_path(), &verdict.display().to_string())
+            .replace("/etc/passwd", &passwd.display().to_string());
+        let out = std::process::Command::new("sh")
+            .arg("-c")
+            .arg(&text)
+            .env("PATH", format!("{}:/usr/bin:/bin", root.join("bin").display()))
+            .output()
+            .expect("sh runs");
+        assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+        parse_users(&std::fs::read_to_string(&verdict).unwrap_or_default())
+    }
+
+    #[test]
+    fn the_app_key_is_found_with_or_without_the_agents_mark() {
+        let root = sandbox("appkey-marks");
+        let blob = FAKE_KEY.split_whitespace().nth(1).unwrap();
+        let users = list(&root, &[
+            ("alice", &format!("{FAKE_KEY}\n")),
+            ("bob", &format!("ssh-ed25519 {blob} # gnx:gnx-dev-0011223344556677\n")),
+            ("carol", "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIsomeoneElse carol\n"),
+        ]);
+        let found: Vec<(String, bool)> = users.into_iter().map(|u| (u.name, u.app_key_present)).collect();
+        assert_eq!(found, vec![("alice".into(), true), ("bob".into(), true), ("carol".into(), false)]);
     }
 
     #[test]

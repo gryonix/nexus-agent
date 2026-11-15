@@ -5,7 +5,7 @@ use std::collections::BTreeMap;
 use bytes::Bytes;
 use tokio::sync::mpsc::Sender;
 
-use crate::api::{connect_error, envelope, error_trailer, stream_response, Codec, Resp};
+use crate::api::{envelope, error_trailer, stream_response, Codec, Resp};
 use crate::container_ops::{capture, first_lines, run_streaming};
 use crate::containers::{self, GroupKind};
 use crate::pb;
@@ -71,28 +71,34 @@ struct UpdateJob {
 fn refuse(req: &pb::UpdateContainerGroupRequest, plan: &pb::ContainerBackupPlan, kind: GroupKind) -> Option<Resp> {
     // Refused BEFORE the stream opens, like every other precondition here.
     if req.skip_backup && !plan.databases.is_empty() {
-        return Some(connect_error(
+        return Some(crate::api::connect_refusal(
             StatusCode::UNPROCESSABLE_ENTITY,
             "failed_precondition",
             "this group has a database that would be dumped, so its update cannot skip the backup: \
              a new image that migrates a schema is exactly the case a backup is kept for, and this \
              stack has no install recipe to rebuild it from",
+            "containers.backup_required",
+            &[],
         ));
     }
     if !req.skip_backup && plan_names_nothing(&plan) {
-        return Some(connect_error(
+        return Some(crate::api::connect_refusal(
             StatusCode::UNPROCESSABLE_ENTITY,
             "failed_precondition",
             "nothing_to_archive: this group stores nothing outside its images — no volume, no bind mount and no database — so a backup before the update would archive nothing. Update it without one, or give it a backup plan first",
+            "containers.nothing_to_archive",
+            &[],
         ));
     }
     if kind == GroupKind::Standalone {
-        return Some(connect_error(
+        return Some(crate::api::connect_refusal(
             StatusCode::UNPROCESSABLE_ENTITY,
             "failed_precondition",
             "this is a single container started outside compose, so the agent cannot recreate it \
              from anything: pulling a newer image would change nothing that is running. Recreate it \
              with whatever started it",
+            "containers.standalone",
+            &[],
         ));
     }
     None
@@ -199,6 +205,19 @@ async fn execute(
     Ok(Outcome::Updated)
 }
 
+/// The plan without the parts an update's backup leaves out
+fn chosen_parts(plan: &pb::ContainerBackupPlan, parts: &pb::BackupParts) -> pb::ContainerBackupPlan {
+    let mut chosen = plan.clone();
+    if !parts.files {
+        chosen.paths.clear();
+        chosen.volumes.clear();
+    }
+    if !parts.databases {
+        chosen.databases.clear();
+    }
+    chosen
+}
+
 async fn back_up_first(
     key: &str,
     kind: GroupKind,
@@ -206,6 +225,11 @@ async fn back_up_first(
     details: &[pb::ContainerDetail],
     sink: &UpdateSink,
 ) -> Result<(), String> {
+    let plan = &chosen_parts(plan, &crate::backup::update_parts());
+    if plan_names_nothing(plan) {
+        let _ = sink.progress("agent", "nothing chosen to back up before this update".to_string()).await;
+        return Ok(());
+    }
     match crate::container_backup_run::run_for_update(key, kind, plan, details, &sink.tx, &sink.encoder()).await {
         Ok(archive) => {
             let _ = sink.progress("agent", format!("backed up to {}", archive.path)).await;
@@ -472,6 +496,20 @@ impl UpdateSink {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_update_without_files_keeps_only_the_dumps() {
+        let parts = pb::BackupParts { files: false, settings: true, databases: true };
+        let chosen = chosen_parts(&plan(&["/srv/app"], &["app_data"], 1), &parts);
+        assert!(chosen.paths.is_empty() && chosen.volumes.is_empty());
+        assert_eq!(chosen.databases.len(), 1);
+    }
+
+    #[test]
+    fn an_update_without_databases_or_files_archives_nothing() {
+        let chosen = chosen_parts(&plan(&["/srv/app"], &[], 1), &pb::BackupParts::default());
+        assert!(plan_names_nothing(&chosen));
+    }
 
     fn plan(paths: &[&str], volumes: &[&str], databases: usize) -> pb::ContainerBackupPlan {
         pb::ContainerBackupPlan {

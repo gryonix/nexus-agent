@@ -150,7 +150,7 @@ impl Journal {
         running_guard().remove(&self.job_id);
         if super::plan::card_of(&self.service_id).is_none() && !crate::live::finished(&self.job_id, failure) {
             let seconds = now_unix() - self.started;
-            crate::notify::job_ended(crate::pb::JobKind::Install as i32, &self.service_id, seconds, failure);
+            crate::notify::job_ended(crate::pb::JobKind::Install as i32, &self.service_id, seconds, failure, &self.job_id);
         }
     }
 }

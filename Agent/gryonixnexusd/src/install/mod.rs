@@ -22,6 +22,9 @@ pub mod caddy_check;
 #[cfg(test)]
 mod caddy_check_tests;
 pub mod caddy_upstream;
+pub mod open_sites;
+pub mod local_alias;
+pub mod home_only_ports;
 pub mod context;
 pub mod hostnames;
 pub mod execute;
@@ -34,6 +37,7 @@ pub mod firewall;
 pub mod home_network;
 pub mod firewall_base;
 pub mod firewall_relay;
+pub mod mark_restore;
 pub mod relay_routes;
 pub mod ports;
 pub mod forgejo;
@@ -44,6 +48,14 @@ pub mod jellyfin;
 pub mod home_assistant;
 pub mod mosquitto;
 pub mod zigbee2mqtt;
+pub mod cec_volume;
+pub mod shairport_sync;
+pub mod packaged;
+pub mod compat;
+pub mod uxplay;
+pub mod odio;
+#[cfg(test)]
+mod golden;
 pub mod minecraft;
 pub mod nextcloud;
 pub mod passbolt;
@@ -56,7 +68,7 @@ pub mod mail;
 #[allow(dead_code)]
 pub mod host;
 
-pub const HOME_ONLY_SERVICE_IDS: &[&str] = &["home-assistant", "mosquitto", "zigbee2mqtt"];
+pub const HOME_ONLY_SERVICE_IDS: &[&str] = &["home-assistant", "mosquitto", "zigbee2mqtt", "shairport-sync", "uxplay", "odio", "snapserver", "snapclient", "upmpdcli", "bluealsa", "raspotify", "mympd"];
 
 /// The hub's add-ons, which are refused without it.
 pub const SMART_HOME_ADD_ON_IDS: &[&str] = &["mosquitto", "zigbee2mqtt"];

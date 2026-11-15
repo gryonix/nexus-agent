@@ -183,10 +183,15 @@ fn walk_bouncers(metrics: &Value) -> impl Iterator<Item = (&str, &Value)> {
 
 /// Assemble the status from the host
 pub async fn get_security_status(codec: Codec, _req: pb::GetSecurityStatusRequest) -> Resp {
+    encode(codec, &status().await)
+}
+
+/// CrowdSec's state, read from its units and `cscli`
+pub async fn status() -> pb::SecurityStatus {
     let mut status = pb::SecurityStatus::default();
 
     if !present() {
-        return encode(codec, &status);
+        return status;
     }
     status.present = true;
 
@@ -222,7 +227,7 @@ pub async fn get_security_status(codec: Codec, _req: pb::GetSecurityStatusReques
         }
     }
 
-    encode(codec, &status)
+    status
 }
 
 // ─────────────────────── SSH password login ────────────────────────────
@@ -235,6 +240,11 @@ pub async fn get_ssh_password_state(codec: Codec, req: pb::GetSshPasswordStateRe
     encode(codec, &into_pb(state, String::new()))
 }
 
+/// An SSH access change that did not happen
+fn ssh_unchanged(why: &str) -> Resp {
+    crate::api::connect_refusal(StatusCode::INTERNAL_SERVER_ERROR, "failed_precondition", why, "security.ssh_unchanged", &[])
+}
+
 pub async fn set_ssh_password_login(codec: Codec, req: pb::SetSshPasswordLoginRequest) -> Resp {
     let verdict = if req.allow_passwords {
         ssh_password::open_password_login_now().await
@@ -244,7 +254,7 @@ pub async fn set_ssh_password_login(codec: Codec, req: pb::SetSshPasswordLoginRe
     let detail = match verdict {
         Ok(verdict) => ssh_password::verdict_sentence(&verdict, &req.login_user),
         Err(why) => {
-            return connect_error(StatusCode::INTERNAL_SERVER_ERROR, "failed_precondition", &why)
+            return ssh_unchanged(&why)
         }
     };
     match ssh_password::read_state(&req.login_user, &req.app_public_key).await {
@@ -269,8 +279,25 @@ pub async fn set_ssh_key_only_users(codec: Codec, req: pb::SetSshKeyOnlyUsersReq
     {
         Ok(verdict) => ssh_password::verdict_sentence(&verdict, &req.login_user),
         Err(why) => {
-            return connect_error(StatusCode::INTERNAL_SERVER_ERROR, "failed_precondition", &why)
+            return ssh_unchanged(&why)
         }
+    };
+    encode(codec, &users_answer(&req.login_user, &req.app_public_key, detail).await)
+}
+
+/// Puts the app's key on one listed account
+pub async fn authorize_app_key(codec: Codec, req: pb::AuthorizeAppKeyRequest) -> Resp {
+    let accounts = match ssh_password::list_users(&req.app_public_key).await {
+        Ok(accounts) => accounts,
+        Err(why) => return ssh_unchanged(&why),
+    };
+    if !accounts.iter().any(|account| account.name == req.user) {
+        return connect_error(StatusCode::BAD_REQUEST, "invalid_argument", "no such login account on this host");
+    }
+    let detail = match crate::device_keys::authorize_user(&req.user, &req.app_public_key).await {
+        Ok(true) => format!("the app's key is on {} now", req.user),
+        Ok(false) => format!("the app's key was already on {}", req.user),
+        Err(why) => return connect_error(StatusCode::INTERNAL_SERVER_ERROR, "internal", &why),
     };
     encode(codec, &users_answer(&req.login_user, &req.app_public_key, detail).await)
 }
@@ -361,10 +388,12 @@ pub async fn control_security(codec: Codec, req: pb::ControlSecurityRequest) -> 
     };
 
     if action != pb::SecurityAction::Install && !present() {
-        return connect_error(
+        return crate::api::connect_refusal(
             StatusCode::BAD_REQUEST,
             "failed_precondition",
             "this host has no intrusion defence installed, so there is nothing to run. Install it first — nothing was changed",
+            "security.not_installed",
+            &[],
         );
     }
 
@@ -819,10 +848,12 @@ pub async fn get_security_decisions(codec: Codec, _req: pb::GetSecurityDecisions
 /// Ban an address by hand, or lift a ban
 pub async fn set_security_decision(codec: Codec, req: pb::SetSecurityDecisionRequest) -> Resp {
     if !present() {
-        return connect_error(
+        return crate::api::connect_refusal(
             StatusCode::BAD_REQUEST,
             "failed_precondition",
             "this host has no CrowdSec installed",
+            "security.not_installed",
+            &[],
         );
     }
     let value = req.value.trim().to_string();
@@ -941,10 +972,12 @@ pub async fn get_security_allowlist(codec: Codec, _req: pb::GetSecurityAllowlist
 /// Put an address beyond banning, or stop protecting it
 pub async fn set_security_allowlist(codec: Codec, req: pb::SetSecurityAllowlistRequest) -> Resp {
     if !present() {
-        return connect_error(
+        return crate::api::connect_refusal(
             StatusCode::BAD_REQUEST,
             "failed_precondition",
             "this host has no CrowdSec installed",
+            "security.not_installed",
+            &[],
         );
     }
     let value = req.value.trim().to_string();
@@ -1669,11 +1702,13 @@ pub async fn get_security_auto_rules(
 /// Writes the rules and makes the host act on them
 async fn refuse_country_rules(rules: &pb::SecurityAutoRules) -> Option<Resp> {
     if rules.enabled && !rules.countries.is_empty() && !geoip_available().await {
-        return Some(connect_error(
+        return Some(crate::api::connect_refusal(
             StatusCode::BAD_REQUEST,
             "failed_precondition",
             "this host's CrowdSec has no GeoIP enrichment, so a country rule would never match. \
              Install the crowdsecurity/geoip-enrich parser first.",
+            "security.no_geoip",
+            &[],
         ));
     }
     None
@@ -1764,10 +1799,12 @@ fn record_auto_rules(rules: &pb::SecurityAutoRules) -> Result<(), Resp> {
 
 pub async fn set_security_auto_rules(codec: Codec, req: pb::SetSecurityAutoRulesRequest) -> Resp {
     if !present() {
-        return connect_error(
+        return crate::api::connect_refusal(
             StatusCode::BAD_REQUEST,
             "failed_precondition",
             "this host has no CrowdSec installed",
+            "security.not_installed",
+            &[],
         );
     }
     let rules = req.rules.unwrap_or_default();
@@ -2017,5 +2054,17 @@ mod auto_rules_tests {
         assert!(!rules.enabled);
         assert!(rules.countries.is_empty());
         std::env::remove_var("GRYONIXNEXUSD_SECURITY_RULES");
+    }
+}
+
+#[cfg(test)]
+mod reason_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn an_ssh_change_that_did_not_happen_says_so_by_reason() {
+        let resp = ssh_unchanged("sshd refused the new configuration");
+        assert_eq!(resp.status(), StatusCode::INTERNAL_SERVER_ERROR);
+        assert_eq!(crate::api::reason_of(resp).await, "security.ssh_unchanged");
     }
 }

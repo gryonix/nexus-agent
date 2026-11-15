@@ -131,11 +131,12 @@ fn caddy_install_script() -> String {
          arch=\"$(dpkg --print-architecture)\"\n\
          case \"$arch\" in armhf) arch=armv6 ;; armel) arch=armv5 ;; esac\n\
          tag=\"$(curl -fsSLI -o /dev/null -w '%{{url_effective}}' {CADDY_RELEASES_URL}/latest)\"\n\
-         tag=\"${{tag##*/}}\"\n\
-         deb=\"caddy_${{tag#v}}_linux_${{arch}}.deb\"\n\
+         tag=\"$(basename \"$tag\")\"\n\
+         version=\"$(printf '%s' \"$tag\" | sed 's/^v//')\"\n\
+         deb=\"caddy_$version\"_linux_\"$arch.deb\"\n\
          tmp=\"$(mktemp -d)\"\n\
          curl -fsSL -o \"$tmp/$deb\" \"{CADDY_RELEASES_URL}/download/$tag/$deb\"\n\
-         curl -fsSL -o \"$tmp/sums\" \"{CADDY_RELEASES_URL}/download/$tag/caddy_${{tag#v}}_checksums.txt\"\n\
+         curl -fsSL -o \"$tmp/sums\" \"{CADDY_RELEASES_URL}/download/$tag/caddy_$version\"_checksums.txt\n\
          (cd \"$tmp\" && grep \"  $deb\\$\" sums | sha512sum -c -)\n\
          apt-get {APT_OPTIONS} install -y --reinstall \"$tmp/$deb\"\n\
          id caddy >/dev/null\n\
@@ -153,6 +154,11 @@ fn require_apt() -> Result<(), String> {
 }
 
 pub(super) async fn run_outside_sandbox(script: &str, what: &str, sink: &EventSink) -> Result<(), String> {
+    run_outside_sandbox_from_file(script, what, sink).await
+}
+
+/// Runs the staged script in a transient unit
+async fn run_transient(script_path: &Path, what: &str, sink: &EventSink) -> Result<(), String> {
     let args: Vec<String> = vec![
         "--quiet".into(),
         "--collect".into(),
@@ -160,8 +166,7 @@ pub(super) async fn run_outside_sandbox(script: &str, what: &str, sink: &EventSi
         "--pipe".into(),
         "--service-type=oneshot".into(),
         "/bin/sh".into(),
-        "-c".into(),
-        script.to_string(),
+        script_path.display().to_string(),
     ];
     super::execute::run_child_streaming(
         Path::new(&systemd_run_bin()),
@@ -185,7 +190,7 @@ pub(super) async fn run_outside_sandbox_from_file(
     use std::os::unix::fs::OpenOptionsExt;
     static STAGED: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
     let serial = STAGED.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    let path = std::path::PathBuf::from(format!("/run/gryonixnexusd-install-{}-{serial}.sh", std::process::id()));
+    let path = stage_dir().join(format!("gryonixnexusd-install-{}-{serial}.sh", std::process::id()));
     let staged = std::fs::OpenOptions::new()
         .write(true)
         .create_new(true)
@@ -193,9 +198,17 @@ pub(super) async fn run_outside_sandbox_from_file(
         .open(&path)
         .and_then(|mut file| file.write_all(script.as_bytes()));
     staged.map_err(|err| format!("{what} failed: could not stage the script: {err}"))?;
-    let outcome = run_outside_sandbox(&format!("/bin/sh {}", path.display()), what, sink).await;
+    let outcome = run_transient(&path, what, sink).await;
     let _ = std::fs::remove_file(&path);
     outcome
+}
+
+/// Where scripts wait for their transient unit
+fn stage_dir() -> std::path::PathBuf {
+    if cfg!(test) {
+        return std::env::temp_dir();
+    }
+    std::path::PathBuf::from("/run")
 }
 
 fn systemd_run_bin() -> String {
@@ -207,6 +220,13 @@ mod tests {
     use super::*;
 
     static BIN_PATH_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    #[test]
+    fn the_caddy_script_has_no_brace_expansions() {
+        let script = caddy_install_script();
+        assert!(!script.contains("${"), "systemd-run empties brace expansions: {script}");
+        assert!(script.contains("deb=\"caddy_$version\"_linux_\"$arch.deb\""), "{script}");
+    }
 
     #[test]
     fn a_binary_that_exists_is_found_and_a_made_up_one_is_not() {
@@ -242,7 +262,7 @@ mod tests {
                 (
                     "systemd-run",
                     &format!(
-                        "#!/bin/sh\necho \"$@\" >> '{}'\ncase \"$*\" in\n  *get.docker.com*) : > \"$(dirname \"$0\")/docker\"; chmod 755 \"$(dirname \"$0\")/docker\" ;;\n  *caddy*) : > \"$(dirname \"$0\")/caddy\"; chmod 755 \"$(dirname \"$0\")/caddy\" ;;\nesac\nexit 0\n",
+                        "#!/bin/sh\nbody=\"$*\"\nfor a; do last=\"$a\"; done\n[ -f \"$last\" ] && body=\"$body $(cat \"$last\")\"\necho \"$body\" >> '{0}'\ncase \"$body\" in\n  *get.docker.com*) : > \"$(dirname \"$0\")/docker\"; chmod 755 \"$(dirname \"$0\")/docker\" ;;\n  *caddy*) : > \"$(dirname \"$0\")/caddy\"; chmod 755 \"$(dirname \"$0\")/caddy\" ;;\nesac\nexit 0\n",
                         log.display()
                     ),
                 ),
@@ -277,7 +297,7 @@ mod tests {
                 ("docker", "#!/bin/sh\nexit 0\n"),
                 ("caddy", "#!/bin/sh\nexit 0\n"),
                 ("apt-get", "#!/bin/sh\nexit 0\n"),
-                ("systemd-run", &format!("#!/bin/sh\necho \"$@\" >> '{}'\nexit 0\n", log.display())),
+                ("systemd-run", &format!("#!/bin/sh\nbody=\"$*\"\nfor a; do last=\"$a\"; done\n[ -f \"$last\" ] && body=\"$body $(cat \"$last\")\"\necho \"$body\" >> '{0}'\nexit 0\n", log.display())),
             ],
         );
         std::env::set_var(BIN_PATH_OVERRIDE, &dir);
@@ -308,7 +328,7 @@ mod tests {
                 ("docker", "#!/bin/sh\nexit 0\n"),
                 ("caddy", "#!/bin/sh\nexit 0\n"),
                 ("apt-get", "#!/bin/sh\nexit 0\n"),
-                ("systemd-run", &format!("#!/bin/sh\necho \"$@\" >> '{}'\nexit 0\n", log.display())),
+                ("systemd-run", &format!("#!/bin/sh\nbody=\"$*\"\nfor a; do last=\"$a\"; done\n[ -f \"$last\" ] && body=\"$body $(cat \"$last\")\"\necho \"$body\" >> '{0}'\nexit 0\n", log.display())),
             ],
         );
         std::env::set_var(BIN_PATH_OVERRIDE, &dir);

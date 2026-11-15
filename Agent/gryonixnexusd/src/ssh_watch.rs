@@ -96,14 +96,11 @@ pub fn control_users() -> Vec<String> {
 }
 
 /// How the sign-in proved itself, in words
-pub fn method_words(method: &str, russian: bool) -> String {
-    match (method, russian) {
-        ("publickey", false) => "by key".into(),
-        ("publickey", true) => "по ключу".into(),
-        (m, false) if m == "password" || m.starts_with("keyboard-interactive") => "by password".into(),
-        (m, true) if m == "password" || m.starts_with("keyboard-interactive") => "по паролю".into(),
-        (m, false) => format!("via {m}"),
-        (m, true) => format!("через {m}"),
+pub fn method_words(method: &str, language: &str) -> String {
+    match method {
+        "publickey" => crate::messages::text("ssh.key", language).to_string(),
+        m if m == "password" || m.starts_with("keyboard-interactive") => crate::messages::text("ssh.password", language).to_string(),
+        m => crate::messages::text("ssh.other", language).replace("{method}", m),
     }
 }
 
@@ -152,8 +149,8 @@ async fn report(store: &Arc<Mutex<Store>>, sign_in: SignIn, at: i64) {
     if to_report(vec![sign_in.clone()], &config.quiet_keys, &control_users()).is_empty() {
         return;
     }
-    let detail = format!("{} {}", sign_in.ip, method_words(&sign_in.method, config.russian()));
-    let mut alert = notify_send::event_alert("gnx.alert.ssh_login", &notify::host(), &sign_in.user, &detail, config.russian());
+    let detail = format!("{} {}", sign_in.ip, method_words(&sign_in.method, &config.language));
+    let mut alert = notify_send::event_alert("gnx.alert.ssh_login", &notify::host(), &sign_in.user, &detail, &config.language);
     alert.address = Some(sign_in.ip.clone());
     alert.at = Some(at);
     let sent = notify::deliver(&mut config, &alert).await;
@@ -319,8 +316,8 @@ mod tests {
         assert_eq!(sign_ins(&message), vec![sign_in("bob", "1.2.3.4", "password", "")]);
         assert_eq!(entry("not json"), None);
         assert_eq!(entry(r#"{"MESSAGE":"x"}"#), None);
-        assert_eq!(method_words("publickey", true), "по ключу");
-        assert_eq!(method_words("keyboard-interactive/pam", false), "by password");
+        assert_eq!(method_words("publickey", "ru"), "по ключу");
+        assert_eq!(method_words("keyboard-interactive/pam", "en"), "by password");
     }
 
     #[test]

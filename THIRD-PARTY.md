@@ -42,6 +42,23 @@ are gitignored. The table names every source and its pinned tag.
 | [amnezia-libxray](https://github.com/amnezia-vpn/amnezia-libxray) `v1.0.2` | MIT | the Xray core's C and Go entry points. Built into the archive above on Apple; built here through `Android/xraybridge` on Android. |
 | [xray-core](https://github.com/amnezia-vpn/amnezia-xray-core) `v1.260724.0` | **MPL-2.0** | VLESS/Reality. Built without its Shadowsocks 2022 code; see the notes above. |
 | [hev-socks5-tunnel](https://github.com/heiher/hev-socks5-tunnel) `2.9.3` | MIT | the lwIP stack that turns tunnel packets into SOCKS5 connections for the core above. Vendors lwIP (BSD-3-Clause), libyaml (MIT) and hev-task-system (MIT). |
+| [apernet/quic-go](https://github.com/apernet/quic-go) | MIT | QUIC for xray-core's own Hysteria2 outbound. No Hysteria code from apernet/hysteria itself is linked. |
+
+**Advanced VPN: what is downloaded, and what is deliberately absent.**
+
+- **Country database (GeoIP) is DATA, downloaded at run time, never bundled.**
+  The default address is [v2fly/geoip](https://github.com/v2fly/geoip)'s
+  `geoip.dat` (CC BY-SA 4.0), built from [DB-IP](https://db-ip.com) Lite data
+  (CC BY 4.0). The user can point it elsewhere. The app keeps only the
+  countries the user's rules name, as plain CIDR lists. Loyalsoldier's and
+  MetaCubeX's rule sets are GPL-3.0 repositories and are not the default.
+- **TUIC is not supported.** Every client engine is GPL-3.0 (tuic, sing-box,
+  mihomo) and would have to be linked into the tunnel extension, which an iOS
+  Network Extension cannot avoid; so none is.
+- **NaiveProxy's own client (Chromium, BSD-3-Clause) is not built in** — it is a
+  Chromium network stack. NaiveProxy servers are reached as HTTP/2 CONNECT over
+  TLS by xray-core's HTTP outbound, without Naive's padding.
+- **No TLS interception (MITM) and no scripts.** Host rewrites run in xray's DNS.
 
 **OpenVPN is carried on neither platform, and no entry above is OpenVPN's.**
 The pinned tags for `OpenVPNAdapter` (AGPL-3.0) and `ics-openvpn` (GPLv2 with
@@ -65,6 +82,10 @@ Resolved by SwiftPM; versions are in `Apple/Packages/gryonixNexus/Package.resolv
 | SwiftTerm | MIT |
 | Sparkle (macOS only) | MIT |
 | swift-protobuf, swift-nio, swift-nio-ssh, swift-crypto, swift-log, swift-collections, swift-system, swift-asn1, swift-atomics | Apache-2.0 |
+
+swift-nio-ssh is the fork Citadel names (github.com/Wellz26/swift-nio-ssh).
+The package asks for 0.3.7 or later: earlier releases send a channel window
+adjust after the channel has sent CLOSE, which traps.
 
 ## Android libraries
 
@@ -98,6 +119,9 @@ be discovered.
 | [AnythingLLM](https://github.com/Mintplex-Labs/anything-llm) `1.16.1` | MIT | Nothing. Worth knowing rather than worth worrying about: the published image bundles an embedding model that runs locally, so ingesting documents needs no third party and sends nothing anywhere — which is the reason this service can work on a deployment with no model provider at all. |
 | [Qdrant](https://github.com/qdrant/qdrant) `v1.19.1` | Apache-2.0 | Nothing. The tag pinned here is the plain build; upstream's `-gpu-nvidia` and `-gpu-amd` variants are a different question (drivers on the host) that this catalog does not answer yet. |
 | [SearXNG](https://github.com/searxng/searxng) `2026.9.7-3e454637f` | **AGPL-3.0** | The strongest copyleft in this catalog, and the entry that decides what the whole product may claim — so the reasoning is spelled out rather than assumed. Nothing of theirs is linked, carried or redistributed here: the server pulls their published image, and what this repository holds is a compose file plus a four-line settings file **written for it, not copied from it**. That distinction is the whole of it — vendoring their own `settings.yml` to change two keys is the one move that would put an AGPL file in this tree, and upstream's `use_default_settings: true` exists precisely so nobody has to. For the person running it: AGPL's network clause obliges whoever OFFERS the service to make its source available, and an unmodified upstream image is answered by upstream — pointing at their repository is the whole obligation, unless you change their code, in which case your changes travel under the same terms. |
+| [Shairport Sync](https://github.com/mikebrady/shairport-sync) `latest`, `classic` | MIT (one module GPLv3+) | Shairport Sync — MIT (one module GPLv3+), installed as a separate program. Nothing of theirs is linked, carried or redistributed here: the server pulls their published image, and this repository holds only a compose file written for it. The `latest` tag is AirPlay 2 and bundles NQPTP; `classic` is AirPlay 1. |
+| [UxPlay](https://github.com/FDH2/UxPlay) | GPL-3.0 | Installed as a separate program from the distribution's own `uxplay` package, run as a systemd service under its own account. Nothing of theirs is linked, carried or redistributed here; this repository holds only the unit file written for it. Apple's DRM-protected video cannot be shown by it. |
+| [odio](https://github.com/b0bbywan/odios) `2026.10.0b3` | BSD-2-Clause (installer bundles ansible-core, GPL-3.0) | The agent downloads the pinned installer release, checks its sha256 and runs it as a separate program; nothing of odio or ansible-core is linked or copied into this repository. The installer in turn installs MPD, myMPD, Spotifyd, Snapcast, upmpdcli, BlueZ and PulseAudio from their own packages. |
 | [OpenClaw](https://github.com/openclaw/openclaw) `2026.9.2` | MIT | Nothing. The messenger accounts it connects to are a separate question with their own terms — WhatsApp, Telegram and Discord each have platform rules about automated accounts — which is one more reason no pairing is made by the install and no token of anybody's passes through this app. |
 | [n8n](https://github.com/n8n-io/n8n) `2.37.10` | **Sustainable Use License** — not an open-source license | The one entry in this catalog whose terms are not permissive, which is exactly why it is named. Internal business use and modification are allowed without limit; what is NOT allowed is hosting it for other people as a service, or reselling it. Installing it on your own server for your own workflows — which is the only thing this catalog does — is squarely inside those terms. If you intend to run workflows FOR customers on it, read the license first: that is the case it is written to catch. |
 

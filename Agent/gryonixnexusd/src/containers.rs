@@ -494,11 +494,7 @@ impl Refusal {
                 "invalid_argument",
                 "action is required (start, stop or restart)",
             ),
-            Refusal::EngineUnavailable(detail) => connect_error(
-                StatusCode::SERVICE_UNAVAILABLE,
-                "unavailable",
-                &format!("container engine unavailable: {detail}"),
-            ),
+            Refusal::EngineUnavailable(detail) => crate::api::engine_unavailable(detail),
         }
     }
 }
@@ -1275,5 +1271,17 @@ mod tests {
         assert_eq!(sanitise_name("   "), Ok(String::new()));
         assert!(sanitise_name(&"x".repeat(NAME_LIMIT + 1)).is_err());
         assert!(sanitise_name("two\nlines").is_err());
+    }
+}
+
+#[cfg(test)]
+mod reason_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn a_silent_engine_answers_with_the_docker_reason_and_other_refusals_with_none() {
+        let silent = Refusal::EngineUnavailable("no socket".to_string()).response();
+        assert_eq!(crate::api::reason_of(silent).await, "host.docker_unavailable");
+        assert_eq!(crate::api::reason_of(Refusal::UnknownKey.response()).await, "");
     }
 }
