@@ -26,8 +26,8 @@ pub fn unit_file(input: &Input) -> String {
     let device = device(input).unwrap_or_default();
     let pipe = shairport_sync::CEC_PIPE_DIRECTORY;
     format!(
-        "[Unit]\nDescription=Speaker volume over HDMI-CEC\nAfter=docker.service\n\n[Service]\nEnvironment=CEC_VOLUME_DEVICE={device}\nEnvironment=CEC_VOLUME_PIPE={pipe}/metadata\nEnvironment=CEC_VOLUME_MIN={}\nEnvironment=CEC_VOLUME_MAX={}\nExecStart=/usr/bin/python3 {SCRIPT_PATH}\nRestart=always\nRestartSec=3\n\n[Install]\nWantedBy=multi-user.target",
-        volume.lowest, volume.highest
+        "[Unit]\nDescription=Speaker volume over HDMI-CEC\nAfter=docker.service\n\n[Service]\nEnvironment=CEC_VOLUME_DEVICE={device}\nEnvironment=CEC_VOLUME_PIPE={pipe}/metadata\nEnvironment=CEC_VOLUME_MIN={}\nEnvironment=CEC_VOLUME_MAX={}\nEnvironment=CEC_VOLUME_TV_OFF={}\nEnvironment=CEC_VOLUME_TV_WAIT={}\nEnvironment=CEC_VOLUME_DISCONNECT={}\nEnvironment=CEC_VOLUME_OFF_DELAY={}\nEnvironment=CEC_VOLUME_GRACE={}\nExecStart=/usr/bin/python3 {SCRIPT_PATH}\nRestart=always\nRestartSec=3\n\n[Install]\nWantedBy=multi-user.target",
+        volume.lowest, volume.highest, u8::from(volume.tv_off), volume.tv_wait, u8::from(volume.disconnect), volume.off_delay, volume.grace
     )
 }
 
@@ -81,6 +81,21 @@ mod tests {
         let text = unit_file(&input("hw:CARD=vc4hdmi1,DEV=0", "cec_volume=yes;cec_volume_min=5;cec_volume_max=60"));
         assert!(text.contains("Environment=CEC_VOLUME_MIN=5\nEnvironment=CEC_VOLUME_MAX=60\n"), "{text}");
         assert!(text.contains("Environment=CEC_VOLUME_DEVICE=/dev/cec1\n"), "{text}");
+    }
+
+    #[test]
+    fn the_unit_says_whether_the_tv_goes_off() {
+        let on = unit_file(&input("hw:CARD=vc4hdmi1,DEV=0", "cec_volume=yes"));
+        let off = unit_file(&input("hw:CARD=vc4hdmi1,DEV=0", "cec_volume=yes;cec_tv_wakes=yes"));
+        assert!(on.contains("CEC_VOLUME_TV_OFF=1\n") && off.contains("CEC_VOLUME_TV_OFF=0\n"));
+    }
+
+    #[test]
+    fn the_unit_carries_the_timings() {
+        let text = unit_file(&input("hw:CARD=vc4hdmi1,DEV=0", "cec_volume=yes;cec_tv_wait=30;cec_off_delay=5;cec_grace=20;cec_keep_connected=yes"));
+        for line in ["TV_WAIT=30", "DISCONNECT=0", "OFF_DELAY=5", "GRACE=20"] {
+            assert!(text.contains(&format!("CEC_VOLUME_{line}\n")), "{text}");
+        }
     }
 
     #[test]

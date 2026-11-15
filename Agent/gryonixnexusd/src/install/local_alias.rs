@@ -22,7 +22,7 @@ pub fn is_alias_among(name: &str, listed: &[String]) -> bool {
     listed.iter().any(|host| host != name && alias_for(host).as_deref() == Some(name))
 }
 
-/// Gives every listed site its .local name where it is free
+/// Gives every listed site its free .local name
 pub fn with_home_names(caddyfile: &str, hosts: &[String]) -> String {
     hosts.iter().fold(caddyfile.to_string(), |file, host| with_local_alias(&file, host, true).unwrap_or(file))
 }

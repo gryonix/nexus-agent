@@ -87,6 +87,11 @@ const OPTIONS: &[(&str, &str, Kind)] = &[
     ("cec", "cec_volume", Kind::Choice(&["yes", "no"])),
     ("cec", "cec_volume_min", Kind::Number(0.0, 100.0)),
     ("cec", "cec_volume_max", Kind::Number(1.0, 100.0)),
+    ("cec", "cec_tv_wakes", Kind::Choice(&["yes", "no"])),
+    ("cec", "cec_tv_wait", Kind::Number(10.0, 180.0)),
+    ("cec", "cec_keep_connected", Kind::Choice(&["yes", "no"])),
+    ("cec", "cec_off_delay", Kind::Number(1.0, 60.0)),
+    ("cec", "cec_grace", Kind::Number(5.0, 120.0)),
 ];
 
 /// The written form of a valid value, or None
@@ -126,11 +131,19 @@ pub struct CecVolume {
     pub enabled: bool,
     pub lowest: u32,
     pub highest: u32,
+    pub tv_off: bool,
+    pub tv_wait: u32,
+    pub disconnect: bool,
+    pub off_delay: u32,
+    pub grace: u32,
 }
 
 pub const CEC_PIPE_DIRECTORY: &str = "/run/shairport-sync";
 const CEC_DEFAULT_LOWEST: u32 = 1;
 const CEC_DEFAULT_HIGHEST: u32 = 40;
+const CEC_DEFAULT_TV_WAIT: u32 = 60;
+const CEC_DEFAULT_OFF_DELAY: u32 = 2;
+const CEC_DEFAULT_GRACE: u32 = 15;
 
 /// HDMI volume settings, defaults where missing or bad
 pub fn cec_volume(input: &Input) -> CecVolume {
@@ -150,6 +163,11 @@ pub fn cec_volume(input: &Input) -> CecVolume {
         enabled: find("cec_volume").as_deref() == Some("yes"),
         lowest: lowest.min(highest.saturating_sub(1)),
         highest,
+        tv_off: find("cec_tv_wakes").as_deref() != Some("yes"),
+        tv_wait: number("cec_tv_wait", CEC_DEFAULT_TV_WAIT),
+        disconnect: find("cec_keep_connected").as_deref() != Some("yes"),
+        off_delay: number("cec_off_delay", CEC_DEFAULT_OFF_DELAY),
+        grace: number("cec_grace", CEC_DEFAULT_GRACE),
     }
 }
 
@@ -222,6 +240,14 @@ mod tests {
         input.shairport_options = "cec_volume=yes;cec_volume_min=50;cec_volume_max=10".to_string();
         let volume = cec_volume(&input);
         assert_eq!((volume.enabled, volume.lowest, volume.highest), (true, 9, 10));
+        assert!(volume.tv_off);
+        input.shairport_options = "cec_volume=yes;cec_tv_wakes=yes".to_string();
+        assert!(!cec_volume(&input).tv_off);
+        let defaults = cec_volume(&input);
+        assert_eq!((defaults.tv_wait, defaults.off_delay, defaults.grace, defaults.disconnect), (60, 2, 15, true));
+        input.shairport_options = "cec_volume=yes;cec_tv_wait=30;cec_off_delay=5;cec_grace=999;cec_keep_connected=yes".to_string();
+        let custom = cec_volume(&input);
+        assert_eq!((custom.tv_wait, custom.off_delay, custom.grace, custom.disconnect), (30, 5, 15, false));
     }
 
     #[test]

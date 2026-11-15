@@ -10,12 +10,22 @@ DATA = re.compile(r'<data encoding="base64">\s*([^<]*)<', re.S)
 CEC_TRANSMIT = 0xC0386105
 CEC_MESSAGE = "=QQIIII16s7Bx"
 SPEAKER = 0xB5
+TV = 0xB0
 BROADCAST = 0xBF
 PLAY_CODES = {"70626567", "7072736d"}
 VOLUME_CODE = "70766f6c"
+CONTAINER = "shairport-sync"
+WATCH_SECONDS = 1
+PLAY_GRACE = int(os.environ.get("CEC_VOLUME_GRACE", "15"))
+OFF_SECONDS = int(os.environ.get("CEC_VOLUME_OFF_DELAY", "2"))
+TV_WAIT = int(os.environ.get("CEC_VOLUME_TV_WAIT", "60"))
+DISCONNECT = os.environ.get("CEC_VOLUME_DISCONNECT", "1") == "1"
 PER_PRESS = 1.2
+RETRIES = 60
+TV_OFF = os.environ.get("CEC_VOLUME_TV_OFF", "1") == "1"
 FD = None
 AWAKE_UNTIL = 0.0
+SELECTED_UNTIL = 0.0
 
 
 def log(text):
@@ -39,11 +49,17 @@ def raw_send(message, reply, timeout):
 
 
 def send(message, reply=0, timeout=1000):
-    try:
-        return raw_send(message, reply, timeout)
-    except OSError:
-        reconnect()
-        return raw_send(message, reply, timeout)
+    for attempt in range(RETRIES):
+        try:
+            return raw_send(message, reply, timeout)
+        except OSError:
+            if attempt == RETRIES - 1:
+                raise
+            time.sleep(0.5)
+            try:
+                reconnect()
+            except OSError:
+                pass
 
 
 def current():
@@ -66,8 +82,59 @@ def wake():
     log("waking the speaker")
     send([SPEAKER, 0x44, 0x6D], timeout=0)
     send([SPEAKER, 0x45], timeout=0)
+    deadline = time.time() + 15
+    while time.time() < deadline and not is_awake():
+        time.sleep(0.5)
+    time.sleep(1)
+
+
+def tv_power():
+    answer = send([TV, 0x8F], reply=0x90)
+    return answer[6][2] if answer[8] == 1 else None
+
+
+def put_tv_to_standby():
+    deadline = time.time() + TV_WAIT
+    while time.time() < deadline:
+        state = tv_power()
+        if state in (1, 3):
+            log("TV is in standby")
+            return
+        if state in (0, 2):
+            send([TV, 0x36], timeout=0)
+            time.sleep(3)
+        else:
+            time.sleep(1)
+
+
+def select_input():
+    global SELECTED_UNTIL
+    if time.time() < SELECTED_UNTIL:
+        return
+    SELECTED_UNTIL = time.time() + 30
+    tv_state = tv_power()
+    log(f"selecting the input, TV power {tv_state}")
     send([BROADCAST, 0x82, 0x11, 0x00], timeout=0)
-    time.sleep(2)
+    if TV_OFF and tv_state == 1:
+        put_tv_to_standby()
+
+
+def audio_running():
+    number = re.search(r"(\d+)$", DEV)
+    path = f"/proc/asound/card{number.group(1) if number else 0}/pcm0p/sub0/status"
+    try:
+        with open(path) as status:
+            return "RUNNING" in status.read()
+    except OSError:
+        return False
+
+
+def speaker_standby():
+    try:
+        answer = raw_send([SPEAKER, 0x8F], 0x90, 1000)
+    except OSError:
+        return False
+    return answer[8] == 1 and answer[6][2] in (1, 3)
 
 
 def percent(airplay_db):
@@ -88,6 +155,9 @@ class Regulator:
     def __init__(self):
         self.pending = ""
         self.target = None
+        self.wanted = None
+        self.running_since = None
+        self.down_since = None
         self.estimate = None
         self.direction = 0
 
@@ -100,11 +170,13 @@ class Regulator:
             self.pending = rest
             if code in PLAY_CODES:
                 wake()
+                select_input()
+                self.target = self.wanted
             elif code == VOLUME_CODE:
                 db = float(base64.b64decode(data).decode().split(",")[0])
                 log(f"airplay volume {db} dB")
                 wake()
-                self.target = percent(db)
+                self.wanted = self.target = percent(db)
         return True
 
     def release(self):
@@ -137,15 +209,38 @@ class Regulator:
         else:
             self.settle()
 
+    def drop_if_speaker_off(self):
+        if not DISCONNECT:
+            return
+        if not audio_running():
+            self.running_since = self.down_since = None
+            return
+        self.running_since = self.running_since or time.time()
+        if time.time() - self.running_since < PLAY_GRACE:
+            return
+        if not speaker_standby():
+            self.down_since = None
+            return
+        if not self.down_since:
+            log("speaker went to standby")
+        self.down_since = self.down_since or time.time()
+        if time.time() - self.down_since < OFF_SECONDS:
+            return
+        log("speaker is off, disconnecting AirPlay")
+        subprocess.run(["docker", "restart", CONTAINER], capture_output=True)
+        self.running_since = self.down_since = None
+
     def run(self, fd):
         while True:
             busy = self.target is not None
-            waiting = select.select([fd], [], [], 0 if busy else 30)[0]
+            idle = WATCH_SECONDS
+            waiting = select.select([fd], [], [], 0 if busy else idle)[0]
             if waiting and not self.read(fd):
                 self.release()
                 return
             if not waiting and not busy:
                 self.estimate = None
+            self.drop_if_speaker_off()
             if self.target is not None:
                 self.work()
 
