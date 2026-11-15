@@ -1,7 +1,7 @@
 {
-  "version": "26.10.20",
-  "tag": "v26.10.20",
-  "url": "https://codeload.github.com/gryonix/nexus-agent/tar.gz/refs/tags/v26.10.20",
-  "sha256": "3555b2308a60becc0220089ee6928cf370d1a0a999e5d58b851ea954345d3fd9",
-  "signature": "Ky7nPbjQ7xO5mVR8JuSmR7QJJrYa6o94GXeODRO44bQHuyafTYZFzroe9x17fmrScZloZ87HwVdLgbjTgxkDAA=="
+  "version": "26.11.16",
+  "tag": "v26.11.16",
+  "url": "https://codeload.github.com/gryonix/nexus-agent/tar.gz/refs/tags/v26.11.16",
+  "sha256": "bc389269eb4781c9960c01ad8325a11fc3ad2510baad265c54856d8b4071ae5a",
+  "signature": "cZQ4LlpzbdG16z7CMf5QtBjHxf2/zSZ0sa8Yf0Zl9qn+LO5Gy5HOkW6Rk4PyErzlGZ5pkOkUzb90DESulgiJDw=="
 }
