@@ -265,6 +265,7 @@ fn service_block(id: &str, input: &HostInput, facts: &dyn Facts) -> String {
         || service_block_5(id, i, l, facts, &mut out)
         || service_block_6(id, i, l, facts, &mut out)
         || service_block_7(id, i, l, facts, &mut out)
+        || service_block_7b(id, i, l, facts, &mut out)
         || service_block_8(id, i, l, facts, &mut out)
         || service_block_9(id, input, i, l, &mut out)
         || service_block_10(id, input, i, l, facts, &mut out)
@@ -648,6 +649,12 @@ fn service_block_7(id: &str, i: &Input, l: Language, facts: &dyn Facts, out: &mu
             ));
             true
         }
+        _ => false,
+    }
+}
+
+fn service_block_7b(id: &str, i: &Input, l: Language, facts: &dyn Facts, out: &mut String) -> bool {
+    match id {
         "shairport-sync" => {
             out.push_str(&format!(
                 "AirPlay:      {}\n",

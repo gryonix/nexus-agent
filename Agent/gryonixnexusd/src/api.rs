@@ -65,6 +65,9 @@ async fn route(req: Request<Incoming>, store: Arc<Mutex<Store>>) -> anyhow::Resu
     if let Some(resp) = route_containers_3(&path, codec, bytes.clone(), store.clone()).await? {
         return Ok(resp);
     }
+    if let Some(resp) = route_containers_4(&path, codec, bytes.clone(), store.clone()).await? {
+        return Ok(resp);
+    }
     if let Some(resp) = route_pairing(&path, codec, bytes.clone(), store.clone()).await? {
         return Ok(resp);
     }
@@ -72,6 +75,9 @@ async fn route(req: Request<Incoming>, store: Arc<Mutex<Store>>) -> anyhow::Resu
         return Ok(resp);
     }
     if let Some(resp) = route_update(&path, codec, bytes.clone()).await? {
+        return Ok(resp);
+    }
+    if let Some(resp) = route_update_2(&path, codec, bytes.clone()).await? {
         return Ok(resp);
     }
     if let Some(resp) = route_security(&path, codec, bytes.clone()).await? {
@@ -216,6 +222,12 @@ async fn route_containers(path: &str, codec: Codec, bytes: Bytes, store: Arc<Mut
             let names = lock(&store).container_names()?;
             Ok(docker_assets::list_volumes(codec, &names).await)
         }).map(Some),
+        _ => Ok(None),
+    }
+}
+
+async fn route_containers_4(path: &str, codec: Codec, bytes: Bytes, store: Arc<Mutex<Store>>) -> anyhow::Result<Option<Resp>> {
+    match path {
         "/gryonixnexusd.v1.Containers/RemoveImage" => ({
             let req: pb::RemoveImageRequest = codec.decode(&bytes)?;
             Ok(docker_assets::remove_image(codec, req).await)
@@ -546,6 +558,12 @@ async fn route_update(path: &str, codec: Codec, bytes: Bytes) -> anyhow::Result<
             let req: pb::ApplyAgentUpdateRequest = codec.decode_enveloped(&bytes)?;
             Ok(agent_update::apply_agent_update(codec, req).await)
         }).map(Some),
+        _ => Ok(None),
+    }
+}
+
+async fn route_update_2(path: &str, codec: Codec, bytes: Bytes) -> anyhow::Result<Option<Resp>> {
+    match path {
         "/gryonixnexusd.v1.Lockdown/GetLockdown" => ({
             let req: pb::GetLockdownRequest = codec.decode(&bytes)?;
             Ok(lockdown::get_lockdown(codec, req).await)

@@ -82,6 +82,7 @@ fn spec_for(id: &str, input: &Input, backups: &BackupPaths) -> Spec {
     spec_for_1(id, input, backups)
         .or_else(|| spec_for_2(id, input, backups))
         .or_else(|| spec_for_3(id, input, backups))
+        .or_else(|| spec_for_3b(id, input, backups))
         .or_else(|| spec_for_4(id, input, backups))
         .or_else(|| spec_for_5(id, input, backups))
         .or_else(|| spec_for_6(id, input, backups))
@@ -242,6 +243,12 @@ fn spec_for_3(id: &str, input: &Input, backups: &BackupPaths) -> Option<Spec> {
             pre_steps: Vec::new(),
             post_steps: Vec::new(),
         }),
+        _ => None,
+    }
+}
+
+fn spec_for_3b(id: &str, input: &Input, backups: &BackupPaths) -> Option<Spec> {
+    match id {
         "jellyfin" => Some(Spec {
             compose_project: Some(crate::install::jellyfin::COMPOSE_PROJECT),
             config_directory: Some(input.jellyfin_path.clone()),
