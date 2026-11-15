@@ -16,16 +16,16 @@ PLAY_CODES = {"70626567", "7072736d"}
 VOLUME_CODE = "70766f6c"
 CONTAINER = "shairport-sync"
 WATCH_SECONDS = 1
+STEP_SECONDS = 0.25
 PLAY_GRACE = int(os.environ.get("CEC_VOLUME_GRACE", "15"))
 OFF_SECONDS = int(os.environ.get("CEC_VOLUME_OFF_DELAY", "2"))
 TV_WAIT = int(os.environ.get("CEC_VOLUME_TV_WAIT", "60"))
 DISCONNECT = os.environ.get("CEC_VOLUME_DISCONNECT", "1") == "1"
 PER_PRESS = 1.2
-RETRIES = 60
+RETRIES = 6
+LAST_RECONNECT = 0.0
 TV_OFF = os.environ.get("CEC_VOLUME_TV_OFF", "1") == "1"
 FD = None
-AWAKE_UNTIL = 0.0
-SELECTED_UNTIL = 0.0
 
 
 def log(text):
@@ -67,56 +67,113 @@ def current():
     return answer[6][2] & 0x7F if answer[8] == 1 else None
 
 
-def is_awake():
-    answer = send([SPEAKER, 0x8F], reply=0x90)
-    return answer[8] == 1 and answer[6][2] == 0
+def power_query(address):
+    try:
+        answer = raw_send([address, 0x8F], 0x90, 1000)
+    except OSError:
+        reconnect_soon()
+        return False, None
+    return True, answer[6][2] if answer[8] == 1 else None
 
 
-def wake():
-    global AWAKE_UNTIL
-    if time.time() < AWAKE_UNTIL:
+def reconnect_soon():
+    global LAST_RECONNECT
+    if time.time() - LAST_RECONNECT < 1.5:
         return
-    if is_awake():
-        AWAKE_UNTIL = time.time() + 20
-        return
-    log("waking the speaker")
-    send([SPEAKER, 0x44, 0x6D], timeout=0)
-    send([SPEAKER, 0x45], timeout=0)
-    deadline = time.time() + 15
-    while time.time() < deadline and not is_awake():
-        time.sleep(0.5)
-    time.sleep(1)
+    LAST_RECONNECT = time.time()
+    try:
+        reconnect()
+    except OSError:
+        pass
 
 
-def tv_power():
-    answer = send([TV, 0x8F], reply=0x90)
-    return answer[6][2] if answer[8] == 1 else None
+def quick(message):
+    try:
+        return raw_send(message, 0, 0)
+    except OSError:
+        reconnect_soon()
+        return None
 
 
-def put_tv_to_standby():
-    deadline = time.time() + TV_WAIT
-    while time.time() < deadline:
-        state = tv_power()
+class Wakeup:
+    def __init__(self, owner):
+        self.owner = owner
+        self.phase = None
+        self.select = False
+        self.due = 0.0
+        self.deadline = 0.0
+        self.awake_until = 0.0
+        self.selected_until = 0.0
+
+    def start(self, select):
+        now = time.time()
+        self.select = self.select or (select and now >= self.selected_until)
+        if self.phase:
+            return
+        if now < self.awake_until or power_query(SPEAKER)[1] == 0:
+            self.awake_until = now + 20
+            self.go("select" if self.select else None, now, 30)
+            return
+        log("waking the speaker")
+        quick([SPEAKER, 0x44, 0x6D])
+        quick([SPEAKER, 0x45])
+        self.go("waking", now, 15)
+
+    def go(self, phase, now, limit):
+        self.phase = phase
+        self.deadline = now + limit
+        self.due = now + (0.5 if phase == "waking" else 0)
+        if phase is None:
+            self.select = False
+
+    def step(self):
+        now = time.time()
+        if not self.phase or now < self.due:
+            return
+        getattr(self, "at_" + self.phase)(now)
+
+    def finish(self):
+        self.go(None, time.time(), 0)
+        self.owner.target = self.owner.wanted
+
+    def at_waking(self, now):
+        if power_query(SPEAKER)[1] == 0 or now > self.deadline:
+            self.go("settle", now, 1)
+            self.due = now + 1
+        else:
+            self.due = now + 0.5
+
+    def at_settle(self, now):
+        if self.select:
+            self.go("select", now, 30)
+        else:
+            self.finish()
+
+    def at_select(self, now):
+        reached, tv_state = power_query(TV)
+        if now > self.deadline:
+            return self.finish()
+        if not reached or quick([BROADCAST, 0x82, 0x11, 0x00]) is None:
+            self.due = now + 0.5
+            return
+        log(f"selected the input, TV power {tv_state}")
+        self.selected_until = now + 30
+        self.select = False
+        if TV_OFF and tv_state == 1:
+            self.go("tv", now, TV_WAIT)
+        else:
+            self.finish()
+
+    def at_tv(self, now):
+        state = power_query(TV)[1]
         if state in (1, 3):
             log("TV is in standby")
-            return
+            return self.finish()
+        if now > self.deadline:
+            return self.finish()
         if state in (0, 2):
-            send([TV, 0x36], timeout=0)
-            time.sleep(3)
-        else:
-            time.sleep(1)
-
-
-def select_input():
-    global SELECTED_UNTIL
-    if time.time() < SELECTED_UNTIL:
-        return
-    SELECTED_UNTIL = time.time() + 30
-    tv_state = tv_power()
-    log(f"selecting the input, TV power {tv_state}")
-    send([BROADCAST, 0x82, 0x11, 0x00], timeout=0)
-    if TV_OFF and tv_state == 1:
-        put_tv_to_standby()
+            quick([TV, 0x36])
+        self.due = now + (3 if state in (0, 2) else 1)
 
 
 def audio_running():
@@ -160,6 +217,7 @@ class Regulator:
         self.down_since = None
         self.estimate = None
         self.direction = 0
+        self.wakeup = Wakeup(self)
 
     def read(self, fd):
         chunk = os.read(fd, 4096)
@@ -169,14 +227,12 @@ class Regulator:
         for code, data, rest in items(self.pending):
             self.pending = rest
             if code in PLAY_CODES:
-                wake()
-                select_input()
-                self.target = self.wanted
+                self.wakeup.start(select=True)
             elif code == VOLUME_CODE:
                 db = float(base64.b64decode(data).decode().split(",")[0])
                 log(f"airplay volume {db} dB")
-                wake()
                 self.wanted = self.target = percent(db)
+                self.wakeup.start(select=False)
         return True
 
     def release(self):
@@ -209,10 +265,18 @@ class Regulator:
         else:
             self.settle()
 
+    def try_work(self):
+        try:
+            self.work()
+        except OSError as error:
+            log(f"volume: {error}")
+            self.estimate = None
+            time.sleep(0.5)
+
     def drop_if_speaker_off(self):
         if not DISCONNECT:
             return
-        if not audio_running():
+        if self.wakeup.phase or not audio_running():
             self.running_since = self.down_since = None
             return
         self.running_since = self.running_since or time.time()
@@ -233,16 +297,17 @@ class Regulator:
     def run(self, fd):
         while True:
             busy = self.target is not None
-            idle = WATCH_SECONDS
+            idle = STEP_SECONDS if self.wakeup.phase else WATCH_SECONDS
             waiting = select.select([fd], [], [], 0 if busy else idle)[0]
             if waiting and not self.read(fd):
                 self.release()
                 return
             if not waiting and not busy:
                 self.estimate = None
+            self.wakeup.step()
             self.drop_if_speaker_off()
             if self.target is not None:
-                self.work()
+                self.try_work()
 
 
 def main():
