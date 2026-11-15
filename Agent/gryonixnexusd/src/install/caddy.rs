@@ -60,7 +60,7 @@ fn owner_line(owner: &str) -> String {
 
 const OWNER_TAG: &str = "gryonixnexus:";
 
-const PUBLIC_PATHS_MATCHER: &str = "gryonixnexus_open";
+pub(super) const PUBLIC_PATHS_MATCHER: &str = "gryonixnexus_open";
 
 pub fn owner_of(block: &str) -> Option<String> {
     block.lines().skip(1).find_map(|line| {
@@ -79,6 +79,24 @@ pub fn same_owner(a: &str, b: &str) -> bool {
 
 /// The Caddyfile without the blocks one service owns
 pub fn without_owner(caddyfile: &str, owner: &str) -> String {
+    without_blocks(caddyfile, |block| owner_of(block).is_some_and(|found| same_owner(&found, owner)))
+}
+
+/// The Caddyfile without a service's blocks under other names
+pub fn without_stale_sites(caddyfile: &str, owner: &str, current: &[String]) -> String {
+    without_blocks(caddyfile, |block| {
+        owner_of(block).is_some_and(|found| same_owner(&found, owner))
+            && !header_names(block).iter().any(|name| current.contains(name))
+    })
+}
+
+/// The names a block's first line lists
+fn header_names(block: &str) -> Vec<String> {
+    let header = block.lines().next().unwrap_or_default().trim().trim_end_matches('{');
+    header.split(',').map(|name| name.trim().to_string()).filter(|name| !name.is_empty()).collect()
+}
+
+fn without_blocks(caddyfile: &str, dropped: impl Fn(&str) -> bool) -> String {
     let mut kept = String::new();
     let (mut block, mut depth) = (String::new(), 0i32);
     let mut skip_blank = false;
@@ -93,11 +111,11 @@ pub fn without_owner(caddyfile: &str, owner: &str) -> String {
         block.push_str(line);
         depth += line.matches('{').count() as i32 - line.matches('}').count() as i32;
         if depth <= 0 {
-            let owned = owner_of(&block).is_some_and(|found| same_owner(&found, owner));
-            if !owned {
+            let drop = dropped(&block);
+            if !drop {
                 kept.push_str(&block);
             }
-            skip_blank = owned;
+            skip_blank = drop;
             block.clear();
             depth = 0;
         }
@@ -178,6 +196,28 @@ pub fn site_with_public_paths(
     }
 }
 
+/// A guarded site that also imports a password snippet
+pub fn site_with_basic_auth(owner: &str, hostname: &str, upstream_port: u16, tls_internal: bool, snippet: &str) -> String {
+    let proxy = proxy_block(upstream_port, false, false);
+    let tls_line = if tls_internal { "tls internal\n    " } else { "" };
+    let owner = format!("{}\n    ", owner_line(owner));
+    format!("{hostname} {{\n    {owner}{tls_line}import {ADMIN_GUARD_PATH}\n    import {snippet}\n    {proxy}\n}}")
+}
+
+/// A notice at the root, the rest goes upstream
+pub fn with_root_notice(site: &str, notice: &str) -> String {
+    let Some(at) = site.rfind("\n    reverse_proxy ") else { return site.to_string() };
+    let Some(proxy) = site[at + 1..].strip_suffix("\n}") else { return site.to_string() };
+    if proxy.contains('{') || proxy.contains('\n') {
+        return site.to_string();
+    }
+    let notice = notice.replace(['"', '\\'], "'");
+    format!(
+        "{}\n    handle / {{\n        respond \"{notice}\" 200\n    }}\n    handle {{\n    {proxy}\n    }}\n}}",
+        &site[..at]
+    )
+}
+
 /// Matcher for the paths the portal still covers
 pub const PORTAL_PATHS_MATCHER: &str = "gryonixnexus_portal";
 
@@ -213,7 +253,7 @@ fn without_extra_autoconfig_sites(blocks: Vec<String>) -> Vec<String> {
 }
 
 /// A mailcow block whose names are only autodiscover and autoconfig
-fn serves_only_autoconfig(block: &str) -> bool {
+pub(super) fn serves_only_autoconfig(block: &str) -> bool {
     let trimmed = block.trim();
     let Some(names) = trimmed.lines().next().and_then(|line| line.strip_suffix(" {")) else { return false };
     owner_of(trimmed).as_deref() == Some("mailcow")
@@ -308,7 +348,7 @@ pub fn site_overwriting_forwarded_for(
     site_with_public_paths(owner, hostname, upstream_port, admin_guard, upstream_https, tls_internal, false, &[], true)
 }
 
-pub(super) fn top_level_blocks(text: &str) -> Vec<&str> {
+pub fn top_level_blocks(text: &str) -> Vec<&str> {
     let bytes = text.as_bytes();
     let (mut pieces, mut start, mut depth) = (Vec::new(), 0usize, 0i32);
     let (mut quote, mut comment) = (None::<u8>, false);
@@ -357,12 +397,37 @@ pub fn merge_site(existing: &str, new_site_names: &[String], new_site: &str) -> 
         .filter(|block| !block.is_empty())
         .map(str::to_string)
         .collect();
-    blocks.retain(|block| !block.starts_with(&header_prefix) && !is_package_welcome_site(block));
-    blocks.push(new_site.to_string());
+    let kept_aliases: Vec<String> = blocks.iter().filter_map(|block| replaced_aliases(block, new_site_names)).flatten().collect();
+    blocks.retain(|block| {
+        !block.starts_with(&header_prefix) && replaced_aliases(block, new_site_names).is_none() && !is_package_welcome_site(block)
+    });
+    blocks.push(with_aliases(new_site, &header_prefix, &kept_aliases));
     let owners_global = blocks.iter().find(|block| is_global_block(block)).cloned();
     blocks.retain(|block| !is_global_block(block));
     blocks.insert(0, merged_global(owners_global.as_deref()));
     caddyfile(&blocks)
+}
+
+/// Whether the site signs its own certificate
+pub fn serves_own_certificate(site: &str) -> bool {
+    site.lines().any(|line| line.trim() == "tls internal")
+}
+
+/// The .local names of an old block for these sites
+fn replaced_aliases(block: &str, names: &[String]) -> Option<Vec<String>> {
+    let header = block.lines().next()?.trim().strip_suffix('{')?;
+    let listed: Vec<String> = header.split(',').map(|name| name.trim().to_string()).collect();
+    let (local, public): (Vec<String>, Vec<String>) =
+        listed.iter().cloned().partition(|name| super::local_alias::is_alias_among(name, &listed));
+    (!local.is_empty() && public == names).then_some(local)
+}
+
+fn with_aliases(site: &str, header_prefix: &str, aliases: &[String]) -> String {
+    if aliases.is_empty() || !site.starts_with(header_prefix) {
+        return site.to_string();
+    }
+    let names = header_prefix.trim_end_matches(" {");
+    site.replacen(header_prefix, &format!("{names}, {} {{", aliases.join(", ")), 1)
 }
 
 /// The package's `:80` welcome page, which swallows every HTTP redirect
@@ -1056,5 +1121,16 @@ mod tests {
         assert_eq!(SETUP_GUARD_RULES.matches(denial).count(), 3);
         assert!(SETUP_GUARD_RULES.starts_with("@gryonixnexus_setup_relay {\n    remote_ip 10.8.0.0/24\n    not remote_ip 10.8.0.254/32\n}\n"));
         assert!(SETUP_GUARD_RULES.ends_with(" 403\n"));
+    }
+
+    #[test]
+    fn a_moved_site_drops_its_old_name_and_keeps_its_neighbours() {
+        let file = "{\n\temail a@b.c\n}\n\nvault.example.com, vault.local {\n    # gryonixnexus: vaultwarden\n    reverse_proxy 127.0.0.1:8080\n}\n\nkeys.example.com {\n    # gryonixnexus: vaultwarden\n    reverse_proxy 127.0.0.1:8080\n}\n\nfiles.example.com {\n    # gryonixnexus: nextcloud\n    reverse_proxy 127.0.0.1:8081\n}\n";
+        let pruned = without_stale_sites(file, "vaultwarden", &["keys.example.com".to_string()]);
+        assert!(!pruned.contains("vault.example.com"), "{pruned}");
+        assert!(pruned.contains("keys.example.com {"), "{pruned}");
+        assert!(pruned.contains("files.example.com {"), "{pruned}");
+        assert!(pruned.contains("email a@b.c"), "{pruned}");
+        assert_eq!(without_stale_sites(file, "vaultwarden", &["vault.example.com".to_string(), "keys.example.com".to_string()]), file);
     }
 }

@@ -80,8 +80,17 @@ pub enum Refusal {
     /// A real protocol, but not one THIS host installed.
     NotInstalled(String),
     LoginRefused(String),
+    /// The panel's files are here, but nothing listens.
+    PanelNotRunning,
     /// The panel answered something this cannot use.
     Panel(String),
+}
+
+/// What `request` reports when nothing listens on the port
+const NOT_LISTENING: &str = "nothing listens on the VPN panel's port";
+
+fn panel_failure(detail: String) -> Refusal {
+    if detail == NOT_LISTENING { Refusal::PanelNotRunning } else { Refusal::Panel(detail) }
 }
 
 impl std::fmt::Display for Refusal {
@@ -107,6 +116,13 @@ impl std::fmt::Display for Refusal {
                 "the VPN panel refused the stored administrator password ({detail}). \
                  If it was changed inside the panel, the panel is the only place that \
                  knows it — change it back there or re-install the VPN"
+            ),
+            Refusal::PanelNotRunning => write!(
+                f,
+                "the VPN panel on this server is not running (nothing listens on 127.0.0.1:{}), \
+                 so there are no VPN clients to manage — install a VPN protocol, or start the \
+                 panel again",
+                panel_port()
             ),
             Refusal::Panel(detail) => write!(f, "the VPN panel could not do that: {detail}"),
         }
@@ -172,7 +188,7 @@ impl Panel {
         }
         let port = panel_port();
         let body = serde_json::json!({ "username": user, "password": password }).to_string();
-        let response = request(port, "POST", "/login", None, Some(&body)).await.map_err(Refusal::Panel)?;
+        let response = request(port, "POST", "/login", None, Some(&body)).await.map_err(panel_failure)?;
         if response.status != 200 {
             let detail = parse_error(&response.body).unwrap_or_else(|| format!("HTTP {}", response.status));
             return Err(Refusal::LoginRefused(detail));
@@ -238,7 +254,7 @@ impl Panel {
 
     async fn call(&self, method: &str, path: &str, body: Option<&str>) -> Result<String, Refusal> {
         let response =
-            request(self.port, method, path, Some(&self.cookie), body).await.map_err(Refusal::Panel)?;
+            request(self.port, method, path, Some(&self.cookie), body).await.map_err(panel_failure)?;
         match response.status {
             200..=299 => Ok(response.body),
             status => Err(Refusal::Panel(
@@ -263,7 +279,10 @@ async fn request(
     body: Option<&str>,
 ) -> Result<Response, String> {
     let work = async {
-        let mut stream = TcpStream::connect(("127.0.0.1", port)).await.map_err(|err| err.to_string())?;
+        let mut stream = TcpStream::connect(("127.0.0.1", port)).await.map_err(|err| match err.kind() {
+            std::io::ErrorKind::ConnectionRefused => NOT_LISTENING.to_string(),
+            _ => err.to_string(),
+        })?;
         let mut head = format!(
             "{method} {path} HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\nX-Gryonix-Auth: 1\r\n"
         );
@@ -497,12 +516,20 @@ impl Refusal {
     fn response(&self) -> Resp {
         let (status, code) = match self {
             Refusal::UnknownProtocol(_) => (StatusCode::BAD_REQUEST, "invalid_argument"),
-            Refusal::NoPanel | Refusal::NotInstalled(_) | Refusal::LoginRefused(_) => {
+            Refusal::NoPanel | Refusal::PanelNotRunning | Refusal::NotInstalled(_) | Refusal::LoginRefused(_) => {
                 (StatusCode::UNPROCESSABLE_ENTITY, "failed_precondition")
             }
             Refusal::Panel(_) => (StatusCode::INTERNAL_SERVER_ERROR, "internal"),
         };
-        connect_error(status, code, &self.to_string())
+        let reason = match self {
+            Refusal::UnknownProtocol(_) => "vpn.unknown_protocol",
+            Refusal::NoPanel => "vpn.no_panel",
+            Refusal::PanelNotRunning => "vpn.panel_not_running",
+            Refusal::NotInstalled(_) => "vpn.protocol_not_installed",
+            Refusal::LoginRefused(_) => "vpn.login_refused",
+            Refusal::Panel(_) => "vpn.panel_failed",
+        };
+        crate::api::connect_refusal(status, code, &self.to_string(), reason, &[])
     }
 }
 
@@ -523,6 +550,22 @@ async fn resolve(protocol: &str) -> Result<(&'static str, Panel), Refusal> {
         }
     }
     Ok((resolved, Panel::open().await?))
+}
+
+/// Devices per installed protocol, by catalog id
+pub async fn device_counts() -> Option<Vec<(&'static str, usize)>> {
+    let installed = declared_protocols()?;
+    let panel = Panel::open().await.ok()?;
+    let mut counts = Vec::new();
+    for (name, catalog) in PROTOCOLS {
+        if !installed.iter().any(|declared| declared == name) {
+            continue;
+        }
+        if let Ok(clients) = panel.list(name).await {
+            counts.push((*catalog, clients.len()));
+        }
+    }
+    Some(counts)
 }
 
 fn declared_protocols() -> Option<Vec<String>> {
@@ -597,11 +640,13 @@ pub async fn client_config(codec: Codec, req: pb::GetVpnClientConfigRequest) -> 
     };
     let found = panel.list(protocol).await.ok().and_then(|clients| clients.into_iter().find(|client| client.id == client_id));
     let name = found.as_ref().map(|client| client.name.clone()).unwrap_or_else(|| client_id.to_string());
+    let dns = found.map(|client| client.dns).unwrap_or_default();
+    let relayed = crate::vpn_dns::ready();
     let response = pb::VpnClientConfig {
-        text,
+        text: if relayed { crate::vpn_dns::config_with_fallback(&text) } else { text },
         filename: format!("{}{}", sanitise_file_name(&name), config_extension(protocol)),
         qr_is_useful: qr_is_useful(protocol),
-        dns: found.map(|client| client.dns).unwrap_or_default(),
+        dns: if relayed { crate::vpn_dns::with_fallback(&dns) } else { dns },
     };
     encode(codec, &response)
 }
@@ -640,6 +685,10 @@ pub async fn set_default_dns(codec: Codec, req: pb::VpnDns) -> Resp {
     match panel.set_default_dns(&req.dns).await {
         Ok(dns) => {
             crate::vpn_dns::prepare_for(&dns);
+            if let Err(why) = crate::vpn_dns_priority::choose(&dns) {
+                tracing::warn!(%why, "could not put the chosen DNS first in the order");
+            }
+            crate::vpn_dns::refresh().await;
             encode(codec, &with_local(dns).await)
         }
         Err(refusal) => refusal.response(),
@@ -656,6 +705,11 @@ pub async fn set_dns_priority(codec: Codec, req: pb::VpnDnsPriority) -> Resp {
         Ok(order) => order,
         Err(why) => return connect_error(StatusCode::BAD_REQUEST, "invalid_argument", &why),
     };
+    if let Some(chosen) = chosen_dns().await {
+        if let Err(why) = crate::vpn_dns_priority::check(&order, &chosen) {
+            return connect_error(StatusCode::BAD_REQUEST, "invalid_argument", &why);
+        }
+    }
     if let Err(why) = crate::vpn_dns_priority::save(&order) {
         return connect_error(StatusCode::INTERNAL_SERVER_ERROR, "internal", &why);
     }
@@ -663,7 +717,23 @@ pub async fn set_dns_priority(codec: Codec, req: pb::VpnDnsPriority) -> Resp {
     encode(codec, &priority_answer().await)
 }
 
+/// The DNS chosen for devices as an order entry
+pub async fn chosen_dns() -> Option<String> {
+    if let Some(chosen) = crate::vpn_dns_priority::chosen() {
+        return Some(chosen);
+    }
+    let dns = Panel::open().await.ok()?.default_dns().await.ok()?;
+    match crate::vpn_dns_priority::choose(&dns) {
+        Ok(chosen) => Some(chosen),
+        Err(why) => {
+            tracing::warn!(%why, "could not remember the chosen DNS");
+            None
+        }
+    }
+}
+
 async fn priority_answer() -> pb::VpnDnsPriority {
+    chosen_dns().await;
     let (local_available, reachable) = crate::vpn_dns::reachability().await;
     pb::VpnDnsPriority { resolvers: crate::vpn_dns_priority::load(), local_available, reachable }
 }

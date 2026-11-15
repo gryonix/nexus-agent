@@ -3,7 +3,15 @@
 mod agent_removal;
 mod agent_update;
 mod api;
+mod app_modules;
+mod audio_outputs;
+mod odio_api;
+mod mcp;
+mod mcp_access;
+mod modules;
+mod awg_kernel;
 mod backup;
+mod backup_leftovers;
 mod backup_drive;
 mod drive_watch;
 mod container_backup;
@@ -17,12 +25,17 @@ mod cert_watch;
 mod control;
 mod discover;
 mod dkim;
+mod exposure;
+mod docker_assets;
+mod docker_networks;
+mod health;
 mod history;
 mod install;
 mod jobs;
 mod language;
 mod lockdown;
 mod mailbox;
+mod native;
 mod security;
 /// Dynamic DNS — the host keeps its own A records current
 mod ddns;
@@ -31,13 +44,16 @@ mod mesh;
 mod metrics;
 mod models;
 mod mods;
+mod open_api;
 mod move_run;
 mod move_transfer;
 mod move_upstream;
 mod health_watch;
 mod live;
 mod live_tunnel;
+mod live_system;
 mod notify;
+mod messages;
 mod notify_send;
 mod panel_broker;
 mod pre_restore;
@@ -46,8 +62,10 @@ mod storage_array;
 mod storage_cache;
 mod storage_task;
 mod system_ctl;
+mod system_settings;
 mod restore;
 mod serial;
+mod service_names;
 mod setup_guard;
 mod trusted_sources;
 mod state;
@@ -58,11 +76,14 @@ mod vpn_dns_priority;
 mod vpn_dns_relay;
 mod vpn_state;
 mod update;
+mod widget_feed;
+mod wrapper_stop;
 mod util;
 /// The deployment's own service passwords, sealed at rest
 mod vault;
 mod vaultwarden_2fa;
 mod wake;
+mod watchdog;
 
 /// Types generated from ../proto/gryonixnexusd/v1/gryonixnexusd.proto at build time.
 pub mod pb {
@@ -81,7 +102,7 @@ const SOCKET_PATH: &str = "/run/gryonixnexusd.sock";
 const STATE_DIR: &str = "/var/lib/gryonixnexus/agent";
 const PAIRING_CODE_TTL_SECS: i64 = 600;
 
-const COMMANDS: [&str; 5] = ["bridge", "version", "--version", "-V", "pair-code"];
+const COMMANDS: [&str; 6] = ["bridge", "version", "--version", "-V", "pair-code", "mcp"];
 
 fn ensure_socket_free(path: &str) -> std::io::Result<()> {
     if std::os::unix::net::UnixStream::connect(path).is_ok() {
@@ -98,9 +119,25 @@ fn bind_socket(path: &str) -> std::io::Result<tokio::net::UnixListener> {
     Ok(listener)
 }
 
-#[tokio::main]
-async fn main() -> anyhow::Result<()> {
-    tracing_subscriber::fmt::init();
+fn main() -> anyhow::Result<()> {
+    tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(worker_threads())
+        .enable_all()
+        .build()?
+        .block_on(run())
+}
+
+/// Two workers are plenty for a control plane
+fn worker_threads() -> usize {
+    std::thread::available_parallelism().map_or(1, |n| n.get()).clamp(1, 2)
+}
+
+async fn run() -> anyhow::Result<()> {
+    if std::env::args().nth(1).as_deref() == Some("mcp") {
+        tracing_subscriber::fmt().with_writer(std::io::stderr).init();
+    } else {
+        tracing_subscriber::fmt::init();
+    }
 
     let socket_path = std::env::var("GRYONIXNEXUSD_SOCKET").unwrap_or_else(|_| SOCKET_PATH.to_string());
     let state_dir = std::env::var("GRYONIXNEXUSD_STATE_DIR").unwrap_or_else(|_| STATE_DIR.to_string());
@@ -108,6 +145,10 @@ async fn main() -> anyhow::Result<()> {
     if let Some(unknown) = command.as_deref().filter(|c| !COMMANDS.contains(c)) {
         eprintln!("unknown command {unknown:?}; known: {}", COMMANDS.join(", "));
         std::process::exit(2);
+    }
+
+    if command.as_deref() == Some("mcp") {
+        return mcp::serve(&state_dir).await;
     }
 
     if !matches!(command.as_deref(), Some("bridge") | Some("version") | Some("--version") | Some("-V")) {
@@ -135,7 +176,9 @@ async fn main() -> anyhow::Result<()> {
     }
 
     let store = Arc::new(Mutex::new(store));
+    health::mark_start();
     spawn_background_work(&store);
+    watchdog::spawn(store.clone());
 
     let listener = bind_socket(&socket_path)?;
     tracing::info!(socket = %socket_path, "gryonixnexusd listening");
@@ -180,12 +223,20 @@ fn spawn_background_work(store: &Arc<Mutex<state::Store>>) {
         }
     });
     agent_update::reconcile_on_startup();
+    tokio::spawn(install::execute::keep_panel_without_module_right());
+    tokio::spawn(async {
+        loop {
+            install::execute::keep_mesh_node_joined().await;
+            tokio::time::sleep(std::time::Duration::from_secs(600)).await;
+        }
+    });
     tokio::task::spawn_blocking(backup_drive::upgrade_fstab);
     tokio::task::spawn_blocking(install::host::backup_ctl_store::refresh_on_startup);
     agent_update::spawn();
-    tokio::spawn(async {
+    let tools_store = store.clone();
+    tokio::spawn(async move {
         loop {
-            keep_host_tools().await;
+            keep_host_tools(&tools_store).await;
             tokio::time::sleep(std::time::Duration::from_secs(600)).await;
         }
     });
@@ -230,19 +281,89 @@ where
 
     let stream = tokio::net::UnixStream::connect(socket_path).await?;
     let (mut socket_read, mut socket_write) = stream.into_split();
+    let activity = Activity::new();
+    let seen = activity.clone();
 
     tokio::spawn(async move {
-        let _ = tokio::io::copy(&mut input, &mut socket_write).await;
+        let _ = copy_noting(&mut input, &mut socket_write, &seen).await;
         socket_write.forget();
     });
 
-    tokio::io::copy(&mut socket_read, &mut output).await?;
+    tokio::select! {
+        copied = copy_noting(&mut socket_read, &mut output, &activity) => { copied?; }
+        _ = activity.idle_for(bridge_idle_limit()) => {}
+    }
     output.flush().await?;
     Ok(())
 }
 
+/// A silent channel is closed after this long
+fn bridge_idle_limit() -> std::time::Duration {
+    let secs = std::env::var("GRYONIXNEXUSD_BRIDGE_IDLE_SECS").ok().and_then(|s| s.parse().ok()).unwrap_or(30 * 60);
+    std::time::Duration::from_secs(secs)
+}
+
+/// When bytes last moved through a bridge
+#[derive(Clone)]
+struct Activity(std::sync::Arc<std::sync::Mutex<tokio::time::Instant>>);
+
+impl Activity {
+    fn new() -> Self {
+        Activity(std::sync::Arc::new(std::sync::Mutex::new(tokio::time::Instant::now())))
+    }
+
+    fn touch(&self) {
+        *self.0.lock().unwrap_or_else(|e| e.into_inner()) = tokio::time::Instant::now();
+    }
+
+    /// Resolves once nothing moved for `limit`
+    async fn idle_for(&self, limit: std::time::Duration) {
+        loop {
+            let last = *self.0.lock().unwrap_or_else(|e| e.into_inner());
+            let due = last + limit;
+            if tokio::time::Instant::now() >= due {
+                return;
+            }
+            tokio::time::sleep_until(due).await;
+        }
+    }
+}
+
+/// Copies until EOF, noting each chunk
+async fn copy_noting<R, W>(reader: &mut R, writer: &mut W, activity: &Activity) -> std::io::Result<()>
+where
+    R: tokio::io::AsyncRead + Unpin,
+    W: tokio::io::AsyncWrite + Unpin,
+{
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let mut buffer = vec![0u8; 16 * 1024];
+    loop {
+        let read = reader.read(&mut buffer).await?;
+        if read == 0 {
+            return Ok(());
+        }
+        activity.touch();
+        writer.write_all(&buffer[..read]).await?;
+        writer.flush().await?;
+    }
+}
+
 #[cfg(test)]
 mod tests {
+    #[tokio::test]
+    async fn a_silent_bridge_ends_and_a_busy_one_waits() {
+        let activity = super::Activity::new();
+        let limit = std::time::Duration::from_millis(600);
+        let toucher = activity.clone();
+        let started = tokio::time::Instant::now();
+        tokio::spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+            toucher.touch();
+        });
+        activity.idle_for(limit).await;
+        assert!(started.elapsed() >= std::time::Duration::from_millis(1100), "a touch pushes the end out");
+    }
+
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
     #[tokio::test]
@@ -330,7 +451,7 @@ mod tests {
     }
 }
 
-async fn keep_host_tools() {
+async fn keep_host_tools(store: &Arc<Mutex<state::Store>>) {
     cert_watch::retry_missing().await;
     match system_ctl::install_if_needed() {
         Ok(true) => tracing::info!("wrote the system updater"),
@@ -362,6 +483,38 @@ async fn keep_host_tools() {
         Ok(false) => {}
         Err(err) => tracing::warn!(%err, "could not rebuild the webmail sites"),
     }
+    if awg_kernel::refresh_udp_buffers().await {
+        tracing::info!("raised the UDP socket buffers for the VPN");
+    }
+    awg_kernel::refresh().await;
+    let tuned = install::vpn::mtu::refresh().await;
+    if !tuned.is_empty() {
+        tracing::info!(interfaces = ?tuned, "VPN interfaces set to MTU {}", install::vpn::mtu::MTU);
+    }
+    let removed = backup_leftovers::sweep();
+    if !removed.is_empty() {
+        tracing::info!(folders = ?removed, "removed what interrupted backups left");
+    }
+    refresh_host_rules(store).await;
+}
+
+async fn refresh_host_rules(store: &Arc<Mutex<state::Store>>) {
+    match install::mark_restore::refresh().await {
+        Ok(true) => tracing::info!("the mark restore leaves WireGuard's own mark alone"),
+        Ok(false) => {}
+        Err(err) => tracing::warn!(%err, "could not guard the mark restore"),
+    }
+    match install::vpn::port_share::refresh().await {
+        Ok(true) => tracing::info!("AmneziaWG on the shared port bypasses docker-proxy"),
+        Ok(false) => {}
+        Err(err) => tracing::warn!(%err, "could not refresh the shared VPN port"),
+    }
+    let language = install::execute::language_from_code(&notify::load(store).language);
+    match install::execute::refresh_mesh_root_page(language).await {
+        Ok(true) => tracing::info!("the mesh address shows a page now"),
+        Ok(false) => {}
+        Err(err) => tracing::warn!(%err, "could not add the mesh page"),
+    }
     match install::execute::refresh_mail_autoconfig_site().await {
         Ok(true) => tracing::info!("mail apps can now configure themselves"),
         Ok(false) => {}
@@ -371,6 +524,16 @@ async fn keep_host_tools() {
         Ok(true) => tracing::info!("refreshed the admin lockdown"),
         Ok(false) => {}
         Err(err) => tracing::warn!(%err, "could not refresh the admin lockdown"),
+    }
+    match install::host::update_ctl::refresh_current_check() {
+        Ok(true) => tracing::info!("scheduled updates skip services with nothing new"),
+        Ok(false) => {}
+        Err(err) => tracing::warn!(%err, "could not refresh the update wrapper"),
+    }
+    match install::host::update_ctl::refresh_mailcow_updater() {
+        Ok(true) => tracing::info!("mailcow updates through its own updater"),
+        Ok(false) => {}
+        Err(err) => tracing::warn!(%err, "could not refresh the update wrapper for mailcow"),
     }
     match install::host::uninstall::refresh_image_reclaim() {
         Ok(true) => tracing::info!("removals now reclaim their images"),

@@ -47,15 +47,24 @@ impl fmt::Display for Proto {
 pub struct Port {
     pub proto: Proto,
     pub port: u16,
+    pub last: u16,
 }
 
 impl Port {
     pub const fn tcp(port: u16) -> Self {
-        Self { proto: Proto::Tcp, port }
+        Self { proto: Proto::Tcp, port, last: port }
     }
 
     pub const fn udp(port: u16) -> Self {
-        Self { proto: Proto::Udp, port }
+        Self { proto: Proto::Udp, port, last: port }
+    }
+
+    pub const fn udp_range(first: u16, last: u16) -> Self {
+        Self { proto: Proto::Udp, port: first, last }
+    }
+
+    pub const fn tcp_range(first: u16, last: u16) -> Self {
+        Self { proto: Proto::Tcp, port: first, last }
     }
 }
 
@@ -83,14 +92,15 @@ pub fn drop_in_contents(label: &str, ports: &[Port]) -> String {
     out.push_str(" by gryonixnexusd.\n");
     out.push_str("# Included by /etc/nftables.conf; do not edit by hand.\n");
     for proto in [Proto::Tcp, Proto::Udp] {
-        let mut set: Vec<u16> =
-            ports.iter().filter(|p| p.proto == proto).map(|p| p.port).collect();
+        let mut set: Vec<(u16, u16)> =
+            ports.iter().filter(|p| p.proto == proto).map(|p| (p.port, p.last)).collect();
         set.sort_unstable();
         set.dedup();
         if set.is_empty() {
             continue;
         }
-        let list = set.iter().map(u16::to_string).collect::<Vec<_>>().join(", ");
+        let item = |(first, last): &(u16, u16)| if first == last { first.to_string() } else { format!("{first}-{last}") };
+        let list = set.iter().map(item).collect::<Vec<_>>().join(", ");
         out.push_str(&format!(
             "add rule {TABLE} {CHAIN} {proto} dport {{ {list} }} accept comment \"{label}\"\n"
         ));

@@ -18,6 +18,7 @@ pub enum Kind {
     AgentUpdate,
     DriveStale,
     DriveReadOnly,
+    Load,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -145,6 +146,47 @@ pub fn space_problem(mount: &str, size: i64, used: i64, limit_percent: u32) -> O
     })
 }
 
+/// The 15-minute load over twice the cores
+pub fn load_problem(loadavg: &str, cores: usize) -> Option<Problem> {
+    let load15: f64 = loadavg.split_whitespace().nth(2)?.parse().ok()?;
+    let cores = cores.max(1) as f64;
+    (load15 >= cores * 2.0).then(|| Problem {
+        id: "load:cpu".into(),
+        kind: Kind::Load,
+        subject: "cpu".into(),
+        detail: format!("{:.0}", load15 / cores * 100.0),
+        reason: String::new(),
+    })
+}
+
+/// Available memory under five percent
+pub fn memory_problem(meminfo: &str) -> Option<Problem> {
+    let field = |name: &str| -> Option<f64> {
+        meminfo.lines().find_map(|line| line.strip_prefix(name)?.split_whitespace().next()?.parse().ok())
+    };
+    let (total, available) = (field("MemTotal:")?, field("MemAvailable:")?);
+    let percent = available * 100.0 / total.max(1.0);
+    (percent < 5.0).then(|| Problem {
+        id: "load:memory".into(),
+        kind: Kind::Load,
+        subject: "memory".into(),
+        detail: format!("{percent:.0}"),
+        reason: String::new(),
+    })
+}
+
+async fn load_problems() -> Vec<Problem> {
+    let mut found = Vec::new();
+    if let Ok(text) = tokio::fs::read_to_string("/proc/loadavg").await {
+        let cores = std::thread::available_parallelism().map_or(1, |n| n.get());
+        found.extend(load_problem(&text, cores));
+    }
+    if let Ok(text) = tokio::fs::read_to_string("/proc/meminfo").await {
+        found.extend(memory_problem(&text));
+    }
+    found
+}
+
 /// Problems that appeared, and ones that cleared, since `before`
 pub fn changes(before: &[Problem], now: &[Problem]) -> (Vec<Problem>, Vec<Problem>) {
     let appeared = now.iter().filter(|p| !before.iter().any(|b| b.id == p.id)).cloned().collect();
@@ -160,10 +202,28 @@ pub struct Checks {
     pub services: bool,
     pub backups: bool,
     pub agent_update: bool,
+    pub load: bool,
 }
 
 /// Exit codes of a container someone stopped on purpose
 const STOPPED_ON_PURPOSE: &[i32] = &[0, 137, 143];
+
+impl Problem {
+    /// The container a service problem is about
+    pub fn container(&self) -> &str {
+        self.id.strip_prefix("service:").unwrap_or(&self.subject)
+    }
+}
+
+/// How an alert names a container
+pub fn service_name(container: &str, listing: &str) -> String {
+    let mesh_owner = listing.lines().any(|line| line.split('\t').next() == Some(crate::install::headscale::CONTAINER));
+    if container == crate::install::tailscale::CONTAINER && mesh_owner {
+        format!("Headscale ({container})")
+    } else {
+        container.to_string()
+    }
+}
 
 pub fn service_problems(text: &str) -> Vec<Problem> {
     text.lines()
@@ -182,7 +242,7 @@ pub fn service_problems(text: &str) -> Vec<Problem> {
             Some(Problem {
                 id: format!("service:{name}"),
                 kind: Kind::Service,
-                subject: name.to_string(),
+                subject: service_name(name, text),
                 detail: detail.into(),
                 reason: String::new(),
             })
@@ -267,11 +327,14 @@ async fn output(program: &str, args: &[&str]) -> Option<String> {
 /// Runs the enabled checks on this host
 pub async fn probe(checks: &Checks, failed_groups: &[(String, String)]) -> Vec<Problem> {
     let mut found = disk_problems(checks).await;
+    if checks.load {
+        found.extend(load_problems().await);
+    }
     if checks.services {
         let format = "{{.Names}}\t{{.State}}\t{{.Status}}";
         if let Some(text) = output("docker", &["ps", "-a", "--format", format]).await {
             for mut problem in service_problems(&text) {
-                problem.reason = last_error(&problem.subject).await;
+                problem.reason = last_error(problem.container()).await;
                 found.push(problem);
             }
         }
@@ -356,6 +419,15 @@ unused devices: <none>
 ";
 
     #[test]
+    fn overload_and_low_memory_are_problems() {
+        assert_eq!(load_problem("9.0 8.5 8.2 3/400 1", 4).unwrap().detail, "205");
+        assert!(load_problem("1.0 1.0 1.0 3/400 1", 4).is_none());
+        let low = "MemTotal:       1000000 kB\nMemFree: 1 kB\nMemAvailable:     30000 kB\n";
+        assert_eq!(memory_problem(low).unwrap().id, "load:memory");
+        assert!(memory_problem("MemTotal: 1000 kB\nMemAvailable: 500 kB\n").is_none());
+    }
+
+    #[test]
     fn a_failed_drive_copy_is_a_backup_problem() {
         let problem = backup_drive_problem("DRIVE_AT=1\nDRIVE_OK=0\nDRIVE_ERROR='usb1: not connected;'\n").unwrap();
         assert_eq!(problem.id, "backup:drives");
@@ -420,6 +492,16 @@ tank/media /mnt/my\\040media zfs rw 0 0
         assert_eq!((appeared, cleared), (vec![b.clone()], vec![]));
         let (appeared, cleared) = changes(&[a.clone(), b.clone()], &[b]);
         assert_eq!((appeared, cleared), (vec![], vec![a]));
+    }
+
+    #[test]
+    fn the_mesh_node_of_headscale_is_named_after_headscale() {
+        let text = "headscale\trunning\tUp 2 hours\n\
+                    tailscale\trestarting\tRestarting (1) 3 seconds ago\n";
+        let found = service_problems(text);
+        assert_eq!(found[0].subject, "Headscale (tailscale)");
+        assert_eq!(found[0].container(), "tailscale");
+        assert_eq!(service_problems("tailscale\trestarting\tRestarting (1) 1 second ago\n")[0].subject, "tailscale");
     }
 
     #[test]

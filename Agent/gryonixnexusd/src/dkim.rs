@@ -80,7 +80,15 @@ impl Rejection {
 
     fn response(&self) -> Resp {
         let (status, code, message) = self.parts();
-        connect_error(status, code, &message)
+        crate::api::connect_reasoned(status, code, &message, self.reason())
+    }
+
+    /// The stable id the app matches, when there is one
+    fn reason(&self) -> Option<&'static str> {
+        match self {
+            Rejection::NoMailEngine => Some("mail.no_engine"),
+            Rejection::NoWrapper(_) => Some("host.needs_repair"),
+        }
     }
 }
 
@@ -90,11 +98,7 @@ async fn resolve_engine() -> Result<&'static Engine, Resp> {
             Ok(Some(_)) => return Ok(engine),
             Ok(None) => continue,
             Err(err) => {
-                return Err(connect_error(
-                    StatusCode::SERVICE_UNAVAILABLE,
-                    "unavailable",
-                    &format!("container engine unavailable: {err}"),
-                ))
+                return Err(crate::api::engine_unavailable(&err.to_string()))
             }
         }
     }
@@ -117,11 +121,7 @@ async fn run_wrapper(engine: &'static Engine) -> Result<String, Resp> {
     let child = match child {
         Ok(child) => child,
         Err(err) => {
-            return Err(connect_error(
-                StatusCode::SERVICE_UNAVAILABLE,
-                "unavailable",
-                &format!("could not run the DKIM wrapper: {err}"),
-            ))
+            return Err(dkim_failed(StatusCode::SERVICE_UNAVAILABLE, "unavailable", &format!("could not run the DKIM wrapper: {err}")))
         }
     };
 
@@ -129,18 +129,10 @@ async fn run_wrapper(engine: &'static Engine) -> Result<String, Resp> {
     {
         Ok(Ok(output)) => output,
         Ok(Err(err)) => {
-            return Err(connect_error(
-                StatusCode::SERVICE_UNAVAILABLE,
-                "unavailable",
-                &format!("the DKIM wrapper did not finish: {err}"),
-            ))
+            return Err(dkim_failed(StatusCode::SERVICE_UNAVAILABLE, "unavailable", &format!("the DKIM wrapper did not finish: {err}")))
         }
         Err(_) => {
-            return Err(connect_error(
-                StatusCode::SERVICE_UNAVAILABLE,
-                "unavailable",
-                &format!("the DKIM wrapper timed out after {WRAPPER_TIMEOUT_SECS}s"),
-            ))
+            return Err(dkim_failed(StatusCode::SERVICE_UNAVAILABLE, "unavailable", &format!("the DKIM wrapper timed out after {WRAPPER_TIMEOUT_SECS}s")))
         }
     };
 
@@ -148,9 +140,14 @@ async fn run_wrapper(engine: &'static Engine) -> Result<String, Resp> {
     if !output.status.success() {
         let stderr = strip_ansi(&String::from_utf8_lossy(&output.stderr)).trim().to_string();
         let detail = if stderr.is_empty() { "the DKIM wrapper failed".to_string() } else { truncate(&stderr) };
-        return Err(connect_error(StatusCode::UNPROCESSABLE_ENTITY, "failed_precondition", &detail));
+        return Err(dkim_failed(StatusCode::UNPROCESSABLE_ENTITY, "failed_precondition", &detail));
     }
     Ok(stdout)
+}
+
+/// The DKIM wrapper did not do its work
+fn dkim_failed(status: StatusCode, code: &str, message: &str) -> Resp {
+    crate::api::connect_reason(status, code, message, "mail.dkim_failed")
 }
 
 fn parse(output: &str) -> Vec<pb::DkimRecord> {
@@ -329,5 +326,19 @@ GRYONIXNEXUS_DKIM_DONE
         assert_eq!(resp.status(), StatusCode::UNPROCESSABLE_ENTITY);
 
         let _ = std::fs::remove_dir_all(&dir);
+    }
+}
+
+#[cfg(test)]
+mod unreadable_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn a_failed_wrapper_keeps_its_status_and_carries_the_reason() {
+        let resp = dkim_failed(StatusCode::UNPROCESSABLE_ENTITY, "failed_precondition", "the DKIM wrapper failed");
+        assert_eq!(resp.status(), StatusCode::UNPROCESSABLE_ENTITY);
+        assert_eq!(crate::api::reason_of(resp).await, "mail.dkim_failed");
+        let slow = dkim_failed(StatusCode::SERVICE_UNAVAILABLE, "unavailable", "timed out");
+        assert_eq!(crate::api::reason_of(slow).await, "mail.dkim_failed");
     }
 }

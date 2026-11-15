@@ -38,6 +38,10 @@ fn selected_services_in_order(input: &HostInput) -> Vec<&'static str> {
 
 // MARK: - Per-service sudoers targets
 
+fn unit(name: &str) -> String {
+    format!("{name}.service")
+}
+
 fn compose_power(project: &str) -> Vec<String> {
     vec![
         format!("/usr/bin/docker compose -p {project} ps"),
@@ -148,6 +152,10 @@ fn service_sudoers_targets_1(id: &str, input: &Input, backups: &BackupPaths, use
             crate::install::home_assistant::CONTAINER,
             &input.home_assistant_path,
         )),
+        "shairport-sync" => Some(container_power_only(
+            crate::install::shairport_sync::CONTAINER,
+            &input.shairport_path,
+        )),
         "mosquitto" => Some(container_generic(
             crate::install::mosquitto::CONTAINER,
             &input.mosquitto_path,
@@ -157,7 +165,21 @@ fn service_sudoers_targets_1(id: &str, input: &Input, backups: &BackupPaths, use
 }
 
 fn service_sudoers_targets_2(id: &str, input: &Input) -> Option<Vec<String>> {
+    if let Some(spec) = crate::install::packaged::find(id) {
+        return Some(crate::install::packaged::sudoers_targets(spec));
+    }
     match id {
+        "uxplay" => Some(vec![
+            format!("/usr/bin/systemctl show {u} --property=Id --property=LoadState --property=ActiveState", u = unit(crate::install::uxplay::UNIT)),
+            format!("/usr/bin/systemctl restart {}", unit(crate::install::uxplay::UNIT)),
+            format!("/usr/bin/systemctl start {}", unit(crate::install::uxplay::UNIT)),
+            format!("/usr/bin/systemctl stop {}", unit(crate::install::uxplay::UNIT)),
+            format!("/usr/bin/journalctl -u {} -n 500 --no-pager -o short-iso", unit(crate::install::uxplay::UNIT)),
+        ]),
+        "odio" => Some(["status", "restart", "start", "stop", "logs"]
+            .iter()
+            .map(|verb| format!("{} {verb}", crate::install::odio::CONTROL_PATH))
+            .collect()),
         "zigbee2mqtt" => Some(container_generic(
             crate::install::zigbee2mqtt::CONTAINER,
             &input.zigbee2mqtt_path,

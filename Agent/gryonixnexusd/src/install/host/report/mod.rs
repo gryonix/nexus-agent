@@ -265,6 +265,7 @@ fn service_block(id: &str, input: &HostInput, facts: &dyn Facts) -> String {
         || service_block_5(id, i, l, facts, &mut out)
         || service_block_6(id, i, l, facts, &mut out)
         || service_block_7(id, i, l, facts, &mut out)
+        || service_block_7b(id, i, l, facts, &mut out)
         || service_block_8(id, i, l, facts, &mut out)
         || service_block_9(id, input, i, l, &mut out)
         || service_block_10(id, input, i, l, facts, &mut out)
@@ -645,6 +646,46 @@ fn service_block_7(id: &str, i: &Input, l: Language, facts: &dyn Facts, out: &mu
                 "  {}: {}\n",
                 l10n::password_generated_on_server_label(l),
                 env_value(facts, &format!("{}/.env", i.mosquitto_path), "MQTT_PASSWORD")
+            ));
+            true
+        }
+        _ => false,
+    }
+}
+
+fn service_block_7b(id: &str, i: &Input, l: Language, facts: &dyn Facts, out: &mut String) -> bool {
+    match id {
+        "shairport-sync" => {
+            out.push_str(&format!(
+                "AirPlay:      {}\n",
+                crate::install::shairport_sync::speaker_name(i)
+            ));
+            out.push_str(&format!("  {}\n", l10n::airplay_speaker_hint(l)));
+            true
+        }
+        id if crate::install::packaged::find(id).is_some() => {
+            let spec = crate::install::packaged::find(id).map_or("", |spec| spec.display);
+            out.push_str(&format!("{spec}: {}\n", l10n::packaged_audio_ready(l)));
+            true
+        }
+        "uxplay" => {
+            out.push_str(&format!("AirPlay screen: {}\n", crate::install::uxplay::screen_name(i)));
+            out.push_str(&format!("  {}\n", l10n::airplay_screen_hint(l)));
+            out.push_str(&format!("  {}\n", l10n::airplay_screen_drm_note(l)));
+            true
+        }
+        "odio" => {
+            let path = format!("{}/.env", i.odio_path);
+            out.push_str(&format!("Audio hub: https://{}\n", crate::install::odio::hostname(i)));
+            out.push_str(&format!(
+                "  {}: {}\n",
+                l10n::administrator_label(l),
+                env_value(facts, &path, "ODIO_WEB_USER")
+            ));
+            out.push_str(&format!(
+                "  {}: {}\n",
+                l10n::password_generated_on_server_label(l),
+                env_value(facts, &path, "ODIO_WEB_PASSWORD")
             ));
             true
         }

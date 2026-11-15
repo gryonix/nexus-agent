@@ -23,6 +23,9 @@ async fn compose_projects() -> Result<Vec<ComposeProject>> {
 }
 
 pub async fn containers_of_service(service_id: &str) -> Result<Vec<String>> {
+    if let Some(native) = crate::native::find(service_id) {
+        return Ok(native.containers().await.into_iter().map(|c| c.name).collect());
+    }
     let projects = compose_projects().await?;
     let mut names = Vec::new();
     for project in members_of(&projects, service_id) {
@@ -32,6 +35,9 @@ pub async fn containers_of_service(service_id: &str) -> Result<Vec<String>> {
 }
 
 pub async fn projects_of_service(service_id: &str) -> Result<Vec<String>> {
+    if let Some(native) = crate::native::find(service_id) {
+        return Ok(if native.installed() { vec![format!("{}{service_id}", crate::native::PROJECT_PREFIX)] } else { Vec::new() });
+    }
     let projects = compose_projects().await?;
     Ok(members_of(&projects, service_id)
         .into_iter()
@@ -74,6 +80,9 @@ pub async fn installed_projects() -> Result<Vec<InstalledProject>> {
 }
 
 pub async fn service_snapshot(service_id: &str) -> Result<Option<pb::Service>> {
+    if let Some(native) = crate::native::find(service_id) {
+        return Ok(native.snapshot().await);
+    }
     let projects = compose_projects().await?;
     let members = members_of(&projects, service_id);
     if members.is_empty() {
@@ -111,6 +120,12 @@ async fn build_service(id: &str, display: &str, members: &[&ComposeProject]) -> 
     }
 }
 
+/// The catalog service a container belongs to
+pub async fn service_of_container(container: &str) -> Option<String> {
+    let found = scan().await.ok()?;
+    found.services.into_iter().find(|service| service.containers.iter().any(|c| c.name == container)).map(|service| service.id)
+}
+
 pub async fn scan() -> Result<pb::DiscoverResult> {
     let projects = compose_projects().await?;
     let (groups, notes) = group_projects(&projects);
@@ -118,6 +133,11 @@ pub async fn scan() -> Result<pb::DiscoverResult> {
     let mut services = Vec::new();
     for (id, display, members) in &groups {
         services.push(build_service(id, display, members).await);
+    }
+    for native in crate::native::all() {
+        if let Some(service) = native.snapshot().await {
+            services.push(service);
+        }
     }
     Ok(pb::DiscoverResult { services, notes })
 }
@@ -197,6 +217,15 @@ const CATALOG: &[(&str, &str, &str)] = &[
     ("home-assistant", "home-assistant", "Home Assistant"),
     ("mosquitto", "mosquitto", "Mosquitto"),
     ("zigbee2mqtt", "zigbee2mqtt", "Zigbee2MQTT"),
+    ("shairport-sync", "shairport-sync", "AirPlay speaker"),
+    ("gryonixnexus-uxplay", "uxplay", "AirPlay screen"),
+    ("gryonixnexus-odio", "odio", "Audio hub (odio)"),
+    ("snapserver", "snapserver", "Multi-room server (Snapcast)"),
+    ("snapclient", "snapclient", "Multi-room speaker (Snapcast)"),
+    ("upmpdcli", "upmpdcli", "DLNA speaker"),
+    ("bluealsa", "bluealsa", "Bluetooth speaker"),
+    ("raspotify", "raspotify", "Spotify Connect speaker"),
+    ("mympd", "mympd", "Music library (MPD + myMPD)"),
     ("photoprism", "photoprism", "PhotoPrism"),
     ("seafile", "seafile", "Seafile"),
     ("psono", "psono", "Psono"),

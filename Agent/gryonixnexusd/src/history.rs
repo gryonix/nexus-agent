@@ -12,7 +12,8 @@ const DEFAULT_DIR: &str = "/var/lib/gryonixnexus/metrics";
 
 const BUCKETS: &[&str] = &["10s", "1m", "10m", "1h", "1d", "1w"];
 
-const COLUMNS: usize = 12;
+const COLUMNS_WITHOUT_SWAP: usize = 12;
+const COLUMNS_WITH_SWAP: usize = 14;
 
 pub fn known_bucket(name: &str) -> Option<&'static str> {
     BUCKETS.iter().copied().find(|bucket| *bucket == name)
@@ -25,6 +26,12 @@ fn directory() -> PathBuf {
 /// The file one bucket lives in
 fn bucket_path(dir: &Path, bucket: &'static str) -> PathBuf {
     dir.join(format!("{bucket}.csv"))
+}
+
+/// A history bucket that could not be read
+fn bucket_unreadable(bucket: &str, err: &dyn std::fmt::Display) -> Resp {
+    let message = format!("could not read the {bucket} history bucket: {err}");
+    crate::api::connect_reason(StatusCode::SERVICE_UNAVAILABLE, "unavailable", &message, "history.unreadable")
 }
 
 /// Read one bucket
@@ -89,11 +96,7 @@ pub fn metrics_history(codec: Codec, req: pb::MetricsHistoryRequest) -> Resp {
     let points = match read_bucket(bucket) {
         Ok(points) => points,
         Err(err) => {
-            return connect_error(
-                StatusCode::SERVICE_UNAVAILABLE,
-                "unavailable",
-                &format!("could not read the {bucket} history bucket: {err}"),
-            )
+            return bucket_unreadable(bucket, &err)
         }
     };
     let response = pb::MetricsHistoryResponse {
@@ -112,9 +115,10 @@ fn parse(text: &str) -> Vec<pb::MetricsHistoryPoint> {
 
 fn parse_line(line: &str) -> Option<pb::MetricsHistoryPoint> {
     let fields: Vec<&str> = line.split(',').collect();
-    if fields.len() != COLUMNS {
+    if fields.len() != COLUMNS_WITHOUT_SWAP && fields.len() != COLUMNS_WITH_SWAP {
         return None;
     }
+    let has_swap = fields.len() == COLUMNS_WITH_SWAP;
     let seconds: f64 = fields[0].trim().parse().ok()?;
     Some(pb::MetricsHistoryPoint {
         at: (seconds * 1000.0) as i64,
@@ -131,6 +135,8 @@ fn parse_line(line: &str) -> Option<pb::MetricsHistoryPoint> {
         temperature_celsius: optional(fields[11]),
         power_watts: None,
         power_source: String::new(),
+        swap_used_bytes: if has_swap { fields[12].trim().parse().ok() } else { None },
+        swap_total_bytes: if has_swap { fields[13].trim().parse().ok() } else { None },
     })
 }
 
@@ -198,6 +204,15 @@ this is not a row
     }
 
     #[test]
+    fn the_fourteen_column_shape_carries_swap_and_the_old_one_does_not() {
+        let points = parse("1754400000,1,2,3,4,5,6,7,8,9,0.5,,100,400\n1754400010,1,2,3,4,5,6,7,8,9,0.5,,,\n1754400020,1,2,3,4,5,6,7,8,9,0.5,\n");
+        assert_eq!(points.len(), 3);
+        assert_eq!((points[0].swap_used_bytes, points[0].swap_total_bytes), (Some(100), Some(400)));
+        assert_eq!((points[1].swap_used_bytes, points[1].swap_total_bytes), (None, None));
+        assert_eq!((points[2].swap_used_bytes, points[2].swap_total_bytes), (None, None));
+    }
+
+    #[test]
     fn an_empty_field_stays_absent_and_never_becomes_zero() {
         let point = &parse(SAMPLE)[1];
         assert_eq!(point.cpu_percent, None);
@@ -256,5 +271,17 @@ this is not a row
         assert_eq!(points[0].power_source, "rapl");
         assert_eq!(points[1].power_watts, None);
         assert_eq!(points[2].power_source, "ipmi");
+    }
+}
+
+#[cfg(test)]
+mod unreadable_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn a_bucket_that_cannot_be_read_is_unavailable_by_reason() {
+        let resp = bucket_unreadable("hour", &"permission denied");
+        assert_eq!(resp.status(), StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(crate::api::reason_of(resp).await, "history.unreadable");
     }
 }

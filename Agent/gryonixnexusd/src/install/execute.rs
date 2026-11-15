@@ -47,6 +47,12 @@ use super::crafty;
 use super::home_assistant;
 use super::mosquitto;
 use super::zigbee2mqtt;
+use super::compat;
+use super::cec_volume;
+use super::shairport_sync;
+use super::packaged;
+use super::uxplay;
+use super::odio;
 use super::jellyfin;
 use super::minecraft;
 use super::mail::dockermailserver as dms;
@@ -103,6 +109,15 @@ const IMPLEMENTED_SERVICE_IDS: &[&str] = &[
     // Its add-ons, refused without it — see `add_on_without_the_hub`.
     "mosquitto",
     "zigbee2mqtt",
+    "shairport-sync",
+    "uxplay",
+    "odio",
+    "snapserver",
+    "snapclient",
+    "upmpdcli",
+    "bluealsa",
+    "raspotify",
+    "mympd",
     "minecraft-java",
     "minecraft-bedrock",
     "crafty-controller",
@@ -607,7 +622,7 @@ pub fn patch_doh_insecure(yaml: &str) -> (String, Option<DohSpelling>) {
 
 // ─────────────────────────── language ───────────────────────────
 
-fn language_from_code(code: &str) -> Language {
+pub fn language_from_code(code: &str) -> Language {
     match code {
         "de" => Language::De,
         "fr" => Language::Fr,
@@ -641,12 +656,23 @@ pub enum Rejection {
     ZigbeeWithoutAStick,
     /// A named stick that is not plugged into this machine
     StickMissing { service: &'static str, device: String },
+    /// The audio hub already runs this player, or the reverse
+    OverlapsAudioHub(&'static str),
+    /// The hub would duplicate a player installed on its own
+    HubOverlapsPlayer(&'static str),
     SiteNameTaken(Vec<String>),
+    /// The machine lacks something the service needs
+    Incompatible(Vec<String>),
     /// This host is already installing this service
     InstallAlreadyRunning(String),
     /// No run by that name on this host
     UnknownJob(String),
 }
+
+const NO_REVERSE_PROXY_TEXT: &str = "this host has no Caddy and the agent cannot install one here — every \
+     service is published through it, and automatic installation needs \
+     apt-get and systemd-run. Install Caddy by hand, or run the server \
+     setup on this machine, then install again";
 
 impl Rejection {
     fn parts(&self) -> (StatusCode, &'static str, String) {
@@ -666,11 +692,7 @@ impl Rejection {
             Rejection::NoReverseProxy => (
                 StatusCode::UNPROCESSABLE_ENTITY,
                 "failed_precondition",
-                "this host has no Caddy and the agent cannot install one here — every \
-                 service is published through it, and automatic installation needs \
-                 apt-get and systemd-run. Install Caddy by hand, or run the server \
-                 setup on this machine, then install again"
-                    .to_string(),
+                NO_REVERSE_PROXY_TEXT.to_string(),
             ),
             Rejection::PortsInUse(conflicts) => (
                 StatusCode::UNPROCESSABLE_ENTITY,
@@ -725,6 +747,12 @@ impl Rejection {
                     page / 1024
                 ),
             ),
+            other => other.hub_parts(),
+        }
+    }
+
+    fn hub_parts(&self) -> (StatusCode, &'static str, String) {
+        match self {
             Rejection::MachineNotAtHome(service) => (
                 StatusCode::UNPROCESSABLE_ENTITY,
                 "failed_precondition",
@@ -766,6 +794,30 @@ impl Rejection {
                      it in, or correct its path in the app, then install again. Nothing has been changed"
                 ),
             ),
+            Rejection::OverlapsAudioHub(service) => (
+                StatusCode::CONFLICT,
+                "failed_precondition",
+                format!(
+                    "{service} will not be installed: the audio hub (odio) on this machine runs the \
+                     same player, and two copies fight over the sound card. Use the hub's own, or \
+                     remove one of them first. Nothing has been changed"
+                ),
+            ),
+            Rejection::HubOverlapsPlayer(player) => (
+                StatusCode::CONFLICT,
+                "failed_precondition",
+                format!(
+                    "The audio hub (odio) will not be installed: {player} is already installed on \
+                     this machine on its own, and the hub brings the same player — two copies \
+                     fight over the sound card. Remove {player} first, then install the hub. \
+                     Nothing has been changed"
+                ),
+            ),
+            Rejection::Incompatible(reasons) => (
+                StatusCode::UNPROCESSABLE_ENTITY,
+                "failed_precondition",
+                format!("this machine cannot install it: {}. Nothing has been changed", reasons.join("; ")),
+            ),
             Rejection::InstallAlreadyRunning(job) => (
                 StatusCode::CONFLICT,
                 "already_exists",
@@ -776,16 +828,46 @@ impl Rejection {
                 "not_found",
                 format!("this host has no record of install job '{}'", truncate(job)),
             ),
+            _ => unreachable!("answered by parts"),
         }
     }
 
     fn response(&self) -> Resp {
         let (status, code, message) = self.parts();
-        connect_error(status, code, &message)
+        let (reason, args) = self.reason();
+        crate::api::connect_refusal(status, code, &message, reason, &args)
     }
 
     pub fn message(&self) -> String {
         self.parts().2
+    }
+
+    /// The stable id the app matches, and its values
+    pub fn reason(&self) -> (&'static str, Vec<String>) {
+        let one = |value: &str| vec![value.to_string()];
+        match self {
+            Rejection::UnknownService(_) => ("install.unknown_service", Vec::new()),
+            Rejection::NotImplemented(_) => ("install.not_implemented", Vec::new()),
+            Rejection::DockerUnavailable(_) => ("install.docker_unavailable", Vec::new()),
+            Rejection::InvalidRequest(_) => ("install.invalid_request", Vec::new()),
+            Rejection::NoReverseProxy => ("install.no_reverse_proxy", Vec::new()),
+            Rejection::PortsInUse(_) => ("install.ports_in_use", Vec::new()),
+            Rejection::AlreadyInstalledOutside { service, holder } => {
+                ("install.installed_outside", vec![service.clone(), holder.clone()])
+            }
+            Rejection::LicenseNotAccepted(edition) => ("install.license_not_accepted", one(edition)),
+            Rejection::EmulatorNeedsSmallPages(_) => ("install.needs_small_pages", Vec::new()),
+            Rejection::MachineNotAtHome(service) => ("install.machine_not_at_home", one(service)),
+            Rejection::AddOnWithoutTheHub(service) => ("install.needs_home_assistant", one(service)),
+            Rejection::ZigbeeWithoutAStick => ("install.zigbee_no_stick", Vec::new()),
+            Rejection::StickMissing { service, device } => ("install.stick_missing", vec![service.to_string(), device.clone()]),
+            Rejection::OverlapsAudioHub(service) => ("install.player_in_hub", one(service)),
+            Rejection::HubOverlapsPlayer(player) => ("install.hub_has_player", one(player)),
+            Rejection::SiteNameTaken(names) => ("install.site_name_taken", names.clone()),
+            Rejection::Incompatible(_) => ("install.incompatible", Vec::new()),
+            Rejection::InstallAlreadyRunning(job) => ("install.already_running", one(job)),
+            Rejection::UnknownJob(_) => ("install.unknown_job", Vec::new()),
+        }
     }
 }
 
@@ -816,6 +898,10 @@ fn home_only_service_away(
 ) -> Option<&'static str> {
     match label {
         "home-assistant" if !machine_is_at_home(input, role, dynamic_dns) => Some("Home Assistant"),
+        "shairport-sync" if !machine_is_at_home(input, role, dynamic_dns) => Some("AirPlay speaker"),
+        "uxplay" if !machine_is_at_home(input, role, dynamic_dns) => Some("AirPlay screen"),
+        "odio" if !machine_is_at_home(input, role, dynamic_dns) => Some("Audio hub (odio)"),
+        id if !machine_is_at_home(input, role, dynamic_dns) && packaged::find(id).is_some() => packaged::find(id).map(|spec| spec.display),
         _ => None,
     }
 }
@@ -922,6 +1008,10 @@ fn compose_project(label: &str) -> &'static str {
         "home-assistant" => home_assistant::COMPOSE_PROJECT,
         "mosquitto" => mosquitto::COMPOSE_PROJECT,
         "zigbee2mqtt" => zigbee2mqtt::COMPOSE_PROJECT,
+        "shairport-sync" => shairport_sync::COMPOSE_PROJECT,
+        "uxplay" => uxplay::UNIT,
+        "odio" => "gryonixnexus-odio",
+        id if packaged::find(id).is_some() => packaged::find(id).map_or("", |spec| spec.id),
         "ollama" => ollama::COMPOSE_PROJECT,
         "open-webui" => open_webui::COMPOSE_PROJECT,
         "litellm" => litellm::COMPOSE_PROJECT,
@@ -1012,6 +1102,7 @@ fn build_input(req: &pb::InstallServiceRequest) -> Result<Input, String> {
     };
     apply_paths(&mut input, req)?;
     apply_usb_device(&mut input, req)?;
+    apply_shairport(&mut input, req);
     apply_texts(&mut input, req);
     apply_flags(&mut input, req);
     apply_numbers(&mut input, req);
@@ -1071,6 +1162,8 @@ fn apply_paths(input: &mut Input, req: &pb::InstallServiceRequest) -> Result<(),
         ("home_assistant_path", &mut input.home_assistant_path),
         ("mosquitto_path", &mut input.mosquitto_path),
         ("zigbee2mqtt_path", &mut input.zigbee2mqtt_path),
+        ("odio_path", &mut input.odio_path),
+        ("shairport_path", &mut input.shairport_path),
         ("minecraft_java_path", &mut input.minecraft_java_path),
         ("minecraft_bedrock_path", &mut input.minecraft_bedrock_path),
         ("crafty_path", &mut input.crafty_path),
@@ -1123,6 +1216,16 @@ fn apply_usb_device(input: &mut Input, req: &pb::InstallServiceRequest) -> Resul
     Ok(())
 }
 
+/// Speaker mode, name and sound device
+fn apply_shairport(input: &mut Input, req: &pb::InstallServiceRequest) {
+    input.shairport_mode = setting_or(req, "shairport_mode", &input.shairport_mode);
+    input.shairport_name = setting_or(req, "shairport_name", &input.shairport_name);
+    input.shairport_output = setting_or(req, "shairport_output", &input.shairport_output);
+    input.shairport_options = setting_or(req, "shairport_options", &input.shairport_options);
+    input.uxplay_name = setting_or(req, "uxplay_name", &input.uxplay_name);
+    input.speaker_name = setting_or(req, "speaker_name", &input.speaker_name);
+}
+
 /// Names, versions and lists: absent means empty, never a default
 fn apply_texts(input: &mut Input, req: &pb::InstallServiceRequest) {
     let slots = [
@@ -1140,6 +1243,7 @@ fn apply_texts(input: &mut Input, req: &pb::InstallServiceRequest) {
         ("jellyfin_hostname", &mut input.jellyfin_hostname),
         ("home_assistant_hostname", &mut input.home_assistant_hostname),
         ("zigbee2mqtt_hostname", &mut input.zigbee2mqtt_hostname),
+        ("odio_hostname", &mut input.odio_hostname),
         ("minecraft_java_version", &mut input.minecraft_java_version),
         ("minecraft_java_whitelist", &mut input.minecraft_java_whitelist),
         ("minecraft_java_operators", &mut input.minecraft_java_operators),
@@ -1308,6 +1412,7 @@ fn compose_text_of(label: &str, input: &Input) -> Option<String> {
         "home-assistant" => Some(home_assistant::compose_contents(input)),
         "mosquitto" => Some(mosquitto::compose_contents(input)),
         "zigbee2mqtt" => Some(zigbee2mqtt::compose_contents(input)),
+        "shairport-sync" => Some(shairport_sync::compose_contents(input)),
         "ollama" => Some(ollama::compose_contents(input)),
         "minecraft-java" => Some(minecraft::java_compose_contents(input)),
         "minecraft-bedrock" => Some(minecraft::bedrock_compose_contents(input)),
@@ -1437,10 +1542,28 @@ fn refuse_unworkable_request(req: &pb::InstallServiceRequest, label: &str, input
     if let Some((service, device)) = stick_missing(label, input) {
         return Err(Rejection::StickMissing { service, device });
     }
-    if !caddy_is_installed() && !can_install_packages() {
+    if let Some(service) = packaged::audio_hub_overlap(label) {
+        return Err(if label == odio::SERVICE_ID {
+            Rejection::HubOverlapsPlayer(service)
+        } else {
+            Rejection::OverlapsAudioHub(service)
+        });
+    }
+    if label != "uxplay" && packaged::find(label).is_none() && !caddy_is_installed() && !can_install_packages() {
         return Err(Rejection::NoReverseProxy);
     }
     Ok(())
+}
+
+/// What this system lacks for the service
+async fn refuse_incompatible(label: &str) -> Result<(), Rejection> {
+    let blocked: Vec<String> = compat::check(label)
+        .await
+        .into_iter()
+        .filter(|found| found.severity == compat::Severity::Blocked)
+        .map(|found| found.message())
+        .collect();
+    if blocked.is_empty() { Ok(()) } else { Err(Rejection::Incompatible(blocked)) }
 }
 
 /// No docker yet, but the install itself will add it
@@ -1472,6 +1595,7 @@ async fn prepare_install(
     }
     let input = input;
     refuse_unworkable_request(req, label, &input)?;
+    refuse_incompatible(label).await?;
     let protocols = vpn_protocols_from(req)?;
     refuse_conflicts(req, label, &input, &protocols, &existing_projects).await?;
     Ok((input, protocols))
@@ -1769,6 +1893,10 @@ async fn dispatch_install_1(
         "home-assistant" => Some(install_home_assistant_steps(input, sink).await),
         "mosquitto" => Some(install_mosquitto_steps(input, sink).await),
         "zigbee2mqtt" => Some(install_zigbee2mqtt_steps(input, sink).await),
+        "shairport-sync" => Some(install_shairport_sync_steps(input, sink).await),
+        "uxplay" => Some(install_uxplay_steps(input, sink).await),
+        "odio" => Some(install_odio_steps(input, sink).await),
+        id if packaged::find(id).is_some() => Some(install_packaged_steps(id, &input.speaker_name, sink).await),
         "ollama" => Some(install_ollama_steps(input, sink).await),
         "open-webui" => Some({
             let services = host_service_ids(label, protocols).await;
@@ -1846,11 +1974,13 @@ async fn install(
         sequence: AtomicU64::new(0),
     };
     let _ = sink.started(compose_project(label)).await;
+    take_written_sites(label);
     if matches!(host_ctx.role, Some(HostRole::VpsRelay)) {
         remember_relay_home(&host_ctx);
     }
 
-    let outcome = match packages::ensure_for(crate::vpn_dns_priority::is_relay(), &sink).await {
+    let web_stack = if label == "uxplay" || packaged::find(label).is_some() { Ok(()) } else { packages::ensure_for(crate::vpn_dns_priority::is_relay(), &sink).await };
+    let outcome = match web_stack {
         Err(why) => Err(why),
         Ok(()) => {
             firewall_base::ensure_ruleset(
@@ -1874,6 +2004,12 @@ async fn install(
         return;
     }
 
+    if crate::modules::AUDIO_SERVICES.contains(&label) {
+        if let Err(why) = crate::modules::activate(&crate::modules::AUDIO) {
+            tracing::warn!(%why, "the audio module is not in place");
+        }
+    }
+
     if let Err(why) = provision_host_surface(&input, &host_ctx, &protocols, label, &sink).await {
         let status = read_status(&service_id, &store).await;
         let _ = sink.completed(status).await;
@@ -1882,6 +2018,7 @@ async fn install(
         return;
     }
 
+    drop_stale_sites(label, &sink).await;
     let status = read_status(&service_id, &store).await;
     crate::vpn_dns::wake();
     let _ = sink.completed(status).await;
@@ -2747,6 +2884,63 @@ async fn write_headscale_files(
     Ok(())
 }
 
+/// Keeps this server's own mesh node current and joined
+pub async fn keep_mesh_node_joined() {
+    let Some(dir) = mesh_node_dir().await else { return };
+    let path = dir.join("docker-compose.yml");
+    let Ok(compose) = std::fs::read_to_string(&path) else { return };
+    let mut changed = false;
+    if let Some(updated) = tailscale::with_current_env(&compose) {
+        changed = write_managed_text(&path, updated).is_ok();
+    }
+    if tailscale::joins_own_control(&compose) && mesh_node_key_expired().await {
+        changed |= renew_mesh_join_key(&dir).await;
+    }
+    if !changed {
+        return;
+    }
+    match run_docker_captured(&compose_up_args(tailscale::COMPOSE_PROJECT, &dir), Duration::from_secs(180)).await {
+        Ok(run) if run.success => tracing::info!("restarted the mesh node to rejoin"),
+        Ok(run) => tracing::warn!(why = %run.why(), "the mesh node did not restart"),
+        Err(why) => tracing::warn!(%why, "the mesh node did not restart"),
+    }
+}
+
+/// Where the mesh node's compose file lives, if installed
+async fn mesh_node_dir() -> Option<PathBuf> {
+    let label = "{{index .Config.Labels \"com.docker.compose.project.working_dir\"}}";
+    let inspect = ["inspect".to_string(), "--format".to_string(), label.to_string(), tailscale::CONTAINER.to_string()];
+    let run = run_docker_captured(&inspect, Duration::from_secs(15)).await.ok()?;
+    let dir = run.stdout.trim();
+    (run.success && !dir.is_empty()).then(|| PathBuf::from(dir))
+}
+
+async fn mesh_node_key_expired() -> bool {
+    let logs = ["logs".to_string(), "--tail".to_string(), "80".to_string(), tailscale::CONTAINER.to_string()];
+    match run_docker_captured(&logs, Duration::from_secs(15)).await {
+        Ok(run) => tailscale::join_key_refused(&format!("{}{}", run.stdout, run.stderr)),
+        Err(_) => false,
+    }
+}
+
+async fn renew_mesh_join_key(dir: &Path) -> bool {
+    let key = match mint_mesh_join_key().await {
+        Ok(key) => key,
+        Err(why) => {
+            tracing::warn!(%why, "no fresh join key for the mesh node");
+            return false;
+        }
+    };
+    let file = ManagedFile { path: dir.join(".env"), contents: format!("TS_AUTHKEY={key}\n"), mode: Some(0o600) };
+    match write_managed_files(&[file]) {
+        Ok(_) => true,
+        Err(err) => {
+            tracing::warn!(%err, "could not store the mesh node's fresh key");
+            false
+        }
+    }
+}
+
 /// Opens the DERP relay's STUN port, saying what happened
 async fn open_stun_port(sink: &EventSink) {
     let ports = vec![firewall::Port::udp(headscale::STUN_PORT)];
@@ -2794,7 +2988,7 @@ async fn install_mesh_node_steps(input: &Input, own_control: bool, sink: &EventS
     let state_dir = dir.join("state");
     let _ = sink.step("adding this server to its own mesh").await;
     prepare_mesh_node_files(input, &dir, &state_dir, sink).await?;
-    if !mesh_node_has_identity(&state_dir) {
+    if own_control || !mesh_node_has_identity(&state_dir) {
         store_mesh_join_key(input, own_control, &dir, sink).await?;
     }
 
@@ -3693,6 +3887,71 @@ async fn install_qdrant_steps(input: &Input, sink: &EventSink) -> Result<(), Str
     Ok(())
 }
 
+/// A port of `ShairportSyncService.setupSteps`
+async fn install_shairport_sync_steps(input: &Input, sink: &EventSink) -> Result<(), String> {
+    if !Path::new("/dev/snd").exists() {
+        return Err("this machine has no sound card (/dev/snd), so there is nothing for the speaker to play through".to_string());
+    }
+    let dir = PathBuf::from(&input.shairport_path);
+
+    let _ = sink.step("creating service directories").await;
+    create_dir_0755(&dir).map_err(|err| format!("could not create {}: {err}", dir.display()))?;
+
+    let compose_path = dir.join("docker-compose.yml");
+    write_managed_text(&compose_path, shairport_sync::compose_contents(input))
+        .map_err(|err| format!("could not write {}: {err}", compose_path.display()))?;
+    let config_path = dir.join(shairport_sync::CONFIG_FILE);
+    write_managed_text(&config_path, shairport_sync::config_contents(input))
+        .map_err(|err| format!("could not write {}: {err}", config_path.display()))?;
+
+    let _ = sink.step("pulling the AirPlay speaker image").await;
+    run_docker_streaming(&compose_pull_args(shairport_sync::COMPOSE_PROJECT, &dir), sink).await?;
+    let _ = sink.step("starting the AirPlay speaker").await;
+    compose_up(shairport_sync::COMPOSE_PROJECT, &dir, sink).await?;
+
+    open_service_firewall_ports(shairport_sync::SERVICE_ID, &shairport_sync::firewall_ports(input), sink).await;
+    packages::run_outside_sandbox(&cec_volume::setup_script(input), "setting up the speaker's HDMI volume", sink).await?;
+
+    Ok(())
+}
+
+/// A port of `PackagedAudioService.setupSteps`
+async fn install_packaged_steps(id: &str, speaker_name: &str, sink: &EventSink) -> Result<(), String> {
+    let Some(spec) = packaged::find(id) else { return Err(format!("unknown service {id}")) };
+    packages::run_outside_sandbox(&packaged::named_setup_script(spec, speaker_name), &format!("installing {}", spec.display), sink).await?;
+    open_service_firewall_ports(spec.id, spec.ports, sink).await;
+    Ok(())
+}
+
+/// A port of `UxPlayService.setupSteps`
+async fn install_uxplay_steps(input: &Input, sink: &EventSink) -> Result<(), String> {
+    if !packages::have_binary("apt-get") {
+        return Err("the AirPlay screen is installed from Debian packages, and this host has no apt-get".to_string());
+    }
+    let _ = sink.step("installing UxPlay and its GStreamer plugins").await;
+    packages::run_outside_sandbox(&uxplay::setup_script(input), "installing the AirPlay screen", sink).await?;
+    open_service_firewall_ports(uxplay::SERVICE_ID, &uxplay::firewall_ports(), sink).await;
+    Ok(())
+}
+
+/// A port of `OdioService.setupSteps`
+async fn install_odio_steps(input: &Input, sink: &EventSink) -> Result<(), String> {
+    if !packages::have_binary("apt-get") {
+        return Err("the audio hub is installed from Debian packages, and this host has no apt-get".to_string());
+    }
+    let dir = PathBuf::from(&input.odio_path);
+    create_dir_0755(&dir).map_err(|err| format!("could not create {}: {err}", dir.display()))?;
+    let airplay_taken = input.installed_services.iter().any(|id| id == "shairport-sync")
+        || Path::new(&input.shairport_path).join("docker-compose.yml").exists();
+    let _ = sink.step("running the pinned odio installer — this takes several minutes").await;
+    odio::run_installer(&odio::installer_script(airplay_taken), sink).await?;
+    let _ = sink.step("binding odio to this machine and setting its password").await;
+    packages::run_outside_sandbox(&odio::finish_script(input), "finishing the audio hub", sink).await?;
+    write_caddy_site(&odio::caddy_site_names(input), &odio::caddy_site(input))?;
+    reload_caddy(sink).await?;
+    Ok(())
+}
+
 /// A port of `SearXNGService.setupSteps`
 async fn install_searxng_steps(input: &Input, sink: &EventSink) -> Result<(), String> {
     let dir = PathBuf::from(&input.searxng_path);
@@ -4084,7 +4343,7 @@ async fn install_minecraft_bedrock_steps(input: &Input, sink: &EventSink) -> Res
     // UDP, and a TCP rule would open nothing at all.
     let ports: Vec<firewall::Port> = minecraft::bedrock_firewall_ports(input)
         .into_iter()
-        .map(|(port, _)| firewall::Port { proto: firewall::Proto::Udp, port })
+        .map(|(port, _)| firewall::Port { proto: firewall::Proto::Udp, port, last: port })
         .collect();
     open_service_firewall_ports("minecraft-bedrock", &ports, sink).await;
 
@@ -4149,7 +4408,7 @@ async fn install_immich_steps(input: &Input, sink: &EventSink) -> Result<(), Str
     Ok(())
 }
 
-async fn run_docker_capture(args: &[String], timeout: Duration) -> Result<(bool, String), String> {
+pub(crate) async fn run_docker_capture(args: &[String], timeout: Duration) -> Result<(bool, String), String> {
     let output = tokio::time::timeout(
         timeout,
         tokio::process::Command::new(docker_bin())
@@ -5069,6 +5328,7 @@ fn mail_firewall_ports(ports: &[super::mail::FirewallPort]) -> Vec<firewall::Por
         .iter()
         .map(|port| firewall::Port {
             port: port.port,
+            last: port.port,
             proto: match port.proto {
                 super::mail::Proto::Tcp => firewall::Proto::Tcp,
                 super::mail::Proto::Udp => firewall::Proto::Udp,
@@ -6314,7 +6574,51 @@ fn site_name_conflicts_in(existing: &str, label: &str, input: &Input) -> Vec<Str
 }
 
 fn write_caddy_site(names: &[String], site: &str) -> Result<(), String> {
-    with_caddyfile_lock(|| write_caddy_site_locked(names, site))
+    with_caddyfile_lock(|| write_caddy_site_locked(names, site))?;
+    note_written_sites(&caddy::owner_of(site).unwrap_or_default(), names);
+    Ok(())
+}
+
+/// Names each service wrote during its running install
+static SITES_WRITTEN: std::sync::Mutex<std::collections::BTreeMap<String, Vec<String>>> =
+    std::sync::Mutex::new(std::collections::BTreeMap::new());
+
+fn note_written_sites(owner: &str, names: &[String]) {
+    let mut written = SITES_WRITTEN.lock().unwrap_or_else(|e| e.into_inner());
+    written.entry(owner.to_string()).or_default().extend(names.iter().cloned());
+}
+
+fn take_written_sites(owner: &str) -> Vec<String> {
+    SITES_WRITTEN.lock().unwrap_or_else(|e| e.into_inner()).remove(owner).unwrap_or_default()
+}
+
+/// Takes a service's old web addresses off Caddy
+async fn drop_stale_sites(label: &str, sink: &EventSink) {
+    let current = take_written_sites(label);
+    if current.is_empty() {
+        return;
+    }
+    let changed = with_caddyfile_lock(|| {
+        let existing = std::fs::read_to_string(CADDYFILE_PATH).unwrap_or_default();
+        let pruned = caddy::without_stale_sites(&existing, label, &current);
+        if pruned == existing {
+            return Ok(false);
+        }
+        std::fs::write(CADDYFILE_PREVIOUS, &existing).map_err(|err| err.to_string())?;
+        write_replacing(Path::new(CADDYFILE_PATH), &pruned).map(|()| true)
+    });
+    match changed {
+        Ok(true) => {
+            let _ = sink.step("removing the old web address").await;
+            if let Err(why) = reload_caddy(sink).await {
+                let _ = sink.step(&format!("the old web address stays: {why}")).await;
+            }
+        }
+        Ok(false) => {}
+        Err(why) => {
+            let _ = sink.step(&format!("the old web address stays: {why}")).await;
+        }
+    }
 }
 
 fn write_caddy_site_locked(names: &[String], site: &str) -> Result<(), String> {
@@ -6343,7 +6647,8 @@ fn write_caddy_site_locked(names: &[String], site: &str) -> Result<(), String> {
             arm_setup_guard(&guarded)?;
         }
     }
-    let merged = caddy::merge_site(&existing, names, site);
+    let merged = crate::open_api::reapplied(&caddy::merge_site(&existing, names, site));
+    let merged = if caddy::serves_own_certificate(site) { super::local_alias::with_home_names(&merged, names) } else { merged };
     if !existing.is_empty() {
         std::fs::write(CADDYFILE_PREVIOUS, &existing)
             .map_err(|err| format!("could not keep a copy of {CADDYFILE_PATH}: {err}"))?;
@@ -6445,7 +6750,9 @@ async fn open_home_doors(sink: &EventSink) {
 pub async fn refresh_portal_split_sites() -> Result<bool, String> {
     let changed = with_caddyfile_lock(|| -> Result<Option<(String, String)>, String> {
         let Ok(existing) = std::fs::read_to_string(CADDYFILE_PATH) else { return Ok(None) };
-        let upgraded = caddy::with_current_global_options(&caddy::with_current_portal_split(&existing));
+        let upgraded = crate::open_api::reapplied(&caddy::with_current_global_options(
+            &caddy::with_current_portal_split(&existing),
+        ));
         if upgraded == existing {
             return Ok(None);
         }
@@ -6458,6 +6765,62 @@ pub async fn refresh_portal_split_sites() -> Result<bool, String> {
     }
     restore_caddyfile_if_unchanged(&existing, &upgraded)?;
     Err("Caddy refused the rebuilt sites, so the old ones stay".to_string())
+}
+
+/// Gives older mesh sites a page at their root
+pub async fn refresh_mesh_root_page(language: Language) -> Result<bool, String> {
+    let changed = with_caddyfile_lock(|| -> Result<Option<(String, String)>, String> {
+        let Ok(existing) = std::fs::read_to_string(CADDYFILE_PATH) else { return Ok(None) };
+        let upgraded = super::headscale::with_root_pages(&existing, language);
+        if upgraded == existing {
+            return Ok(None);
+        }
+        std::fs::write(CADDYFILE_PATH, &upgraded).map_err(|err| format!("could not write {CADDYFILE_PATH}: {err}"))?;
+        Ok(Some((existing, upgraded)))
+    })?;
+    let Some((existing, upgraded)) = changed else { return Ok(false) };
+    if caddy_refusal().await.is_none() && run_quiet(&systemctl_bin(), &["reload", "caddy"]).await.is_ok() {
+        return Ok(true);
+    }
+    restore_caddyfile_if_unchanged(&existing, &upgraded)?;
+    Err("Caddy refused the mesh page, so the old site stays".to_string())
+}
+
+/// Rewrites one service's sites with these paths open
+pub async fn apply_open_paths(owner: &str, open: &[String]) -> Result<(), String> {
+    apply_caddyfile_edit(|existing| {
+        super::open_sites::with_open_paths(existing, owner, open)
+            .ok_or_else(|| format!("the sites of {owner} are not in a shape the agent can change"))
+    })
+    .await
+}
+
+/// Rewrites the Caddyfile, reloads Caddy, restores it on refusal
+pub async fn apply_caddyfile_edit(edit: impl Fn(&str) -> Result<String, String>) -> Result<(), String> {
+    with_caddyfile_lock(|| -> Result<(), String> {
+        let existing = std::fs::read_to_string(CADDYFILE_PATH)
+            .map_err(|err| format!("could not read {CADDYFILE_PATH}: {err}"))?;
+        let rewritten = edit(&existing)?;
+        std::fs::write(CADDYFILE_PREVIOUS, &existing)
+            .map_err(|err| format!("could not keep a copy of {CADDYFILE_PATH}: {err}"))?;
+        write_replacing(Path::new(CADDYFILE_PATH), &rewritten)
+    })?;
+    if let Some(why) = caddy_refusal().await {
+        restore_previous_caddyfile();
+        return Err(format!("Caddy refused the change, so the previous sites stay. Caddy said: {why}"));
+    }
+    if run_quiet(&systemctl_bin(), &["reload", "caddy"]).await.is_err() {
+        restore_previous_caddyfile();
+        let _ = run_quiet(&systemctl_bin(), &["reload", "caddy"]).await;
+        return Err("Caddy did not take the change, so the previous sites stay".to_string());
+    }
+    let _ = std::fs::remove_file(CADDYFILE_PREVIOUS);
+    Ok(())
+}
+
+/// The Caddyfile as it stands, empty when missing
+pub fn current_caddyfile() -> String {
+    std::fs::read_to_string(CADDYFILE_PATH).unwrap_or_default()
 }
 
 fn restore_caddyfile_if_unchanged(old: &str, written: &str) -> Result<(), String> {
@@ -6674,6 +7037,36 @@ fn resolve_panel_password(dir: &Path) -> io::Result<(String, bool)> {
     Ok((random_hex_12()?, false))
 }
 
+const MODULES_LOAD_DIR: &str = "/etc/modules-load.d";
+
+/// Loads WireGuard on the host, now and at every boot
+async fn load_wireguard_module() {
+    let _ = run_quiet("modprobe", &["wireguard"]).await;
+    let dir = Path::new(MODULES_LOAD_DIR);
+    if dir.is_dir() {
+        let _ = std::fs::write(dir.join("gryonixnexus-wireguard.conf"), "wireguard\n");
+    }
+}
+
+/// Takes the module right off an installed panel
+pub async fn keep_panel_without_module_right() {
+    let dir = PathBuf::from(panel::PATH);
+    let path = dir.join("docker-compose.yml");
+    let Some(updated) = std::fs::read_to_string(&path).ok().and_then(|text| panel::without_module_right(&text)) else {
+        return;
+    };
+    load_wireguard_module().await;
+    if let Err(err) = write_managed_text(&path, updated) {
+        tracing::warn!(%err, "could not narrow the VPN panel's rights");
+        return;
+    }
+    match run_docker_captured(&compose_up_args(panel::COMPOSE_PROJECT, &dir), Duration::from_secs(180)).await {
+        Ok(run) if run.success => tracing::info!("the VPN panel no longer loads kernel modules"),
+        Ok(run) => tracing::warn!(why = %run.why(), "the VPN panel did not restart"),
+        Err(why) => tracing::warn!(%why, "the VPN panel did not restart"),
+    }
+}
+
 async fn install_vpn_steps(
     input: &Input,
     protocols: &[panel::Protocol],
@@ -6724,6 +7117,7 @@ async fn install_vpn_steps(
     } else {
         let _ = sink.step("the VPN panel image is current").await;
     }
+    load_wireguard_module().await;
     let _ = sink.step("starting the VPN panel").await;
     compose_up(panel::COMPOSE_PROJECT, &dir, sink).await?;
 
@@ -8083,7 +8477,8 @@ mod tests {
         "jellyfin_hostname", "jellyfin_path", "jellyfin_media_path",
         "home_assistant_hostname", "home_assistant_path", "machine_at_home",
         "home_assistant_usb_device", "mosquitto_path",
-        "zigbee2mqtt_path", "zigbee2mqtt_hostname",
+        "shairport_path", "shairport_mode", "shairport_name", "shairport_output",
+        "shairport_options", "zigbee2mqtt_path", "zigbee2mqtt_hostname", "uxplay_name", "speaker_name", "odio_path", "odio_hostname",
         "minecraft_java_path", "minecraft_java_version", "minecraft_java_flavour",
         "minecraft_java_memory_mb", "minecraft_java_port", "minecraft_java_accepts_eula",
         "minecraft_java_whitelist", "minecraft_java_operators", "minecraft_java_mods",

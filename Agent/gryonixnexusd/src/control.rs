@@ -134,11 +134,7 @@ where
 
 /// The container engine itself could not be reached/queried
 fn engine_unreachable(detail: &str) -> Resp {
-    connect_error(
-        StatusCode::SERVICE_UNAVAILABLE,
-        "unavailable",
-        &format!("container engine unavailable: {detail}"),
-    )
+    crate::api::engine_unavailable(detail)
 }
 
 // ─────────────────────────── ControlService ───────────────────────────
@@ -212,6 +208,14 @@ pub async fn control_service(
 }
 
 async fn run_project(project: &str, action: pb::ServiceAction, sink: &EventSink) -> Result<(), String> {
+    if let Some(id) = project.strip_prefix(crate::native::PROJECT_PREFIX) {
+        let native = crate::native::find(id).ok_or_else(|| format!("{id} is not a systemd service"))?;
+        let output = native.run(verb(action)).await?;
+        for line in output.lines() {
+            let _ = sink.progress("stdout", line.to_string()).await;
+        }
+        return Ok(());
+    }
     let args = docker_args(project, action);
     let mut child = tokio::process::Command::new("docker")
         .args(&args)
@@ -431,5 +435,15 @@ mod tests {
         assert_eq!(event.service_id, "mailcow");
         assert_eq!(event.action, pb::ServiceAction::Restart as i32);
         assert_eq!(event.phase, pb::ServiceOperationPhase::Progress as i32);
+    }
+}
+
+#[cfg(test)]
+mod reason_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn a_silent_engine_answers_with_the_docker_reason() {
+        assert_eq!(crate::api::reason_of(engine_unreachable("no socket")).await, "host.docker_unavailable");
     }
 }

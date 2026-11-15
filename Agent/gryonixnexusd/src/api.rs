@@ -25,8 +25,8 @@ use crate::ddns;
 use crate::mesh;
 use crate::notify;
 use crate::{
-    agent_update, backup, backup_drive, container_backup, container_backup_run, container_removal, container_update, container_schedule, containers, control, discover, dkim, history, lockdown, mailbox,
-    metrics, models, mods, pb, restore, security, serial,
+    agent_update, backup, backup_drive, container_backup, container_backup_run, container_removal, container_update, container_schedule, containers, control, discover, dkim, docker_assets, history, lockdown, mailbox,
+    metrics, models, mods, pb, restore, security, serial, system_settings,
     uninstall, update,
 };
 
@@ -65,6 +65,9 @@ async fn route(req: Request<Incoming>, store: Arc<Mutex<Store>>) -> anyhow::Resu
     if let Some(resp) = route_containers_3(&path, codec, bytes.clone(), store.clone()).await? {
         return Ok(resp);
     }
+    if let Some(resp) = route_containers_4(&path, codec, bytes.clone(), store.clone()).await? {
+        return Ok(resp);
+    }
     if let Some(resp) = route_pairing(&path, codec, bytes.clone(), store.clone()).await? {
         return Ok(resp);
     }
@@ -72,6 +75,9 @@ async fn route(req: Request<Incoming>, store: Arc<Mutex<Store>>) -> anyhow::Resu
         return Ok(resp);
     }
     if let Some(resp) = route_update(&path, codec, bytes.clone()).await? {
+        return Ok(resp);
+    }
+    if let Some(resp) = route_update_2(&path, codec, bytes.clone()).await? {
         return Ok(resp);
     }
     if let Some(resp) = route_security(&path, codec, bytes.clone()).await? {
@@ -103,6 +109,7 @@ async fn route_control(path: &str, codec: Codec, bytes: Bytes, store: Arc<Mutex<
                 .collect();
             state.wake_on_lan = crate::wake::current();
             state.mesh_address = crate::mesh::own_address().await.unwrap_or_default();
+            state.agent_health = Some(crate::health::read());
             codec.encode(&state)
         }).map(Some),
         "/gryonixnexusd.v1.Control/Discover" => ({
@@ -110,6 +117,8 @@ async fn route_control(path: &str, codec: Codec, bytes: Bytes, store: Arc<Mutex<
             let result = discover::scan().await?;
             // Persist what adoption found so GetState reflects it afterwards.
             lock(&store).record_discovery(&result.services)?;
+            let ids: Vec<String> = result.services.iter().map(|service| service.id.clone()).collect();
+            crate::modules::settle_audio(&ids);
             codec.encode(&result)
         }).map(Some),
         "/gryonixnexusd.v1.Control/ServiceStatus" => ({
@@ -127,6 +136,22 @@ async fn route_control(path: &str, codec: Codec, bytes: Bytes, store: Arc<Mutex<
         "/gryonixnexusd.v1.Control/ListSerialDevices" => ({
             let _req: pb::ListSerialDevicesRequest = codec.decode(&bytes)?;
             codec.encode(&serial::list())
+        }).map(Some),
+        "/gryonixnexusd.v1.Control/GetSystemSettings" => ({
+            let _req: pb::GetSystemSettingsRequest = codec.decode(&bytes)?;
+            Ok(system_settings::get(codec).await)
+        }).map(Some),
+        "/gryonixnexusd.v1.Control/SetTimeZone" => ({
+            let req: pb::SetTimeZoneRequest = codec.decode(&bytes)?;
+            Ok(system_settings::set_time_zone(codec, req).await)
+        }).map(Some),
+        "/gryonixnexusd.v1.Control/SetHostName" => ({
+            let req: pb::SetHostNameRequest = codec.decode(&bytes)?;
+            Ok(system_settings::set_host_name(codec, req).await)
+        }).map(Some),
+        "/gryonixnexusd.v1.Control/SetTimeSync" => ({
+            let req: pb::SetTimeSyncRequest = codec.decode(&bytes)?;
+            Ok(system_settings::set_time_sync(codec, req).await)
         }).map(Some),
         "/gryonixnexusd.v1.Control/HostMetrics" => ({
             let req: pb::HostMetricsRequest = codec.decode_enveloped(&bytes)?;
@@ -187,6 +212,45 @@ async fn route_containers(path: &str, codec: Codec, bytes: Bytes, store: Arc<Mut
                 Err(refusal) => Ok(refusal.response()),
                 Ok((label, list)) => Ok(tail_all(codec, list, label, req.tail)),
             }
+        }).map(Some),
+        "/gryonixnexusd.v1.Containers/ListImages" => ({
+            let _req: pb::ListImagesRequest = codec.decode(&bytes)?;
+            Ok(docker_assets::list_images(codec).await)
+        }).map(Some),
+        "/gryonixnexusd.v1.Containers/ListVolumes" => ({
+            let _req: pb::ListVolumesRequest = codec.decode(&bytes)?;
+            let names = lock(&store).container_names()?;
+            Ok(docker_assets::list_volumes(codec, &names).await)
+        }).map(Some),
+        _ => Ok(None),
+    }
+}
+
+async fn route_containers_4(path: &str, codec: Codec, bytes: Bytes, store: Arc<Mutex<Store>>) -> anyhow::Result<Option<Resp>> {
+    match path {
+        "/gryonixnexusd.v1.Containers/RemoveImage" => ({
+            let req: pb::RemoveImageRequest = codec.decode(&bytes)?;
+            Ok(docker_assets::remove_image(codec, req).await)
+        }).map(Some),
+        "/gryonixnexusd.v1.Containers/RemoveVolume" => ({
+            let req: pb::RemoveVolumeRequest = codec.decode(&bytes)?;
+            let names = lock(&store).container_names()?;
+            Ok(docker_assets::remove_volume(codec, req, &names).await)
+        }).map(Some),
+        "/gryonixnexusd.v1.Containers/PruneUnused" => ({
+            let req: pb::PruneUnusedRequest = codec.decode(&bytes)?;
+            let names = lock(&store).container_names()?;
+            Ok(docker_assets::prune_unused(codec, req, &names).await)
+        }).map(Some),
+        "/gryonixnexusd.v1.Containers/ListNetworks" => ({
+            let _req: pb::ListNetworksRequest = codec.decode(&bytes)?;
+            let names = lock(&store).container_names()?;
+            Ok(crate::docker_networks::list_networks(codec, &names).await)
+        }).map(Some),
+        "/gryonixnexusd.v1.Containers/RemoveNetwork" => ({
+            let req: pb::RemoveNetworkRequest = codec.decode(&bytes)?;
+            let names = lock(&store).container_names()?;
+            Ok(crate::docker_networks::remove_network(codec, req, &names).await)
         }).map(Some),
         "/gryonixnexusd.v1.Containers/InspectContainer" => ({
             let req: pb::InspectContainerRequest = codec.decode(&bytes)?;
@@ -448,6 +512,10 @@ async fn route_vault(path: &str, codec: Codec, bytes: Bytes, store: Arc<Mutex<St
             let req: pb::SetBackupDrivesRequest = codec.decode(&bytes)?;
             Ok(backup_drive::set_backup_drives(codec, req).await)
         }).map(Some),
+        "/gryonixnexusd.v1.Backup/SetBackupParts" => ({
+            let req: pb::SetBackupPartsRequest = codec.decode(&bytes)?;
+            Ok(backup::set_backup_parts(codec, req).await)
+        }).map(Some),
         "/gryonixnexusd.v1.Backup/FetchDriveBackup" => ({
             let req: pb::FetchDriveBackupRequest = codec.decode(&bytes)?;
             Ok(backup_drive::fetch_drive_backup(codec, req).await)
@@ -490,6 +558,12 @@ async fn route_update(path: &str, codec: Codec, bytes: Bytes) -> anyhow::Result<
             let req: pb::ApplyAgentUpdateRequest = codec.decode_enveloped(&bytes)?;
             Ok(agent_update::apply_agent_update(codec, req).await)
         }).map(Some),
+        _ => Ok(None),
+    }
+}
+
+async fn route_update_2(path: &str, codec: Codec, bytes: Bytes) -> anyhow::Result<Option<Resp>> {
+    match path {
         "/gryonixnexusd.v1.Lockdown/GetLockdown" => ({
             let req: pb::GetLockdownRequest = codec.decode(&bytes)?;
             Ok(lockdown::get_lockdown(codec, req).await)
@@ -497,6 +571,66 @@ async fn route_update(path: &str, codec: Codec, bytes: Bytes) -> anyhow::Result<
         "/gryonixnexusd.v1.Lockdown/SetLockdown" => ({
             let req: pb::SetLockdownRequest = codec.decode(&bytes)?;
             Ok(lockdown::set_lockdown(codec, req).await)
+        }).map(Some),
+        "/gryonixnexusd.v1.Lockdown/GetOpenAPI" => ({
+            let req: pb::GetOpenApiRequest = codec.decode(&bytes)?;
+            Ok(crate::open_api::get_open_api(codec, req).await)
+        }).map(Some),
+        "/gryonixnexusd.v1.Lockdown/SetOpenAPI" => ({
+            let req: pb::SetOpenApiRequest = codec.decode(&bytes)?;
+            Ok(crate::open_api::set_open_api(codec, req).await)
+        }).map(Some),
+        "/gryonixnexusd.v1.Exposure/ProbePublicPorts" => ({
+            let req: pb::ProbePublicPortsRequest = codec.decode(&bytes)?;
+            Ok(crate::exposure::probe_public_ports(codec, req).await)
+        }).map(Some),
+        "/gryonixnexusd.v1.AppModules/GetAppModules" => ({
+            let req: pb::GetAppModulesRequest = codec.decode(&bytes)?;
+            Ok(crate::app_modules::get_app_modules(codec, req).await)
+        }).map(Some),
+        "/gryonixnexusd.v1.AppModules/SetAppModules" => ({
+            let req: pb::AppModuleSet = codec.decode(&bytes)?;
+            Ok(crate::app_modules::set_app_modules(codec, req).await)
+        }).map(Some),
+        "/gryonixnexusd.v1.ServiceNames/GetServiceNames" => ({
+            let req: pb::GetServiceNamesRequest = codec.decode(&bytes)?;
+            Ok(crate::service_names::get_service_names(codec, req).await)
+        }).map(Some),
+        "/gryonixnexusd.v1.ServiceNames/SetServiceName" => ({
+            let req: pb::SetServiceNameRequest = codec.decode(&bytes)?;
+            Ok(crate::service_names::set_service_name(codec, req).await)
+        }).map(Some),
+        "/gryonixnexusd.v1.Audio/ListAudioOutputs" => ({
+            let req: pb::ListAudioOutputsRequest = codec.decode(&bytes)?;
+            Ok(crate::audio_outputs::list_audio_outputs(codec, req).await)
+        }).map(Some),
+        "/gryonixnexusd.v1.Audio/OdioCall" => ({
+            let req: pb::OdioCallRequest = codec.decode(&bytes)?;
+            Ok(crate::odio_api::odio_call(codec, req).await)
+        }).map(Some),
+        "/gryonixnexusd.v1.Exposure/GetLocalAliases" => ({
+            let req: pb::GetLocalAliasesRequest = codec.decode(&bytes)?;
+            Ok(crate::exposure::get_local_aliases(codec, req).await)
+        }).map(Some),
+        "/gryonixnexusd.v1.Exposure/SetLocalAlias" => ({
+            let req: pb::SetLocalAliasRequest = codec.decode(&bytes)?;
+            Ok(crate::exposure::set_local_alias(codec, req).await)
+        }).map(Some),
+        "/gryonixnexusd.v1.Exposure/SetHomeOnlyPorts" => ({
+            let req: pb::SetHomeOnlyPortsRequest = codec.decode(&bytes)?;
+            Ok(crate::exposure::set_home_only_ports(codec, req).await)
+        }).map(Some),
+        "/gryonixnexusd.v1.McpAccess/GetMcpAccess" => ({
+            let req: pb::GetMcpAccessRequest = codec.decode(&bytes)?;
+            Ok(crate::mcp_access::get_mcp_access(codec, req).await)
+        }).map(Some),
+        "/gryonixnexusd.v1.McpAccess/SetMcpAccess" => ({
+            let req: pb::SetMcpAccessRequest = codec.decode(&bytes)?;
+            Ok(crate::mcp_access::set_mcp_access(codec, req).await)
+        }).map(Some),
+        "/gryonixnexusd.v1.Exposure/GetLocalRootCA" => ({
+            let req: pb::GetLocalRootCaRequest = codec.decode(&bytes)?;
+            Ok(crate::exposure::get_local_root_ca(codec, req).await)
         }).map(Some),
         "/gryonixnexusd.v1.Security/GetSecurityStatus" => ({
             let req: pb::GetSecurityStatusRequest = codec.decode(&bytes)?;
@@ -547,6 +681,10 @@ async fn route_security(path: &str, codec: Codec, bytes: Bytes) -> anyhow::Resul
         "/gryonixnexusd.v1.Security/ListSshUsers" => ({
             let req: pb::ListSshUsersRequest = codec.decode(&bytes)?;
             Ok(security::list_ssh_users(codec, req).await)
+        }).map(Some),
+        "/gryonixnexusd.v1.Security/AuthorizeAppKey" => ({
+            let req: pb::AuthorizeAppKeyRequest = codec.decode(&bytes)?;
+            Ok(security::authorize_app_key(codec, req).await)
         }).map(Some),
         "/gryonixnexusd.v1.Security/SetSshKeyOnlyUsers" => ({
             let req: pb::SetSshKeyOnlyUsersRequest = codec.decode(&bytes)?;
@@ -611,6 +749,10 @@ async fn route_install(path: &str, codec: Codec, bytes: Bytes, store: Arc<Mutex<
         "/gryonixnexusd.v1.Install/StartInstallPlan" => ({
             let req: pb::StartInstallPlanRequest = codec.decode(&bytes)?;
             Ok(crate::install::plan::run_start(codec, req, store).await)
+        }).map(Some),
+        "/gryonixnexusd.v1.Install/CheckInstall" => ({
+            let req: pb::CheckInstallRequest = codec.decode(&bytes)?;
+            Ok(crate::install::compat::run_check(codec, req).await)
         }).map(Some),
         "/gryonixnexusd.v1.Install/GetInstallPlan" => ({
             let req: pb::GetInstallPlanRequest = codec.decode(&bytes)?;
@@ -707,6 +849,12 @@ async fn route_models(path: &str, codec: Codec, bytes: Bytes, store: Arc<Mutex<S
             let req: pb::DeletePreRestoreCopyRequest = codec.decode(&bytes)?;
             Ok(crate::pre_restore::delete(codec, req).await)
         }).map(Some),
+        _ => route_settings(path, codec, bytes, store).await,
+    }
+}
+
+async fn route_settings(path: &str, codec: Codec, bytes: Bytes, store: Arc<Mutex<Store>>) -> anyhow::Result<Option<Resp>> {
+    match path {
         "/gryonixnexusd.v1.Vaultwarden/GetVaultwardenTwoFactor" => (Ok(crate::vaultwarden_2fa::get(codec).await)).map(Some),
         "/gryonixnexusd.v1.Dns/SetDynamicDNS" => ({
             let req: pb::SetDynamicDnsRequest = codec.decode(&bytes)?;
@@ -771,6 +919,17 @@ async fn route_vpn(path: &str, codec: Codec, bytes: Bytes) -> anyhow::Result<Opt
         "/gryonixnexusd.v1.Vpn/SetVpnClientDns" => ({
             let req: pb::SetVpnClientDnsRequest = codec.decode(&bytes)?;
             Ok(vpn_clients::set_client_dns(codec, req).await)
+        }).map(Some),
+        "/gryonixnexusd.v1.Vpn/GetVpnSpeedFacts" => ({
+            let _req: pb::GetVpnSpeedFactsRequest = codec.decode(&bytes)?;
+            let facts = crate::install::vpn::mtu::speed_facts().await;
+            Ok(codec.encode(&facts).unwrap_or_else(|err| connect_error(hyper::StatusCode::INTERNAL_SERVER_ERROR, "internal", &err.to_string())))
+        }).map(Some),
+        "/gryonixnexusd.v1.Vpn/SetAmneziaKernel" => ({
+            let req: pb::SetAmneziaKernelRequest = codec.decode(&bytes)?;
+            crate::awg_kernel::switch(req.enabled);
+            let facts = crate::install::vpn::mtu::speed_facts().await;
+            Ok(codec.encode(&facts).unwrap_or_else(|err| connect_error(hyper::StatusCode::INTERNAL_SERVER_ERROR, "internal", &err.to_string())))
         }).map(Some),
         "/gryonixnexusd.v1.Vpn/GetVpnDns" => ({
             let req: pb::GetVpnDnsRequest = codec.decode(&bytes)?;
@@ -862,8 +1021,26 @@ pub fn stream_response(json: bool, rx: tokio::sync::mpsc::Receiver<Bytes>) -> Re
 }
 
 async fn logs_stream(codec: Codec, req: pb::LogsRequest) -> anyhow::Result<Resp> {
+    if let Some(native) = crate::native::find(&req.service_id) {
+        return Ok(native_logs(codec, native, req.service_id.clone()).await);
+    }
     let containers = discover::containers_of_service(&req.service_id).await?;
     Ok(tail_all(codec, containers, req.service_id, req.tail))
+}
+
+/// The journal of a systemd service, sent once
+async fn native_logs(codec: Codec, native: &'static crate::native::Native, service_id: String) -> Resp {
+    let json = matches!(codec, Codec::Json);
+    let (tx, rx) = tokio::sync::mpsc::channel::<Bytes>(64);
+    tokio::spawn(async move {
+        let text = native.run("logs").await.unwrap_or_else(|err| err);
+        for line in text.lines() {
+            if send_log(&tx, &service_id, native.id, "stdout", line.to_string(), json).await.is_err() {
+                break;
+            }
+        }
+    });
+    stream_response(json, rx)
 }
 
 /// Follow a resolved set of containers, whatever resolved them
@@ -1150,7 +1327,35 @@ fn lock(store: &Arc<Mutex<Store>>) -> std::sync::MutexGuard<'_, Store> {
 }
 
 pub fn connect_error(status: StatusCode, code: &str, message: &str) -> Resp {
-    let body = serde_json::json!({ "code": code, "message": message }).to_string();
+    error_response(status, serde_json::json!({ "code": code, "message": message }))
+}
+
+/// An error with a reason when it has one
+pub fn connect_reasoned(status: StatusCode, code: &str, message: &str, reason: Option<&str>) -> Resp {
+    match reason {
+        Some(reason) => connect_refusal(status, code, message, reason, &[]),
+        None => connect_error(status, code, message),
+    }
+}
+
+/// An error the app can match by its stable reason
+pub fn connect_refusal(status: StatusCode, code: &str, message: &str, reason: &str, args: &[String]) -> Resp {
+    error_response(status, serde_json::json!({ "code": code, "message": message, "reason": reason, "args": args }))
+}
+
+/// An error with a stable reason and no values
+pub fn connect_reason(status: StatusCode, code: &str, message: &str, reason: &str) -> Resp {
+    connect_refusal(status, code, message, reason, &[])
+}
+
+/// The container engine does not answer
+pub fn engine_unavailable(detail: &str) -> Resp {
+    let message = format!("container engine unavailable: {detail}");
+    connect_refusal(StatusCode::SERVICE_UNAVAILABLE, "unavailable", &message, "host.docker_unavailable", &[])
+}
+
+fn error_response(status: StatusCode, body: serde_json::Value) -> Resp {
+    let body = body.to_string();
     Response::builder()
         .status(status)
         .header(CONTENT_TYPE, "application/json")
@@ -1327,5 +1532,50 @@ mod tests {
         assert_eq!(frames.len(), 1);
         assert_eq!(frames[0][0], END_OF_STREAM_FLAG);
         assert_eq!(strip_envelope(&frames[0]), b"{}");
+    }
+}
+
+/// The stable reason an error answer carries, or empty
+#[cfg(test)]
+pub(crate) async fn reason_of(resp: Resp) -> String {
+    let bytes = resp.into_body().collect().await.expect("body").to_bytes();
+    let json: serde_json::Value = serde_json::from_slice(&bytes).expect("json");
+    json["reason"].as_str().unwrap_or_default().to_string()
+}
+
+#[cfg(test)]
+mod reason_tests {
+    use super::*;
+
+    async fn body(resp: Resp) -> serde_json::Value {
+        let bytes = resp.into_body().collect().await.expect("body").to_bytes();
+        serde_json::from_slice(&bytes).expect("json")
+    }
+
+    #[tokio::test]
+    async fn a_reasoned_error_keeps_its_code_and_text_and_adds_the_reason() {
+        let resp = connect_reason(StatusCode::UNPROCESSABLE_ENTITY, "failed_precondition", "no room", "move.no_space");
+        assert_eq!(resp.status(), StatusCode::UNPROCESSABLE_ENTITY);
+        let json = body(resp).await;
+        assert_eq!(json["code"], "failed_precondition");
+        assert_eq!(json["message"], "no room");
+        assert_eq!(json["reason"], "move.no_space");
+        assert_eq!(json["args"], serde_json::json!([]));
+    }
+
+    #[tokio::test]
+    async fn a_silent_container_engine_is_unavailable_with_its_own_reason() {
+        let resp = engine_unavailable("no socket");
+        assert_eq!(resp.status(), StatusCode::SERVICE_UNAVAILABLE);
+        let json = body(resp).await;
+        assert_eq!(json["code"], "unavailable");
+        assert_eq!(json["message"], "container engine unavailable: no socket");
+        assert_eq!(json["reason"], "host.docker_unavailable");
+    }
+
+    #[tokio::test]
+    async fn a_plain_error_carries_no_reason() {
+        let json = body(connect_error(StatusCode::BAD_REQUEST, "invalid_argument", "bad")).await;
+        assert!(json.get("reason").is_none());
     }
 }

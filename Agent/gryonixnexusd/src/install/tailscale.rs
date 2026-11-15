@@ -49,13 +49,52 @@ pub fn compose_contents(input: &Input) -> String {
          # The node's identity. Losing it means re-joining as a new\n      \
          # node and leaving a dead one behind in the server's list.\n      \
          - {path}/state:/var/lib/tailscale\n    environment:\n      \
-         TS_STATE_DIR: /var/lib/tailscale\n      TS_HOSTNAME: {name}\n      \
+         TS_STATE_DIR: /var/lib/tailscale\n      \
+         # Joins once; later starts reuse the saved identity.\n      \
+         TS_AUTH_ONCE: \"true\"\n      \
+         # A real interface, so the host itself reaches the mesh.\n      \
+         TS_USERSPACE: \"false\"\n      TS_HOSTNAME: {name}\n      \
          # Read from .env, which is 0600 and written once.\n      \
          TS_AUTHKEY: ${{TS_AUTHKEY}}\n      \
          # --accept-dns=false: see the type comment. The server's own\n      \
          # resolver must not depend on a container being up.\n      \
          TS_EXTRA_ARGS: {args}",
     )
+}
+
+const STATE_LINE: &str = "TS_STATE_DIR: /var/lib/tailscale\n";
+
+/// Settings every node file carries: name, comment, value
+const CURRENT_ENV: &[(&str, &str, &str)] = &[
+    ("TS_AUTH_ONCE", "Joins once; later starts reuse the saved identity.", "\"true\""),
+    ("TS_USERSPACE", "A real interface, so the host itself reaches the mesh.", "\"false\""),
+];
+
+/// An older node file with the current settings added
+pub fn with_current_env(compose: &str) -> Option<String> {
+    let missing: Vec<_> = CURRENT_ENV.iter().filter(|(name, _, _)| !compose.contains(name)).collect();
+    if missing.is_empty() {
+        return None;
+    }
+    let start = compose.find(STATE_LINE)?;
+    let line_start = compose[..start].rfind('\n').map_or(0, |at| at + 1);
+    let indent = &compose[line_start..start];
+    let end = start + STATE_LINE.len();
+    let added: String = missing
+        .iter()
+        .map(|(name, comment, value)| format!("{indent}# {comment}\n{indent}{name}: {value}\n"))
+        .collect();
+    Some(format!("{}{added}{}", &compose[..end], &compose[end..]))
+}
+
+/// Whether the node joins this server's own Headscale
+pub fn joins_own_control(compose: &str) -> bool {
+    compose.contains("--login-server=http://127.0.0.1:")
+}
+
+/// Whether the control server refused the stored join key
+pub fn join_key_refused(log: &str) -> bool {
+    last_login_error(log).is_some_and(|why| why.contains("authkey expired") || why.contains("invalid key"))
 }
 
 #[cfg(test)]
@@ -90,6 +129,41 @@ pub fn last_login_error(log: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_older_node_file_gains_the_current_settings() {
+        let current = compose_contents(&scenario("default-public-en"));
+        let older = current
+            .replace("      # Joins once; later starts reuse the saved identity.\n      TS_AUTH_ONCE: \"true\"\n", "")
+            .replace("      # A real interface, so the host itself reaches the mesh.\n      TS_USERSPACE: \"false\"\n", "");
+        assert!(!older.contains("TS_AUTH_ONCE") && !older.contains("TS_USERSPACE"));
+        assert_eq!(with_current_env(&older).as_deref(), Some(current.as_str()));
+        assert_eq!(with_current_env(&current), None);
+        let half = current.replace("      # A real interface, so the host itself reaches the mesh.\n      TS_USERSPACE: \"false\"\n", "");
+        let mended = with_current_env(&half).unwrap();
+        assert_eq!((mended.matches("TS_AUTH_ONCE").count(), mended.matches("TS_USERSPACE").count()), (1, 1));
+    }
+
+    #[test]
+    fn an_expired_key_is_seen_in_the_node_log() {
+        let log = "2026/01/02 03:04:05 control: RegisterReq: got response; authURL=false\n\
+                   2026/01/02 03:04:05 Received error: authkey expired\n\
+                   backend error: authkey expired\n\
+                   boot: 2026/01/02 03:04:05 failed to auth tailscale: tailscale up failed: exit status 1\n";
+        assert!(join_key_refused(log));
+        assert!(!join_key_refused("2026/01/02 03:04:05 Switching ipn state Starting -> Running\n"));
+    }
+
+    #[test]
+    fn only_a_node_of_the_local_headscale_gets_new_keys() {
+        assert!(joins_own_control("TS_EXTRA_ARGS: --login-server=http://127.0.0.1:8091 --accept-dns=false"));
+        assert!(!joins_own_control("TS_EXTRA_ARGS: --login-server=https://mesh.example.com --accept-dns=false"));
+    }
+
+    #[test]
+    fn a_file_that_is_not_a_node_is_left_alone() {
+        assert_eq!(with_current_env("services:\n  web:\n    image: nginx\n"), None);
+    }
 
     fn fixture(name: &str) -> String {
         let path = format!("{}/tests/fixtures/install/mesh/{name}", env!("CARGO_MANIFEST_DIR"));

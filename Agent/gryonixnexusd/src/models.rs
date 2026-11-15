@@ -191,13 +191,14 @@ pub async fn delete(codec: Codec, req: pb::DeleteModelRequest) -> Resp {
             "not_found",
             "the engine has no model by that name",
         ),
-        Ok((status, body)) => connect_error(
-            StatusCode::BAD_GATEWAY,
-            "unavailable",
-            &format!("the engine refused to remove it: {}", engine_error(&body, status)),
-        ),
-        Err(err) => connect_error(StatusCode::BAD_GATEWAY, "unavailable", &err),
+        Ok((status, body)) => engine_refused(&format!("the engine refused to remove it: {}", engine_error(&body, status))),
+        Err(err) => engine_refused(&err),
     }
+}
+
+/// The model engine said no, or did not answer
+fn engine_refused(message: &str) -> Resp {
+    crate::api::connect_reason(StatusCode::BAD_GATEWAY, "unavailable", message, "models.engine_refused")
 }
 
 fn engine_error(body: &str, status: u16) -> String {
@@ -214,10 +215,12 @@ pub async fn pull(codec: Codec, req: pb::PullModelRequest) -> Resp {
     };
     let before = list_now().await;
     if !before.engine_present {
-        return connect_error(
+        return crate::api::connect_refusal(
             StatusCode::FAILED_DEPENDENCY,
             "failed_precondition",
             "no model engine is installed on this server",
+            "models.no_engine",
+            &[],
         );
     }
     let claim = match crate::jobs::OperationClaim::acquire("model", &name) {
@@ -561,5 +564,17 @@ mod tests {
         let get = request_head("GET", "/api/tags", None);
         assert!(get.ends_with("\r\n\r\n"));
         assert!(!get.contains("Content-Length"));
+    }
+}
+
+#[cfg(test)]
+mod unreadable_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn an_engine_that_refuses_is_unavailable_by_reason() {
+        let resp = engine_refused("the engine refused to remove it: in use");
+        assert_eq!(resp.status(), StatusCode::BAD_GATEWAY);
+        assert_eq!(crate::api::reason_of(resp).await, "models.engine_refused");
     }
 }

@@ -5,9 +5,7 @@ use std::path::{Path, PathBuf};
 use bytes::Bytes;
 use tokio::sync::mpsc::Sender;
 
-use hyper::StatusCode;
-
-use crate::api::{connect_error, envelope, error_trailer, stream_response, Codec, Resp};
+use crate::api::{envelope, error_trailer, stream_response, Codec, Resp};
 use crate::container_ops::{capture, capture_to_file, first_lines, run_streaming};
 use crate::containers::{self, GroupKind};
 use crate::pb;
@@ -35,11 +33,7 @@ pub fn list(key: &str) -> Result<pb::ContainerBackupList, Resp> {
             directory: dir.to_string_lossy().to_string(),
             archives,
         }),
-        Err(err) => Err(connect_error(
-            StatusCode::SERVICE_UNAVAILABLE,
-            "unavailable",
-            &format!("could not read {}: {err}", dir.display()),
-        )),
+        Err(err) => Err(crate::backup::unreadable(&dir, &err)),
     }
 }
 

@@ -5,6 +5,7 @@ use std::path::{Path, PathBuf};
 
 /// `/etc` paths the crate only ever READS
 const READ_ONLY_ETC_PATHS: &[(&str, &str)] = &[
+    ("/etc/hostname", "read to show the host name; hostnamectl writes it outside this sandbox"),
     (
         "/etc/passwd",
         "read to see whether the caddy user exists; the .deb that creates it \

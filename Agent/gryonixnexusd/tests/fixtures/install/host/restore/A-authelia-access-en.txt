@@ -238,16 +238,20 @@ restore_authelia() {
   gd_compose_stop 'authelia' 'authelia'
   # The old data is moved aside, never deleted: if the move back
   # fails it is the only way home.
-  previous='/opt/authelia/config'".pre-restore-$STAMP"
-  if [ -d '/opt/authelia/config' ]; then mv '/opt/authelia/config' "$previous"; saved=1; fi
-  if mv "$stage/config" '/opt/authelia/config'; then
-    if [ "$saved" -eq 1 ]; then echo "previous data kept at ${previous}"; fi
+  if [ ! -d "$stage/config" ]; then
+    echo "the archive carries no config, it is left as it is"
   else
-    echo "restore failed, rolling back to the previous data" >&2
-    rm -rf '/opt/authelia/config'
-    if [ "$saved" -eq 1 ]; then mv "$previous" '/opt/authelia/config'; fi
-    gd_compose_start_all 'authelia'
-    exit 1
+    previous='/opt/authelia/config'".pre-restore-$STAMP"
+    if [ -d '/opt/authelia/config' ]; then mv '/opt/authelia/config' "$previous"; saved=1; fi
+    if mv "$stage/config" '/opt/authelia/config'; then
+      if [ "$saved" -eq 1 ]; then echo "previous data kept at ${previous}"; fi
+    else
+      echo "restore failed, rolling back to the previous data" >&2
+      rm -rf '/opt/authelia/config'
+      if [ "$saved" -eq 1 ]; then mv "$previous" '/opt/authelia/config'; fi
+      gd_compose_start_all 'authelia'
+      exit 1
+    fi
   fi
   # Up again on every path, restored or not.
   gd_compose_start_all 'authelia'

@@ -471,7 +471,7 @@ pub fn home_ruleset(drop_in_dir: &str, topo: Option<&Topology>, home_discovery: 
          {relay_sites}\
          \x20       # Restore the connection's mark onto every packet, both\n\
          \x20       # directions: `ct mark` alone is invisible to `ip rule`.\n\
-         \x20       meta mark set ct mark\n\
+         \x20       ct mark != 0 meta mark set ct mark\n\
          \x20   }}\n\
          \n\
          \x20   # Every relayed service here terminates in a LOCAL process\n\
@@ -486,7 +486,7 @@ pub fn home_ruleset(drop_in_dir: &str, topo: Option<&Topology>, home_discovery: 
          \x20       type route hook output priority mangle; policy accept;\n\
          {OUTBOUND_MAIL_MARK}\
          {relay_sites}\
-         \x20       meta mark set ct mark\n\
+         \x20       ct mark != 0 meta mark set ct mark\n\
          \x20   }}\n\
          {masquerade}\
          }}\n",

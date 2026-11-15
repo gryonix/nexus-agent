@@ -82,6 +82,7 @@ fn spec_for(id: &str, input: &Input, backups: &BackupPaths) -> Spec {
     spec_for_1(id, input, backups)
         .or_else(|| spec_for_2(id, input, backups))
         .or_else(|| spec_for_3(id, input, backups))
+        .or_else(|| spec_for_3b(id, input, backups))
         .or_else(|| spec_for_4(id, input, backups))
         .or_else(|| spec_for_5(id, input, backups))
         .or_else(|| spec_for_6(id, input, backups))
@@ -242,6 +243,12 @@ fn spec_for_3(id: &str, input: &Input, backups: &BackupPaths) -> Option<Spec> {
             pre_steps: Vec::new(),
             post_steps: Vec::new(),
         }),
+        _ => None,
+    }
+}
+
+fn spec_for_3b(id: &str, input: &Input, backups: &BackupPaths) -> Option<Spec> {
+    match id {
         "jellyfin" => Some(Spec {
             compose_project: Some(crate::install::jellyfin::COMPOSE_PROJECT),
             config_directory: Some(input.jellyfin_path.clone()),
@@ -257,6 +264,33 @@ fn spec_for_3(id: &str, input: &Input, backups: &BackupPaths) -> Option<Spec> {
             backup_dirs: vec![backups.for_id("mosquitto")],
             pre_steps: Vec::new(),
             post_steps: Vec::new(),
+        }),
+        "shairport-sync" => Some(Spec {
+            compose_project: Some(crate::install::shairport_sync::COMPOSE_PROJECT),
+            config_directory: Some(input.shairport_path.clone()),
+            data_paths: Vec::new(),
+            backup_dirs: Vec::new(),
+            pre_steps: vec![crate::install::cec_volume::removal_script()],
+            post_steps: Vec::new(),
+        }),
+        id if crate::install::packaged::find(id).is_some() => Some(Spec {
+            pre_steps: crate::install::packaged::find(id).map(crate::install::packaged::removal_steps).unwrap_or_default(),
+            ..Spec::empty()
+        }),
+        "uxplay" => Some(Spec {
+            pre_steps: vec![
+                format!("systemctl disable --now {}.service >/dev/null 2>&1 || true", crate::install::uxplay::UNIT),
+                format!("rm -f {}", crate::install::uxplay::UNIT_PATH),
+                "systemctl daemon-reload || true".to_string(),
+                format!("{} remove -yq {} >/dev/null 2>&1 || true", crate::install::packages::apt_quiet(), crate::install::uxplay::PACKAGE),
+                format!("userdel {} >/dev/null 2>&1 || true", crate::install::uxplay::ACCOUNT),
+            ],
+            ..Spec::empty()
+        }),
+        "odio" => Some(Spec {
+            data_paths: vec![input.odio_path.clone()],
+            pre_steps: crate::install::odio::uninstall_steps(input),
+            ..Spec::empty()
         }),
         "zigbee2mqtt" => Some(Spec {
             compose_project: Some(crate::install::zigbee2mqtt::COMPOSE_PROJECT),
@@ -493,6 +527,7 @@ pub(crate) fn hostname_for(id: &str, input: &Input) -> Option<String> {
         "jellyfin" => Some(crate::install::jellyfin::hostname(input)),
         "home-assistant" => Some(crate::install::home_assistant::hostname(input)),
         "zigbee2mqtt" => Some(crate::install::zigbee2mqtt::hostname(input)),
+        "odio" => Some(crate::install::odio::hostname(input)),
         "crafty-controller" => Some(crate::install::crafty::hostname(input)),
         "open-webui" => Some(crate::install::open_webui::hostname(input)),
         "litellm" => Some(crate::install::litellm::hostname(input)),
