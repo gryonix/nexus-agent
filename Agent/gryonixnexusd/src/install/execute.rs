@@ -669,6 +669,11 @@ pub enum Rejection {
     UnknownJob(String),
 }
 
+const NO_REVERSE_PROXY_TEXT: &str = "this host has no Caddy and the agent cannot install one here — every \
+     service is published through it, and automatic installation needs \
+     apt-get and systemd-run. Install Caddy by hand, or run the server \
+     setup on this machine, then install again";
+
 impl Rejection {
     fn parts(&self) -> (StatusCode, &'static str, String) {
         match self {
@@ -687,11 +692,7 @@ impl Rejection {
             Rejection::NoReverseProxy => (
                 StatusCode::UNPROCESSABLE_ENTITY,
                 "failed_precondition",
-                "this host has no Caddy and the agent cannot install one here — every \
-                 service is published through it, and automatic installation needs \
-                 apt-get and systemd-run. Install Caddy by hand, or run the server \
-                 setup on this machine, then install again"
-                    .to_string(),
+                NO_REVERSE_PROXY_TEXT.to_string(),
             ),
             Rejection::PortsInUse(conflicts) => (
                 StatusCode::UNPROCESSABLE_ENTITY,
@@ -746,6 +747,12 @@ impl Rejection {
                     page / 1024
                 ),
             ),
+            other => other.hub_parts(),
+        }
+    }
+
+    fn hub_parts(&self) -> (StatusCode, &'static str, String) {
+        match self {
             Rejection::MachineNotAtHome(service) => (
                 StatusCode::UNPROCESSABLE_ENTITY,
                 "failed_precondition",
@@ -821,6 +828,7 @@ impl Rejection {
                 "not_found",
                 format!("this host has no record of install job '{}'", truncate(job)),
             ),
+            _ => unreachable!("answered by parts"),
         }
     }
 

@@ -11,6 +11,7 @@
 # Env knobs:
 #   GRYONIXNEXUSD_PREFIX          install under a prefix (tests; default "")
 #   GRYONIXNEXUSD_FORCE_BUILD=1   rebuild even when the installed version matches
+#   GRYONIXNEXUSD_ALLOW_DOWNGRADE=1  replace a newer installed agent with this one
 #   GRYONIXNEXUSD_REINSTALL_MARKER  where the app's reinstall marker lives (tests)
 #   GRYONIXNEXUSD_RUST_IMAGE      toolchain image for the container build
 #   GRYONIXNEXUSD_KEEP_BUILD_IMAGE=1  keep that image instead of removing it
@@ -441,7 +442,38 @@ if [ -e "$REINSTALL_MARKER" ]; then
   GRYONIXNEXUSD_FORCE_BUILD=1
 fi
 
+# Sort key of a version; a dated 26.11.D from the future is an old counter.
+version_key() {
+  printf '%s\n' "$1" | awk -v today="$(date -u +%Y%m%d)" -F'[.+-]' '{
+    n = 0
+    for (i = 1; i <= NF; i++) if (match($i, /^[0-9]+/)) k[++n] = substr($i, 1, RLENGTH) + 0
+    out = ""
+    if (n >= 3 && k[1] == 26 && k[2] == 11 && sprintf("2026%02d%02d", 11, k[3]) > today) out = "26 11 0"
+    for (i = (out == "" ? 1 : 3); i <= n; i++) out = out (out == "" ? "" : " ") k[i]
+    print out
+  }'
+}
+
+# Is $1 a later version than $2?
+version_newer() {
+  local -a a b
+  read -ra a <<< "$(version_key "$1")"
+  read -ra b <<< "$(version_key "$2")"
+  [ "${#a[@]}" -gt 0 ] && [ "${#b[@]}" -gt 0 ] || return 1
+  local i x y n=$(( ${#a[@]} > ${#b[@]} ? ${#a[@]} : ${#b[@]} ))
+  for ((i = 0; i < n; i++)); do
+    x="${a[i]:-0}"; y="${b[i]:-0}"
+    [ "$x" -gt "$y" ] && return 0
+    [ "$x" -lt "$y" ] && return 1
+  done
+  return 1
+}
+
 CURRENT="$(installed_version)"
+if [ -n "$CURRENT" ] && version_newer "$CURRENT" "$VERSION" && [ -z "${GRYONIXNEXUSD_ALLOW_DOWNGRADE:-}" ]; then
+  log "gryonixnexusd $CURRENT is installed, newer than $VERSION; keeping it"
+  exit 0
+fi
 if [ "$CURRENT" = "$VERSION" ] && [ -z "${GRYONIXNEXUSD_FORCE_BUILD:-}" ]; then
   log "gryonixnexusd $VERSION already installed"
   NEEDS_BUILD=0

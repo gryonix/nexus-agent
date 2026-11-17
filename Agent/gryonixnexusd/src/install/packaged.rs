@@ -152,6 +152,7 @@ fn name_setup(id: &str, name: &str) -> String {
 }
 
 /// A port of `PackagedAudioService.setupSteps(_:)`
+#[cfg(test)]
 pub fn setup_script(spec: &Spec) -> String {
     named_setup_script(spec, "")
 }

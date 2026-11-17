@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-import base64, fcntl, os, re, select, struct, subprocess, sys, time
+import base64, fcntl, os, re, select, struct, subprocess, sys, threading, time
 
 PIPE = os.environ.get("CEC_VOLUME_PIPE", "/run/shairport-sync/metadata")
 DEV = os.environ.get("CEC_VOLUME_DEVICE", "/dev/cec0")
@@ -8,10 +8,20 @@ MAX = int(os.environ.get("CEC_VOLUME_MAX", "40"))
 ITEM = re.compile(r"<item><type>(\w+)</type><code>(\w+)</code>.*?</item>", re.S)
 DATA = re.compile(r'<data encoding="base64">\s*([^<]*)<', re.S)
 CEC_TRANSMIT = 0xC0386105
+CEC_RECEIVE = 0xC0386106
+CEC_S_MODE = 0x40046109
+CEC_PHYS_ADDR = 0x80026101
+INITIATOR_AND_FOLLOWER = 0x11
 CEC_MESSAGE = "=QQIIII16s7Bx"
 SPEAKER = 0xB5
 TV = 0xB0
 BROADCAST = 0xBF
+OWN = SPEAKER >> 4
+REQUEST_SOURCE = 0x85
+ROUTING = {0x80, 0x86}
+UNSUPPORTED = {0x08, 0x1A, 0x8D}
+CLAIM_SECONDS = 60
+CLAIMS = 4
 PLAY_CODES = {"70626567", "7072736d"}
 VOLUME_CODE = "70766f6c"
 CONTAINER = "shairport-sync"
@@ -25,7 +35,11 @@ PER_PRESS = 1.2
 RETRIES = 6
 LAST_RECONNECT = 0.0
 TV_OFF = os.environ.get("CEC_VOLUME_TV_OFF", "1") == "1"
+RESELECT = int(os.environ.get("CEC_VOLUME_RESELECT", "300"))
 FD = None
+FOLLOWER = None
+SENT_AT = 0.0
+STUCK_SECONDS = 5
 
 
 def log(text):
@@ -41,6 +55,15 @@ def reconnect():
 
 
 def raw_send(message, reply, timeout):
+    global SENT_AT
+    SENT_AT = time.time()
+    try:
+        return transmit(message, reply, timeout)
+    finally:
+        SENT_AT = 0.0
+
+
+def transmit(message, reply, timeout):
     packed = struct.pack(CEC_MESSAGE, 0, 0, len(message), timeout, 0, 0,
                          bytes(message).ljust(16, b"\0"), reply, 0, 0, 0, 0, 0, 0)
     buffer = bytearray(packed)
@@ -65,6 +88,33 @@ def send(message, reply=0, timeout=1000):
 def current():
     answer = send([SPEAKER, 0x71], reply=0x7A)
     return answer[6][2] & 0x7F if answer[8] == 1 else None
+
+
+def own_address():
+    buffer = bytearray(2)
+    try:
+        fcntl.ioctl(FD, CEC_PHYS_ADDR, buffer)
+    except OSError:
+        return [0x11, 0x00]
+    value = struct.unpack("=H", bytes(buffer))[0]
+    return [value >> 8, value & 0xFF]
+
+
+class Follower:
+    def __init__(self):
+        self.fd = os.open(DEV, os.O_RDWR | os.O_NONBLOCK)
+        mode = struct.pack("=I", INITIATOR_AND_FOLLOWER)
+        fcntl.ioctl(self.fd, CEC_S_MODE, mode)
+
+    def messages(self):
+        while True:
+            buffer = bytearray(struct.calcsize(CEC_MESSAGE))
+            try:
+                fcntl.ioctl(self.fd, CEC_RECEIVE, buffer)
+            except OSError:
+                return
+            fields = struct.unpack(CEC_MESSAGE, bytes(buffer))
+            yield list(fields[6][:fields[2]])
 
 
 def power_query(address):
@@ -115,6 +165,7 @@ class Wakeup:
             self.go("select" if self.select else None, now, 30)
             return
         log("waking the speaker")
+        self.select = True
         quick([SPEAKER, 0x44, 0x6D])
         quick([SPEAKER, 0x45])
         self.go("waking", now, 15)
@@ -153,12 +204,15 @@ class Wakeup:
         reached, tv_state = power_query(TV)
         if now > self.deadline:
             return self.finish()
-        if not reached or quick([BROADCAST, 0x82, 0x11, 0x00]) is None:
+        if not reached or quick([BROADCAST, 0x82] + own_address()) is None:
             self.due = now + 0.5
             return
         log(f"selected the input, TV power {tv_state}")
         self.selected_until = now + 30
+        self.owner.claim_until = now + CLAIM_SECONDS
+        self.owner.claims = 0
         self.select = False
+        self.owner.selected = True
         if TV_OFF and tv_state == 1:
             self.go("tv", now, TV_WAIT)
         else:
@@ -217,7 +271,15 @@ class Regulator:
         self.down_since = None
         self.estimate = None
         self.direction = 0
+        self.selected = False
+        self.last_sound = 0.0
+        self.claim_until = 0.0
+        self.claims = 0
         self.wakeup = Wakeup(self)
+
+    def needs_select(self):
+        # Track changes keep the input; only new sessions switch.
+        return not self.selected or time.time() - self.last_sound > RESELECT
 
     def read(self, fd):
         chunk = os.read(fd, 4096)
@@ -227,13 +289,33 @@ class Regulator:
         for code, data, rest in items(self.pending):
             self.pending = rest
             if code in PLAY_CODES:
-                self.wakeup.start(select=True)
+                self.wakeup.start(select=self.needs_select())
             elif code == VOLUME_CODE:
                 db = float(base64.b64decode(data).decode().split(",")[0])
                 log(f"airplay volume {db} dB")
                 self.wanted = self.target = percent(db)
                 self.wakeup.start(select=False)
         return True
+
+    def answer(self, message):
+        if len(message) < 2:
+            return
+        source, target, opcode = message[0] >> 4, message[0] & 0xF, message[1]
+        if opcode == REQUEST_SOURCE or (opcode in ROUTING and source == 0
+                                        and message[-2:] != own_address()):
+            self.claim_source()
+        elif target == OWN and opcode == 0x8F:
+            quick([OWN << 4 | source, 0x90, 0x00])
+        elif target == OWN and opcode in UNSUPPORTED:
+            quick([OWN << 4 | source, 0x00, opcode, 0x00])
+
+    def claim_source(self):
+        # Keeps the speaker on this input after the TV wakes.
+        if time.time() > self.claim_until or self.claims >= CLAIMS:
+            return
+        self.claims += 1
+        log("TV moved the input away, taking it back")
+        quick([BROADCAST, 0x82] + own_address())
 
     def release(self):
         if self.direction:
@@ -293,25 +375,45 @@ class Regulator:
         log("speaker is off, disconnecting AirPlay")
         subprocess.run(["docker", "restart", CONTAINER], capture_output=True)
         self.running_since = self.down_since = None
+        self.selected = False
 
     def run(self, fd):
         while True:
             busy = self.target is not None
             idle = STEP_SECONDS if self.wakeup.phase else WATCH_SECONDS
-            waiting = select.select([fd], [], [], 0 if busy else idle)[0]
+            ready = select.select([fd, FOLLOWER.fd], [], [],
+                                  0 if busy else idle)[0]
+            if FOLLOWER.fd in ready:
+                for message in FOLLOWER.messages():
+                    self.answer(message)
+            waiting = fd in ready
             if waiting and not self.read(fd):
                 self.release()
                 return
             if not waiting and not busy:
                 self.estimate = None
+            if audio_running():
+                self.last_sound = time.time()
             self.wakeup.step()
             self.drop_if_speaker_off()
             if self.target is not None:
                 self.try_work()
 
 
+def watchdog():
+    # Exits for a systemd restart when a transmit hangs.
+    while True:
+        time.sleep(1)
+        if SENT_AT and time.time() - SENT_AT > STUCK_SECONDS:
+            log("CEC transmit is stuck, restarting")
+            os._exit(1)
+
+
 def main():
+    global FOLLOWER
+    threading.Thread(target=watchdog, daemon=True).start()
     reconnect()
+    FOLLOWER = Follower()
     while True:
         try:
             fd = os.open(PIPE, os.O_RDONLY | os.O_NONBLOCK)
