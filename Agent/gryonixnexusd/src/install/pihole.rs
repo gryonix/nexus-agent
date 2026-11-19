@@ -1,4 +1,5 @@
 use super::caddy::{self, WebIngress};
+use super::app_settings;
 use super::context::Input;
 use super::firewall;
 
@@ -33,13 +34,30 @@ fn container_dns(upstreams: &str) -> String {
     format!("\n    # Blocklist downloads resolve here, not at the router\n    dns:{list}")
 }
 
+/// FTL env lines for the non-default app settings
+fn setting_lines(input: &Input) -> String {
+    let mut lines = String::new();
+    if app_settings::is_on(input, "pihole_dnssec") {
+        lines.push_str("\n      FTLCONF_dns_dnssec: \"true\"");
+    }
+    if app_settings::is_changed(input, "pihole_privacy_level") {
+        let level = app_settings::value(input, "pihole_privacy_level");
+        lines.push_str(&format!("\n      FTLCONF_misc_privacylevel: \"{level}\""));
+    }
+    if !app_settings::is_on(input, "pihole_query_logging") {
+        lines.push_str("\n      FTLCONF_dns_queryLogging: \"false\"");
+    }
+    lines
+}
+
 pub fn compose_contents(input: &Input) -> String {
+    let settings = setting_lines(input);
     let path = &input.pihole_path;
     let upstreams = &input.pihole_upstreams;
     let bind = if input.pihole_serves_network { "" } else { "127.0.0.1:" };
     let dns = container_dns(upstreams);
     format!(
-        "services:\n  pihole:\n    image: {IMAGE}\n    container_name: {CONTAINER}\n    restart: unless-stopped{dns}\n    environment:\n      # Read by FTL itself: every `FTLCONF_<section>_<key>` maps to\n      # the matching key of pihole.toml. Verified in the pinned\n      # image's own `bash_functions.sh`, not assumed.\n      FTLCONF_webserver_api_password: ${{PIHOLE_ADMIN_PASSWORD}}\n      # `local` — FTL's default — answers only the subnets of its\n      # own interfaces, and inside a container that is the docker\n      # bridge alone: every forwarded query would be refused, which\n      # reads as \"the filter does not work\" rather than as a bind\n      # setting. What is actually reachable is decided by the\n      # published address below.\n      FTLCONF_dns_listeningMode: all\n      FTLCONF_dns_upstreams: {upstreams}\n    volumes:\n      - {path}/etc-pihole:/etc/pihole\n    ports:\n      - \"127.0.0.1:{WEB_UI_PORT}:{CONTAINER_WEB_PORT}/tcp\"\n      # See the type comment: a published port is reachable\n      # regardless of our nftables ruleset, so an open resolver is\n      # prevented by the bind address or nowhere.\n      - \"{bind}53:53/tcp\"\n      - \"{bind}53:53/udp\""
+        "services:\n  pihole:\n    image: {IMAGE}\n    container_name: {CONTAINER}\n    restart: unless-stopped{dns}\n    environment:\n      # Read by FTL itself: every `FTLCONF_<section>_<key>` maps to\n      # the matching key of pihole.toml. Verified in the pinned\n      # image's own `bash_functions.sh`, not assumed.\n      FTLCONF_webserver_api_password: ${{PIHOLE_ADMIN_PASSWORD}}\n      # `local` — FTL's default — answers only the subnets of its\n      # own interfaces, and inside a container that is the docker\n      # bridge alone: every forwarded query would be refused, which\n      # reads as \"the filter does not work\" rather than as a bind\n      # setting. What is actually reachable is decided by the\n      # published address below.\n      FTLCONF_dns_listeningMode: all\n      FTLCONF_dns_upstreams: {upstreams}{settings}\n    volumes:\n      - {path}/etc-pihole:/etc/pihole\n    ports:\n      - \"127.0.0.1:{WEB_UI_PORT}:{CONTAINER_WEB_PORT}/tcp\"\n      # See the type comment: a published port is reachable\n      # regardless of our nftables ruleset, so an open resolver is\n      # prevented by the bind address or nowhere.\n      - \"{bind}53:53/tcp\"\n      - \"{bind}53:53/udp\""
     )
 }
 
@@ -118,6 +136,22 @@ mod tests {
         let mut custom = input();
         custom.pihole_hostname = "filter.example.net".to_string();
         assert_eq!(hostname(&custom), "filter.example.net");
+    }
+
+    #[test]
+    fn app_settings_add_ftl_lines_only_when_changed() {
+        let plain = compose_contents(&input());
+        for key in ["dnssec", "privacylevel", "queryLogging"] {
+            assert!(!plain.contains(key), "{plain}");
+        }
+        let mut tuned = input();
+        for (k, v) in [("pihole_dnssec", "true"), ("pihole_privacy_level", "3"), ("pihole_query_logging", "false")] {
+            tuned.app_settings.insert(k.to_string(), v.to_string());
+        }
+        let text = compose_contents(&tuned);
+        assert!(text.contains("FTLCONF_dns_dnssec: \"true\""), "{text}");
+        assert!(text.contains("FTLCONF_misc_privacylevel: \"3\""), "{text}");
+        assert!(text.contains("FTLCONF_dns_queryLogging: \"false\""), "{text}");
     }
 
     #[test]

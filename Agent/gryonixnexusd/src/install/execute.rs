@@ -4225,6 +4225,8 @@ async fn install_n8n_steps(input: &Input, sink: &EventSink) -> Result<(), String
         Err(err) => return Err(format!("could not write .env: {err}")),
     }
 
+    super::smtp::store_password(&dir.join(".env"), input, n8n::SERVICE_ID)?;
+
     let _ = sink.step("pulling the n8n images").await;
     run_docker_streaming(&compose_pull_args(n8n::COMPOSE_PROJECT, &dir), sink).await?;
     let _ = sink.step("starting n8n").await;
@@ -4769,6 +4771,8 @@ async fn install_forgejo_steps(input: &Input, sink: &EventSink) -> Result<(), St
         Err(err) => return Err(format!("could not write .env: {err}")),
     }
 
+    super::smtp::store_password(&dir.join(".env"), input, forgejo::SERVICE_ID)?;
+
     let _ = sink.step("pulling the Forgejo images").await;
     run_docker_streaming(&compose_pull_args(forgejo::COMPOSE_PROJECT, &dir), sink).await?;
     let _ = sink.step("starting Forgejo").await;
@@ -5043,6 +5047,8 @@ async fn install_vaultwarden_steps(input: &Input, sink: &EventSink) -> Result<()
         }
         Err(err) => return Err(format!("could not write .env: {err}")),
     }
+
+    super::smtp::store_password(&dir.join(".env"), input, vaultwarden::SERVICE_ID)?;
 
     let config_path = data_path.join("config.json");
     let needs_restart = match sync_vaultwarden_config(&config_path, input) {

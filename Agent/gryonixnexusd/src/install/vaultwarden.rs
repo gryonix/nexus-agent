@@ -8,6 +8,7 @@
 use super::caddy::{self, WebIngress};
 use super::app_settings;
 use super::context::Input;
+use super::smtp;
 
 pub const SERVICE_ID: &str = "vaultwarden";
 
@@ -44,6 +45,12 @@ fn invitations_line(input: &Input) -> &'static str {
     }
 }
 
+pub const SMTP: smtp::Names = smtp::Names {
+    service: SERVICE_ID, fixed: &[], host: "SMTP_HOST", port: "SMTP_PORT", security: "SMTP_SECURITY",
+    security_values: ["starttls", "force_tls", "off"], username: "SMTP_USERNAME",
+    password: "SMTP_PASSWORD", from: "SMTP_FROM",
+};
+
 /// A port of `VaultwardenService.composeFile(_:).composeContents`
 pub fn compose_contents(input: &Input) -> String {
     let container = &input.vaultwarden_container;
@@ -51,8 +58,9 @@ pub fn compose_contents(input: &Input) -> String {
     let signups = signups(input);
     let host = hostname(input);
     let invitations = invitations_line(input);
+    let mail = smtp::env_lines(input, &SMTP);
     format!(
-        "services:\n  vaultwarden:\n    image: {IMAGE}\n    container_name: {container}\n    restart: unless-stopped\n    environment:\n      DOMAIN: \"https://{host}\"\n      SIGNUPS_ALLOWED: \"{signups}\"\n{invitations}      ADMIN_TOKEN: ${{ADMIN_TOKEN}}\n      IP_HEADER: X-Forwarded-For\n    volumes:\n      - {data_path}:/data\n    ports:\n      - \"127.0.0.1:{WEB_UI_PORT}:80\""
+        "services:\n  vaultwarden:\n    image: {IMAGE}\n    container_name: {container}\n    restart: unless-stopped\n    environment:\n      DOMAIN: \"https://{host}\"\n      SIGNUPS_ALLOWED: \"{signups}\"\n{invitations}      ADMIN_TOKEN: ${{ADMIN_TOKEN}}\n      IP_HEADER: X-Forwarded-For{mail}\n    volumes:\n      - {data_path}:/data\n    ports:\n      - \"127.0.0.1:{WEB_UI_PORT}:80\""
     )
 }
 

@@ -2,6 +2,7 @@
 
 use super::caddy::{self, WebIngress};
 use super::context::Input;
+use super::smtp;
 
 pub const SERVICE_ID: &str = "n8n";
 
@@ -34,13 +35,20 @@ pub fn base_url(input: &Input) -> String {
     format!("https://{}/", hostname(input))
 }
 
+pub const SMTP: smtp::Names = smtp::Names {
+    service: SERVICE_ID, fixed: &[("N8N_EMAIL_MODE", "smtp")], host: "N8N_SMTP_HOST", port: "N8N_SMTP_PORT",
+    security: "N8N_SMTP_SSL", security_values: ["false", "true", "false"], username: "N8N_SMTP_USER",
+    password: "N8N_SMTP_PASS", from: "N8N_SMTP_SENDER",
+};
+
 /// A port of `N8NService.composeFile(_:).composeContents`.
 pub fn compose_contents(input: &Input) -> String {
     let path = &input.n8n_path;
     let host = hostname(input);
     let base = base_url(input);
+    let mail = smtp::env_lines(input, &SMTP);
     format!(
-        "services:\n  n8n:\n    image: {IMAGE}\n    container_name: {CONTAINER}\n    restart: unless-stopped\n    depends_on:\n      - {DATABASE_SERVICE}\n    environment:\n      DB_TYPE: postgresdb\n      DB_POSTGRESDB_HOST: {DATABASE_SERVICE}\n      DB_POSTGRESDB_DATABASE: {DATABASE_NAME}\n      DB_POSTGRESDB_USER: {DATABASE_NAME}\n      DB_POSTGRESDB_PASSWORD: ${{DB_PASSWORD}}\n      # Both halves of \"which address is this?\": the first is what\n      # n8n checks incoming requests against, the second is what it\n      # PRINTS into every webhook URL and every editor link.\n      N8N_HOST: {host}\n      WEBHOOK_URL: \"{base}\"\n      N8N_EDITOR_BASE_URL: \"{base}\"\n      N8N_PROTOCOL: https\n      N8N_PORT: {CONTAINER_PORT}\n      # Caddy is the one hop in front. Without this n8n reads the\n      # proxy's own address as the client's, which turns every\n      # rate limit and every log line into a statement about\n      # 127.0.0.1.\n      N8N_PROXY_HOPS: 1\n      # Workflow code runs in the task runner rather than in the\n      # main process — the supported arrangement from 2.x, and the\n      # one that keeps a runaway Code node from taking the editor\n      # down with it.\n      N8N_RUNNERS_ENABLED: \"true\"\n      # Nothing about this deployment is reported anywhere. The\n      # whole point of the catalog is a server that is the owner's.\n      N8N_DIAGNOSTICS_ENABLED: \"false\"\n      N8N_HIRING_BANNER_ENABLED: \"false\"\n      # Schedule triggers (\"every day at 9\") are read in this zone.\n      # UTC rather than the server's, which on a rented VPS is\n      # whatever the provider set: a fixed, stated zone is one the\n      # owner can convert from, and it is changed in the workflow.\n      GENERIC_TIMEZONE: UTC\n    volumes:\n      - {path}/data:/home/node/.n8n\n    ports:\n      - \"127.0.0.1:{WEB_UI_PORT}:{CONTAINER_PORT}\"\n  {DATABASE_SERVICE}:\n    image: {DATABASE_IMAGE}\n    restart: unless-stopped\n    environment:\n      POSTGRES_DB: {DATABASE_NAME}\n      POSTGRES_USER: {DATABASE_NAME}\n      POSTGRES_PASSWORD: ${{DB_PASSWORD}}\n    volumes:\n      - {path}/postgres:/var/lib/postgresql/data"
+        "services:\n  n8n:\n    image: {IMAGE}\n    container_name: {CONTAINER}\n    restart: unless-stopped\n    depends_on:\n      - {DATABASE_SERVICE}\n    environment:\n      DB_TYPE: postgresdb\n      DB_POSTGRESDB_HOST: {DATABASE_SERVICE}\n      DB_POSTGRESDB_DATABASE: {DATABASE_NAME}\n      DB_POSTGRESDB_USER: {DATABASE_NAME}\n      DB_POSTGRESDB_PASSWORD: ${{DB_PASSWORD}}\n      # Both halves of \"which address is this?\": the first is what\n      # n8n checks incoming requests against, the second is what it\n      # PRINTS into every webhook URL and every editor link.\n      N8N_HOST: {host}\n      WEBHOOK_URL: \"{base}\"\n      N8N_EDITOR_BASE_URL: \"{base}\"\n      N8N_PROTOCOL: https\n      N8N_PORT: {CONTAINER_PORT}\n      # Caddy is the one hop in front. Without this n8n reads the\n      # proxy's own address as the client's, which turns every\n      # rate limit and every log line into a statement about\n      # 127.0.0.1.\n      N8N_PROXY_HOPS: 1\n      # Workflow code runs in the task runner rather than in the\n      # main process — the supported arrangement from 2.x, and the\n      # one that keeps a runaway Code node from taking the editor\n      # down with it.\n      N8N_RUNNERS_ENABLED: \"true\"\n      # Nothing about this deployment is reported anywhere. The\n      # whole point of the catalog is a server that is the owner's.\n      N8N_DIAGNOSTICS_ENABLED: \"false\"\n      N8N_HIRING_BANNER_ENABLED: \"false\"\n      # Schedule triggers (\"every day at 9\") are read in this zone.\n      # UTC rather than the server's, which on a rented VPS is\n      # whatever the provider set: a fixed, stated zone is one the\n      # owner can convert from, and it is changed in the workflow.\n      GENERIC_TIMEZONE: UTC{mail}\n    volumes:\n      - {path}/data:/home/node/.n8n\n    ports:\n      - \"127.0.0.1:{WEB_UI_PORT}:{CONTAINER_PORT}\"\n  {DATABASE_SERVICE}:\n    image: {DATABASE_IMAGE}\n    restart: unless-stopped\n    environment:\n      POSTGRES_DB: {DATABASE_NAME}\n      POSTGRES_USER: {DATABASE_NAME}\n      POSTGRES_PASSWORD: ${{DB_PASSWORD}}\n    volumes:\n      - {path}/postgres:/var/lib/postgresql/data"
     )
 }
 

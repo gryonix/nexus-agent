@@ -3,6 +3,7 @@
 use super::caddy::{self, WebIngress};
 use super::app_settings;
 use super::context::Input;
+use super::smtp;
 
 pub const SERVICE_ID: &str = "forgejo";
 
@@ -30,6 +31,13 @@ pub fn ssh_port(input: &Input) -> Option<u16> {
     }
 }
 
+pub const SMTP: smtp::Names = smtp::Names {
+    service: SERVICE_ID, fixed: &[("FORGEJO__mailer__ENABLED", "true")], host: "FORGEJO__mailer__SMTP_ADDR",
+    port: "FORGEJO__mailer__SMTP_PORT", security: "FORGEJO__mailer__PROTOCOL",
+    security_values: ["smtp+starttls", "smtps", "smtp"], username: "FORGEJO__mailer__USER",
+    password: "FORGEJO__mailer__PASSWD", from: "FORGEJO__mailer__FROM",
+};
+
 /// A port of `ForgejoService.composeFile(_:).composeContents`, both branches.
 pub fn compose_contents(input: &Input) -> String {
     let path = &input.forgejo_path;
@@ -47,8 +55,9 @@ pub fn compose_contents(input: &Input) -> String {
     } else {
         ""
     };
+    let mail = smtp::env_lines(input, &SMTP);
     format!(
-        "services:\n  db:\n    image: {DATABASE_IMAGE}\n    restart: unless-stopped\n    environment:\n      POSTGRES_USER: forgejo\n      POSTGRES_PASSWORD: ${{POSTGRES_PASSWORD}}\n      POSTGRES_DB: forgejo\n    volumes:\n      - {path}/db:/var/lib/postgresql/data\n  server:\n    image: {IMAGE}\n    container_name: {CONTAINER}\n    restart: unless-stopped\n    depends_on:\n      - db\n    environment:\n      USER_UID: 1000\n      USER_GID: 1000\n      FORGEJO__database__DB_TYPE: postgres\n      FORGEJO__database__HOST: db:5432\n      FORGEJO__database__NAME: forgejo\n      FORGEJO__database__USER: forgejo\n      FORGEJO__database__PASSWD: ${{POSTGRES_PASSWORD}}\n      FORGEJO__server__DOMAIN: {host}\n      FORGEJO__server__ROOT_URL: https://{host}/\n      FORGEJO__server__HTTP_PORT: \"3000\"\n{ssh_settings}      # No web installer: the setup script has already provided the\n      # database and the administrator, and an unlocked instance\n      # hands its own configuration to whoever opens the page first.\n      FORGEJO__security__INSTALL_LOCK: \"true\"\n      # Closed by default — this is a personal forge on a public\n      # URL. Further users are invited from Site Administration.\n      FORGEJO__service__DISABLE_REGISTRATION: \"{registration_closed}\"{signin_line}\n    volumes:\n      - {path}/data:/var/lib/gitea\n      - /etc/localtime:/etc/localtime:ro\n    ports:\n      - \"127.0.0.1:{WEB_UI_PORT}:3000\"{ssh_publish}"
+        "services:\n  db:\n    image: {DATABASE_IMAGE}\n    restart: unless-stopped\n    environment:\n      POSTGRES_USER: forgejo\n      POSTGRES_PASSWORD: ${{POSTGRES_PASSWORD}}\n      POSTGRES_DB: forgejo\n    volumes:\n      - {path}/db:/var/lib/postgresql/data\n  server:\n    image: {IMAGE}\n    container_name: {CONTAINER}\n    restart: unless-stopped\n    depends_on:\n      - db\n    environment:\n      USER_UID: 1000\n      USER_GID: 1000\n      FORGEJO__database__DB_TYPE: postgres\n      FORGEJO__database__HOST: db:5432\n      FORGEJO__database__NAME: forgejo\n      FORGEJO__database__USER: forgejo\n      FORGEJO__database__PASSWD: ${{POSTGRES_PASSWORD}}\n      FORGEJO__server__DOMAIN: {host}\n      FORGEJO__server__ROOT_URL: https://{host}/\n      FORGEJO__server__HTTP_PORT: \"3000\"\n{ssh_settings}      # No web installer: the setup script has already provided the\n      # database and the administrator, and an unlocked instance\n      # hands its own configuration to whoever opens the page first.\n      FORGEJO__security__INSTALL_LOCK: \"true\"\n      # Closed by default — this is a personal forge on a public\n      # URL. Further users are invited from Site Administration.\n      FORGEJO__service__DISABLE_REGISTRATION: \"{registration_closed}\"{signin_line}{mail}\n    volumes:\n      - {path}/data:/var/lib/gitea\n      - /etc/localtime:/etc/localtime:ro\n    ports:\n      - \"127.0.0.1:{WEB_UI_PORT}:3000\"{ssh_publish}"
     )
 }
 

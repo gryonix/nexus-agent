@@ -1,5 +1,6 @@
 pub mod adguard;
 pub mod app_settings;
+pub mod smtp;
 pub mod authelia;
 pub mod ai_network;
 pub mod ollama;
