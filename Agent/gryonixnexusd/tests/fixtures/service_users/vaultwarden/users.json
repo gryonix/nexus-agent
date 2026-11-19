@@ -1,0 +1,50 @@
+[
+  {
+    "_status": 0,
+    "id": "9f1c5d3a-2b8e-4c77-a1d4-5e6f7a8b9c02",
+    "name": "Boris",
+    "email": "boris@example.org",
+    "emailVerified": true,
+    "premium": true,
+    "culture": "en-US",
+    "twoFactorEnabled": true,
+    "organizations": [],
+    "creationDate": "2026-09-01T08:00:00.000000Z",
+    "object": "profile",
+    "userEnabled": false,
+    "createdAt": "2026-09-01 08:00:00 UTC",
+    "lastActive": "2026-10-20 18:30:00 UTC"
+  },
+  {
+    "_status": 0,
+    "id": "6c0a2c5e-7d4f-4f0e-9d0c-0d3b1d1f0a01",
+    "name": "Anna",
+    "email": "anna@example.org",
+    "emailVerified": true,
+    "premium": true,
+    "culture": "en-US",
+    "twoFactorEnabled": false,
+    "organizations": [],
+    "creationDate": "2026-08-12T10:00:00.000000Z",
+    "object": "profile",
+    "userEnabled": true,
+    "createdAt": "2026-08-12 10:00:00 UTC",
+    "lastActive": null
+  },
+  {
+    "_status": 0,
+    "id": "0b7e9a11-3c5d-4e2f-8a6b-1c2d3e4f5a03",
+    "name": "",
+    "email": "clara@example.org",
+    "emailVerified": false,
+    "premium": true,
+    "culture": "en-US",
+    "twoFactorEnabled": false,
+    "organizations": [],
+    "creationDate": "2026-11-02T09:00:00.000000Z",
+    "object": "profile",
+    "userEnabled": true,
+    "createdAt": "2026-11-02 09:00:00 UTC",
+    "lastActive": null
+  }
+]

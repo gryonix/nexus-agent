@@ -1,0 +1,56 @@
+{
+  "data": [
+    {
+      "avatar_url": "https://files.example.org/media/avatars/default.png",
+      "email": "operator@example.org",
+      "name": "Operator",
+      "contact_email": "operator@example.org",
+      "login_id": "",
+      "is_staff": true,
+      "is_active": true,
+      "org_id": -1,
+      "org_name": "",
+      "quota_usage": 0,
+      "quota_total": -2,
+      "role": "default",
+      "create_time": "2026-10-01T10:00:00+00:00",
+      "last_login": "2026-11-17T09:00:00+00:00",
+      "last_access_time": "2026-11-17T09:00:00+00:00"
+    },
+    {
+      "avatar_url": "https://files.example.org/media/avatars/default.png",
+      "email": "anna@example.org",
+      "name": "Anna",
+      "contact_email": "anna@example.org",
+      "login_id": "",
+      "is_staff": false,
+      "is_active": true,
+      "org_id": -1,
+      "org_name": "",
+      "quota_usage": 2097152,
+      "quota_total": 5368709120,
+      "role": "default",
+      "create_time": "2026-10-02T10:00:00+00:00",
+      "last_login": null,
+      "last_access_time": null
+    },
+    {
+      "avatar_url": "https://files.example.org/media/avatars/default.png",
+      "email": "boris@example.org",
+      "name": "Boris",
+      "contact_email": "boris@example.org",
+      "login_id": "",
+      "is_staff": false,
+      "is_active": false,
+      "org_id": -1,
+      "org_name": "",
+      "quota_usage": 0,
+      "quota_total": -2,
+      "role": "default",
+      "create_time": "2026-10-03T10:00:00+00:00",
+      "last_login": null,
+      "last_access_time": null
+    }
+  ],
+  "total_count": 3
+}

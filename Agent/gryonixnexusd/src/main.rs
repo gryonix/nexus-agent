@@ -78,6 +78,7 @@ mod vpn_state;
 mod update;
 mod widget_feed;
 mod wrapper_stop;
+mod service_users;
 mod util;
 /// The deployment's own service passwords, sealed at rest
 mod vault;

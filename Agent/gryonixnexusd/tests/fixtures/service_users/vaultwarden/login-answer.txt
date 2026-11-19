@@ -1,0 +1,5 @@
+HTTP/1.1 303 See Other
+location: /admin
+set-cookie: VW_ADMIN=aaa.bbb.ccc; SameSite=Strict; HttpOnly; Max-Age=1200; Path=/admin
+content-length: 0
+

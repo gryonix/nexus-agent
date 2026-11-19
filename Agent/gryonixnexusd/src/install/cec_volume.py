@@ -164,10 +164,8 @@ class Wakeup:
             self.awake_until = now + 20
             self.go("select" if self.select else None, now, 30)
             return
-        log("waking the speaker")
+        log("waiting for the speaker to wake")
         self.select = True
-        quick([SPEAKER, 0x44, 0x6D])
-        quick([SPEAKER, 0x45])
         self.go("waking", now, 15)
 
     def go(self, phase, now, limit):

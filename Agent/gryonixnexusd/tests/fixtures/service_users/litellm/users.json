@@ -1,0 +1,12 @@
+{
+  "users": [
+    {"user_id": "operator", "user_email": "operator@example.org", "user_role": "proxy_admin", "spend": 0.0, "max_budget": null},
+    {"user_id": "anna", "user_email": "anna@example.org", "user_role": "internal_user", "spend": 1.5, "max_budget": null},
+    {"user_id": "boris", "user_email": null, "user_role": "internal_user_viewer", "spend": 0.0, "max_budget": null},
+    {"user_id": "default_user_id", "user_email": null, "user_role": "proxy_admin", "spend": 0.0, "max_budget": null}
+  ],
+  "total": 4,
+  "page": 1,
+  "page_size": 25,
+  "total_pages": 1
+}

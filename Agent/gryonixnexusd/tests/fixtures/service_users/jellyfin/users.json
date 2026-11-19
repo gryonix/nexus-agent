@@ -1,0 +1,29 @@
+[
+  {
+    "Name": "operator",
+    "ServerId": "0a1b2c3d4e5f60718293a4b5c6d7e8f9",
+    "Id": "33333333333333333333333333333333",
+    "HasPassword": true,
+    "HasConfiguredPassword": true,
+    "EnableAutoLogin": false,
+    "Policy": {"IsAdministrator": true, "IsHidden": true, "IsDisabled": false, "EnableAllFolders": true}
+  },
+  {
+    "Name": "boris",
+    "ServerId": "0a1b2c3d4e5f60718293a4b5c6d7e8f9",
+    "Id": "22222222222222222222222222222222",
+    "HasPassword": true,
+    "HasConfiguredPassword": true,
+    "EnableAutoLogin": false,
+    "Policy": {"IsAdministrator": false, "IsHidden": true, "IsDisabled": true, "EnableAllFolders": true}
+  },
+  {
+    "Name": "anna",
+    "ServerId": "0a1b2c3d4e5f60718293a4b5c6d7e8f9",
+    "Id": "11111111111111111111111111111111",
+    "HasPassword": false,
+    "HasConfiguredPassword": false,
+    "EnableAutoLogin": false,
+    "Policy": {"IsAdministrator": false, "IsHidden": true, "IsDisabled": false, "EnableAllFolders": true}
+  }
+]

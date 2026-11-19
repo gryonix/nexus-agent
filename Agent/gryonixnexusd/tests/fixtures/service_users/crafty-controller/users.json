@@ -1,0 +1,5 @@
+{"status": "ok", "data": [
+  {"user_id": "1c7b4ca2-0000-4000-8000-000000000001", "username": "admin", "email": "admin@example.org", "enabled": true, "superuser": true, "manager": null},
+  {"user_id": "1c7b4ca2-0000-4000-8000-000000000002", "username": "anna", "email": "anna@example.org", "enabled": true, "superuser": false, "manager": null},
+  {"user_id": "1c7b4ca2-0000-4000-8000-000000000003", "username": "boris", "email": "", "enabled": false, "superuser": false, "manager": null}
+]}

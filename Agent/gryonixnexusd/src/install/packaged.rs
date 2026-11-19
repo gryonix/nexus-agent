@@ -154,12 +154,53 @@ fn name_setup(id: &str, name: &str) -> String {
 /// A port of `PackagedAudioService.setupSteps(_:)`
 #[cfg(test)]
 pub fn setup_script(spec: &Spec) -> String {
-    named_setup_script(spec, "")
+    named_setup_script(spec, "", &SpeakerOutput { device: "", mixer: "", power: "" })
 }
 
-/// The setup script, with the speaker named
-pub fn named_setup_script(spec: &Spec, asked_name: &str) -> String {
-    let naming = name_setup(spec.id, &speaker_name(asked_name));
+pub struct SpeakerOutput<'a> {
+    pub device: &'a str,
+    pub mixer: &'a str,
+    /// The speaker power switches, as option pairs
+    pub power: &'a str,
+}
+
+const SPOTIFY_CONF: &str = "/etc/raspotify/conf";
+const SPOTIFY_OUTPUT_KEYS: [&str; 4] = ["LIBRESPOT_DEVICE", "LIBRESPOT_MIXER", "LIBRESPOT_ALSA_MIXER_DEVICE", "LIBRESPOT_ALSA_MIXER_CONTROL"];
+
+/// The mixer card name librespot opens for a raw device
+fn mixer_card(device: &str) -> Option<String> {
+    let card = super::usb_level::card_reference(device)?;
+    Some(match card.strip_prefix("card").filter(|n| !n.is_empty() && n.chars().all(|c| c.is_ascii_digit())) {
+        Some(number) => format!("hw:{number}"),
+        None => format!("hw:CARD={card}"),
+    })
+}
+
+/// A port of `PackagedAudioService.outputSetup(_:_:)`
+fn output_setup(id: &str, output: &SpeakerOutput) -> String {
+    if id != "raspotify" || output.device.is_empty() {
+        return String::new();
+    }
+    let device = super::shairport_sync::device_name(output.device);
+    let mut script: String = SPOTIFY_OUTPUT_KEYS.iter().map(|key| format!("sed -i '/^{key}=/d' {SPOTIFY_CONF}\n")).collect();
+    let append = |key: &str, value: &str| format!("echo '{key}=\"{value}\"' >> {SPOTIFY_CONF}\n");
+    if device != "default" {
+        script.push_str(&append("LIBRESPOT_DEVICE", &device));
+    }
+    let card = mixer_card(&device).filter(|_| super::usb_level::plain_control(output.mixer));
+    match card {
+        Some(card) => {
+            script.push_str(&append("LIBRESPOT_MIXER", "alsa"));
+            script.push_str(&append("LIBRESPOT_ALSA_MIXER_DEVICE", &card));
+            script.push_str(&append("LIBRESPOT_ALSA_MIXER_CONTROL", output.mixer));
+        }
+        None => script.push_str(&append("LIBRESPOT_MIXER", "softvol")),
+    }
+    script
+}
+
+pub fn named_setup_script(spec: &Spec, asked_name: &str, output: &SpeakerOutput) -> String {
+    let naming = name_setup(spec.id, &speaker_name(asked_name)) + &output_setup(spec.id, output) + &super::packaged_power::onevent_setup(spec.id, output.power);
     let apt = super::packages::apt_quiet();
     let packages = spec.packages.join(" ");
     let units = unit_list(spec);
@@ -175,6 +216,11 @@ pub fn removal_steps(spec: &Spec) -> Vec<String> {
     let own: Vec<String> = spec.units.iter().filter(|unit| !SHARED_UNITS.contains(unit)).map(|unit| format!("{unit}.service")).collect();
     let mut steps = vec![format!("systemctl disable --now {} >/dev/null 2>&1 || true", own.join(" "))];
     steps.extend(spec.extra_removal.lines().map(String::from));
+    if spec.id == "raspotify" {
+        steps.push(super::usb_level::removal_script(spec.id));
+        steps.push(super::packaged_power::onevent_setup(spec.id, ""));
+    }
+    steps.extend(super::packaged_power::removal_script(spec.id));
     steps.push("systemctl daemon-reload || true".to_string());
     steps.push(format!("{} remove -yq {} >/dev/null 2>&1 || true", super::packages::apt_quiet(), spec.own_packages.join(" ")));
     steps.push(format!("rm -f {}", marker(spec.id)));
@@ -262,6 +308,45 @@ mod tests {
         assert!(script.contains("armhf) spotify_sha=47cc9b1d"));
         assert!(script.contains("| sha256sum -c -"));
         assert!(script.contains(r#"s/^#\?LIBRESPOT_NAME=.*/LIBRESPOT_NAME=\"$(hostname)\"/"#), "{script}");
+    }
+
+    fn spotify_script(device: &str, mixer: &str) -> String {
+        named_setup_script(find("raspotify").unwrap(), "", &SpeakerOutput { device, mixer, power: "" })
+    }
+
+    #[test]
+    fn spotify_plays_through_the_chosen_card_with_its_hardware_volume() {
+        let script = spotify_script("hw:CARD=T8,DEV=0", "PCM");
+        for line in [
+            "sed -i '/^LIBRESPOT_DEVICE=/d' /etc/raspotify/conf\n",
+            "echo 'LIBRESPOT_DEVICE=\"plughw:CARD=T8,DEV=0\"' >> /etc/raspotify/conf\n",
+            "echo 'LIBRESPOT_MIXER=\"alsa\"' >> /etc/raspotify/conf\n",
+            "echo 'LIBRESPOT_ALSA_MIXER_DEVICE=\"hw:CARD=T8\"' >> /etc/raspotify/conf\n",
+            "echo 'LIBRESPOT_ALSA_MIXER_CONTROL=\"PCM\"' >> /etc/raspotify/conf\n",
+        ] {
+            assert!(script.contains(line), "{line}\n{script}");
+        }
+    }
+
+    #[test]
+    fn spotify_without_a_control_scales_the_volume_in_software() {
+        let script = spotify_script("hw:1,0", "");
+        assert!(script.contains("LIBRESPOT_DEVICE=\"plughw:1,0\""), "{script}");
+        assert!(script.contains("LIBRESPOT_MIXER=\"softvol\""), "{script}");
+        assert!(!script.contains("echo 'LIBRESPOT_ALSA"), "{script}");
+        let hdmi = spotify_script("hw:CARD=vc4hdmi0,DEV=0", "PCM");
+        assert!(hdmi.contains("LIBRESPOT_DEVICE=\"hdmi:CARD=vc4hdmi0,DEV=0\"") && hdmi.contains("softvol"), "{hdmi}");
+        let numbered = spotify_script("hw:2,0", "PCM");
+        assert!(numbered.contains("LIBRESPOT_ALSA_MIXER_DEVICE=\"hw:2\""), "{numbered}");
+    }
+
+    #[test]
+    fn spotify_default_output_clears_the_keys_and_unset_leaves_them() {
+        let cleared = spotify_script("default", "");
+        assert!(cleared.contains("sed -i '/^LIBRESPOT_DEVICE=/d'") && !cleared.contains("echo 'LIBRESPOT_DEVICE"), "{cleared}");
+        assert!(!spotify_script("", "PCM").contains("LIBRESPOT_MIXER"));
+        assert!(!setup_script(find("snapclient").unwrap()).contains("LIBRESPOT"));
+        assert!(removal_steps(find("raspotify").unwrap()).iter().any(|s| s.contains("raspotify.rule")));
     }
 
     #[test]

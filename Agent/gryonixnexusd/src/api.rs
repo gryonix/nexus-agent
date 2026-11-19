@@ -25,7 +25,7 @@ use crate::ddns;
 use crate::mesh;
 use crate::notify;
 use crate::{
-    agent_update, backup, backup_drive, container_backup, container_backup_run, container_removal, container_update, container_schedule, containers, control, discover, dkim, docker_assets, history, lockdown, mailbox,
+    agent_update, backup, backup_drive, container_backup, container_backup_run, container_removal, container_update, container_schedule, containers, control, discover, dkim, docker_assets, history, lockdown, mailbox, service_users,
     metrics, models, mods, pb, restore, security, serial, system_settings,
     uninstall, update,
 };
@@ -90,6 +90,9 @@ async fn route(req: Request<Incoming>, store: Arc<Mutex<Store>>) -> anyhow::Resu
         return Ok(resp);
     }
     if let Some(resp) = route_models(&path, codec, bytes.clone(), store.clone()).await? {
+        return Ok(resp);
+    }
+    if let Some(resp) = route_service_users(&path, codec, bytes.clone(), store.clone()).await? {
         return Ok(resp);
     }
     if let Some(resp) = route_vpn(&path, codec, bytes.clone()).await? {
@@ -173,6 +176,10 @@ async fn route_control(path: &str, codec: Codec, bytes: Bytes, store: Arc<Mutex<
 
 async fn route_containers(path: &str, codec: Codec, bytes: Bytes, store: Arc<Mutex<Store>>) -> anyhow::Result<Option<Resp>> {
     match path {
+        "/gryonixnexusd.v1.Containers/RemoveForeignContainer" => ({
+            let req: pb::RemoveForeignContainerRequest = codec.decode(&bytes)?;
+            Ok(crate::install::container_names::remove_response(codec, &req.name).await)
+        }).map(Some),
         "/gryonixnexusd.v1.Containers/SetContainerGroupName" => ({
             let req: pb::SetContainerGroupNameRequest = codec.decode(&bytes)?;
             let name = match containers::sanitise_name(&req.display_name) {
@@ -893,6 +900,48 @@ async fn route_settings(path: &str, codec: Codec, bytes: Bytes, store: Arc<Mutex
         "/gryonixnexusd.v1.Notify/TestLiveActivity" => ({
             let req: pb::TestLiveActivityRequest = codec.decode(&bytes)?;
             Ok(notify::test_live(codec, store, req).await)
+        }).map(Some),
+        _ => Ok(None),
+    }
+}
+
+async fn route_service_users(path: &str, codec: Codec, bytes: Bytes, store: Arc<Mutex<Store>>) -> anyhow::Result<Option<Resp>> {
+    match path {
+        "/gryonixnexusd.v1.ServiceUsers/GetUserCapabilities" => ({
+            let req: pb::ServiceUsersRequest = codec.decode(&bytes)?;
+            Ok(service_users::get_user_capabilities(codec, req).await)
+        }).map(Some),
+        "/gryonixnexusd.v1.ServiceUsers/ListServiceUsers" => ({
+            let req: pb::ServiceUsersRequest = codec.decode(&bytes)?;
+            Ok(service_users::list_service_users(codec, req, store.clone()).await)
+        }).map(Some),
+        "/gryonixnexusd.v1.ServiceUsers/CreateServiceUser" => ({
+            let req: pb::CreateServiceUserRequest = codec.decode(&bytes)?;
+            Ok(service_users::create_service_user(codec, req, store.clone()).await)
+        }).map(Some),
+        "/gryonixnexusd.v1.ServiceUsers/DeleteServiceUser" => ({
+            let req: pb::ServiceUserTarget = codec.decode(&bytes)?;
+            Ok(service_users::delete_service_user(codec, req, store.clone()).await)
+        }).map(Some),
+        "/gryonixnexusd.v1.ServiceUsers/SetServiceUserPassword" => ({
+            let req: pb::SetServiceUserPasswordRequest = codec.decode(&bytes)?;
+            Ok(service_users::set_service_user_password(codec, req, store.clone()).await)
+        }).map(Some),
+        "/gryonixnexusd.v1.ServiceUsers/SetServiceUserRole" => ({
+            let req: pb::SetServiceUserRoleRequest = codec.decode(&bytes)?;
+            Ok(service_users::set_service_user_role(codec, req, store.clone()).await)
+        }).map(Some),
+        "/gryonixnexusd.v1.ServiceUsers/SetServiceUserEnabled" => ({
+            let req: pb::SetServiceUserEnabledRequest = codec.decode(&bytes)?;
+            Ok(service_users::set_service_user_enabled(codec, req, store.clone()).await)
+        }).map(Some),
+        "/gryonixnexusd.v1.ServiceUsers/SetServiceUserQuota" => ({
+            let req: pb::SetServiceUserQuotaRequest = codec.decode(&bytes)?;
+            Ok(service_users::set_service_user_quota(codec, req, store.clone()).await)
+        }).map(Some),
+        "/gryonixnexusd.v1.ServiceUsers/SetServiceAdminToken" => ({
+            let req: pb::SetServiceAdminTokenRequest = codec.decode(&bytes)?;
+            Ok(service_users::set_service_admin_token(codec, req, store.clone()).await)
         }).map(Some),
         _ => Ok(None),
     }

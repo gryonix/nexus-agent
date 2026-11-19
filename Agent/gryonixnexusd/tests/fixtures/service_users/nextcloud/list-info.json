@@ -1,0 +1,34 @@
+{
+    "operator": {
+        "user_id": "operator",
+        "display_name": "Operator",
+        "email": "operator@example.org",
+        "cloud_id": "operator@files.example.org",
+        "enabled": true,
+        "groups": ["admin"],
+        "quota": "none",
+        "storage": {"free": 1000000000, "used": 2048, "total": 1000002048, "relative": 0, "quota": -3},
+        "backend": "Database"
+    },
+    "anna": {
+        "user_id": "anna",
+        "display_name": "Anna",
+        "email": "anna@example.org",
+        "cloud_id": "anna@files.example.org",
+        "enabled": true,
+        "groups": ["family"],
+        "quota": "5 GB",
+        "storage": {"free": 5368000000, "used": 1048576, "total": 5369048576, "relative": 0.02, "quota": 5368709120},
+        "backend": "Database"
+    },
+    "boris": {
+        "user_id": "boris",
+        "display_name": "Boris",
+        "email": null,
+        "cloud_id": "boris@files.example.org",
+        "enabled": false,
+        "groups": ["admin", "family"],
+        "quota": "default",
+        "backend": "Database"
+    }
+}

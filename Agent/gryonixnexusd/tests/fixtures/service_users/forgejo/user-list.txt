@@ -1,0 +1,4 @@
+ID   Username   Email                  IsActive   IsAdmin   2FA
+1    operator   operator@example.org   true       true      false
+2    anna       anna@example.org       true       false     false
+3    boris      boris@example.org      true       false     false

@@ -123,6 +123,19 @@ const NOT_A_WRITABLE_HOST_PATH: &[(&str, &str)] = &[
          grant only reaches hosts whose unit file is rewritten, which is the \
          fleet minus everyone who has not reinstalled the agent.",
     ),
+    (
+        "/etc/raspotify",
+        "Not a grant. install/packaged.rs names /etc/raspotify/conf, but the \
+         script that edits it runs through packages::run_outside_sandbox, a \
+         TRANSIENT UNIT (systemd-run) with no ProtectSystem.",
+    ),
+    (
+        "/etc/udev",
+        "Not a grant. install/usb_level.rs names the speaker-level rule under \
+         /etc/udev/rules.d, but the script that writes it runs through \
+         packages::run_outside_sandbox or the audio settings systemd-run, both \
+         TRANSIENT UNITS with no ProtectSystem.",
+    ),
 ];
 
 fn repo_root() -> PathBuf {

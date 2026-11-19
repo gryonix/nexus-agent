@@ -82,6 +82,12 @@ pub struct Input {
     pub uxplay_name: String,
     /// `ServiceSettings.speakerName`; empty keeps the machine's name.
     pub speaker_name: String,
+    /// `ServiceSettings.spotifyOutput`, the ALSA device; empty leaves it alone.
+    pub spotify_output: String,
+    /// `ServiceSettings.spotifyMixer`, the card's volume control; empty is software.
+    pub spotify_mixer: String,
+    /// `ServiceSettings.powerOptions`, the speaker power switches of a player.
+    pub power_options: String,
     /// `ServiceSettings.odioPath`, Swift default `/opt/odio`.
     pub odio_path: String,
     /// `ServiceSettings.odioHostname`; empty means `odio.<domain>`.
@@ -201,7 +207,7 @@ impl Default for Input {
             zigbee2mqtt_path: "/opt/zigbee2mqtt".to_string(), zigbee2mqtt_hostname: String::new(),
             shairport_path: "/opt/shairport-sync".to_string(), shairport_mode: "airplay2".to_string(),
             shairport_name: "gryonix".to_string(), shairport_output: "default".to_string(), shairport_options: String::new(),
-            uxplay_name: "gryonix TV".to_string(), speaker_name: String::new(), odio_path: "/opt/odio".to_string(), odio_hostname: String::new(),
+            uxplay_name: "gryonix TV".to_string(), speaker_name: String::new(), spotify_output: String::new(), spotify_mixer: String::new(), power_options: String::new(), odio_path: "/opt/odio".to_string(), odio_hostname: String::new(),
             minecraft_java_path: "/opt/minecraft-java".to_string(), minecraft_java_version: String::new(),
             minecraft_java_flavour: "PAPER".to_string(), minecraft_java_memory_mb: 2048, minecraft_java_port: 25565,
             minecraft_java_accepts_eula: false, minecraft_java_whitelist: String::new(),

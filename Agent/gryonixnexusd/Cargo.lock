@@ -368,7 +368,7 @@ dependencies = [
 
 [[package]]
 name = "gryonixnexusd"
-version = "26.11.17"
+version = "26.11.19-2"
 dependencies = [
  "anyhow",
  "base64",

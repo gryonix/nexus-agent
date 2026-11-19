@@ -1,0 +1,6 @@
+{"id": 1, "type": "result", "success": true, "result": [
+  {"id": "0123456789abcdef0123456789abcd01", "username": "operator", "name": "Operator", "is_owner": true, "is_active": true, "local_only": false, "system_generated": false, "group_ids": ["system-admin"], "credentials": [{"type": "homeassistant"}]},
+  {"id": "0123456789abcdef0123456789abcd02", "username": "anna", "name": "Anna", "is_owner": false, "is_active": true, "local_only": false, "system_generated": false, "group_ids": ["system-users"], "credentials": [{"type": "homeassistant"}]},
+  {"id": "0123456789abcdef0123456789abcd03", "username": null, "name": "Tablet", "is_owner": false, "is_active": false, "local_only": true, "system_generated": false, "group_ids": ["system-read-only"], "credentials": []},
+  {"id": "0123456789abcdef0123456789abcd04", "username": null, "name": "Supervisor", "is_owner": false, "is_active": true, "local_only": false, "system_generated": true, "group_ids": ["system-admin"], "credentials": []}
+]}

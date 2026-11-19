@@ -1,0 +1,48 @@
+[
+  {
+    "id": 1,
+    "login": "operator",
+    "login_name": "",
+    "source_id": 0,
+    "full_name": "",
+    "email": "operator@example.org",
+    "avatar_url": "https://git.example.org/avatars/1",
+    "language": "en-US",
+    "is_admin": true,
+    "last_login": "2026-11-17T09:00:00Z",
+    "created": "2026-10-01T10:00:00Z",
+    "restricted": false,
+    "active": true,
+    "prohibit_login": false,
+    "location": "",
+    "website": "",
+    "description": "",
+    "visibility": "public"
+  },
+  {
+    "id": 2,
+    "login": "anna",
+    "login_name": "",
+    "source_id": 0,
+    "full_name": "Anna",
+    "email": "anna@example.org",
+    "is_admin": false,
+    "restricted": false,
+    "active": true,
+    "prohibit_login": false,
+    "visibility": "public"
+  },
+  {
+    "id": 3,
+    "login": "boris",
+    "login_name": "",
+    "source_id": 0,
+    "full_name": "",
+    "email": "boris@example.org",
+    "is_admin": false,
+    "restricted": false,
+    "active": true,
+    "prohibit_login": true,
+    "visibility": "public"
+  }
+]

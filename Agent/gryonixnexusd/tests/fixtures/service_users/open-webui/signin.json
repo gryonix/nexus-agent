@@ -1,0 +1,1 @@
+{"token": "eyJhbGciOiJIUzI1NiJ9.example.signature", "token_type": "Bearer", "id": "5b1c0f5e-0000-4000-8000-000000000001", "email": "operator@example.org", "name": "Operator", "role": "admin", "profile_image_url": "/user.png"}

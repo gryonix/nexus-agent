@@ -1,0 +1,14 @@
+{
+  "Name": "anna",
+  "Id": "11111111111111111111111111111111",
+  "HasPassword": false,
+  "Policy": {
+    "IsAdministrator": false,
+    "IsHidden": true,
+    "IsDisabled": false,
+    "EnableAllFolders": true,
+    "EnableRemoteAccess": true,
+    "LoginAttemptsBeforeLockout": -1,
+    "MaxActiveSessions": 0
+  }
+}

@@ -1,0 +1,5 @@
+0b1f2c3d-0000-4000-8000-000000000001	operator@example.org	1	NULL	admin	Operator	Admin
+0b1f2c3d-0000-4000-8000-000000000002	anna@example.org	1	NULL	user	Anna	Example
+0b1f2c3d-0000-4000-8000-000000000003	boris@example.org	0	NULL	user	Boris	Example
+0b1f2c3d-0000-4000-8000-000000000004	carl@example.org	1	2026-11-10 10:00:00	user	Carl	Example
+0b1f2c3d-0000-4000-8000-000000000005	root@passbolt.local	1	NULL	root	Root	User

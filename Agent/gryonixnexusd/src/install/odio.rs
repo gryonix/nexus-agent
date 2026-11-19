@@ -188,11 +188,18 @@ pub fn finish_script(input: &Input) -> String {
     )
 }
 
+/// Records the hub's speaker power entry
+pub fn power_script(input: &Input) -> String {
+    let entry = super::speaker_power::player_entry(SERVICE_ID, &input.power_options, super::speaker_power::ANY_CARD);
+    super::speaker_power::sync_script(SERVICE_ID, entry.as_ref())
+}
+
 /// The uninstall steps, before the web address goes
 pub fn uninstall_steps(input: &Input) -> Vec<String> {
     vec![
         format!("[ -x {CONTROL_PATH} ] && {CONTROL_PATH} disable || true"),
         format!("rm -f {CONTROL_PATH} {AUTH_SNIPPET_PATH}"),
+        super::speaker_power::removal_script(SERVICE_ID),
         format!(
             "echo \"odio: {}\"",
             super::host::report::l10n::odio_leftovers(input.language, LEFTOVER_PACKAGES, ACCOUNT)
@@ -272,6 +279,15 @@ mod tests {
         assert!(text.contains("caddy hash-password --plaintext"));
         assert!(text.contains("redir / /ui/"), "the bare address must lead to the panel");
         assert!(text.contains("/opt/odio/.env"));
+    }
+
+    #[test]
+    fn the_hub_watches_the_sound_card_for_the_speaker_power() {
+        let input = Input { power_options: "power_off_disconnect=yes;power_off_delay=30".to_string(), ..base() };
+        let text = power_script(&input);
+        assert!(text.contains("odio:0:1:30:*:0:' > /etc/gryonixnexus/speaker-power.d/odio"), "{text}");
+        assert!(power_script(&base()).starts_with("rm -f /etc/gryonixnexus/speaker-power.d/odio"));
+        assert!(uninstall_steps(&base()).iter().any(|s| s.contains("speaker-power.d/odio")));
     }
 
     #[test]

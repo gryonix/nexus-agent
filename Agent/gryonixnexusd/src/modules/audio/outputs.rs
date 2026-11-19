@@ -33,16 +33,23 @@ fn card_id(device: &str) -> Option<&str> {
     device.split_once("CARD=")?.1.split(',').next()
 }
 
+/// The card's controls that set a playback volume
 async fn card_mixers(card: &str) -> Vec<String> {
-    let output = tokio::process::Command::new("amixer").args(["-c", card, "scontrols"]).output().await;
+    let output = tokio::process::Command::new("amixer").args(["-c", card, "controls"]).output().await;
     output.map(|out| mixer_names(&String::from_utf8_lossy(&out.stdout))).unwrap_or_default()
 }
 
-/// Names from amixer scontrols lines
+/// Names of the playback volume controls in amixer controls lines
 fn mixer_names(text: &str) -> Vec<String> {
-    text.lines()
-        .filter_map(|line| line.strip_prefix("Simple mixer control '")?.split_once('\'').map(|(name, _)| name.to_string()))
-        .collect()
+    let mut names: Vec<String> = Vec::new();
+    for line in text.lines() {
+        let Some(control) = line.split_once("name='").and_then(|(_, rest)| rest.split_once('\'')).map(|(name, _)| name) else { continue };
+        let Some(name) = control.strip_suffix(" Playback Volume") else { continue };
+        if !names.iter().any(|known| known == name) {
+            names.push(name.to_string());
+        }
+    }
+    names
 }
 
 /// Card number to its short id and long name
@@ -94,7 +101,7 @@ mod tests {
 
     #[test]
     fn mixer_controls_come_from_amixer_lines() {
-        let text = "Simple mixer control 'PCM',0\nSimple mixer control 'Headphone',0\n";
+        let text = "numid=3,iface=MIXER,name='PCM Playback Switch'\nnumid=2,iface=MIXER,name='PCM Playback Volume'\nnumid=5,iface=MIXER,name='Headphone Playback Volume'\nnumid=6,iface=MIXER,name='Mic Capture Volume'\nnumid=7,iface=MIXER,name='PCM Playback Volume'\n";
         assert_eq!(mixer_names(text), ["PCM", "Headphone"]);
         assert_eq!(card_id("hw:CARD=Headphones,DEV=0"), Some("Headphones"));
         assert_eq!(card_id("hdmi:CARD=vc4hdmi1,DEV=0"), Some("vc4hdmi1"));

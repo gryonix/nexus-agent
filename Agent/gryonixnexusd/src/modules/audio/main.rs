@@ -3,6 +3,9 @@
 mod odio;
 mod outputs;
 mod settings;
+#[allow(dead_code)]
+#[path = "../../install/usb_level.rs"]
+mod usb_level;
 
 use serde::Deserialize;
 use std::io::Read;

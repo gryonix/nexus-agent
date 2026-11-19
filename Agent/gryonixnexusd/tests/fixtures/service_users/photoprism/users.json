@@ -1,0 +1,6 @@
+[
+  {"ID": 1, "UID": "uqxetse3cy5eo9z2", "Name": "operator", "DisplayName": "Operator", "Email": "operator@example.org", "Role": "admin", "SuperAdmin": true, "CanLogin": true},
+  {"ID": 2, "UID": "uqxetse3cy5eo9z3", "Name": "anna", "DisplayName": "Anna", "Email": "anna@example.org", "Role": "user", "SuperAdmin": false, "CanLogin": true},
+  {"ID": 3, "UID": "uqxetse3cy5eo9z4", "Name": "boris", "DisplayName": "Boris", "Email": "", "Role": "user", "SuperAdmin": false, "CanLogin": false},
+  {"ID": 4, "UID": "uqxetse3cy5eo9z5", "Name": "", "DisplayName": "Guest", "Email": "", "Role": "guest", "SuperAdmin": false, "CanLogin": false}
+]

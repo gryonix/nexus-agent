@@ -1,0 +1,8 @@
+{
+  "users": [
+    {"id": "5b1c0f5e-0000-4000-8000-000000000001", "name": "Operator", "email": "operator@example.org", "role": "admin", "profile_image_url": "/user.png", "last_active_at": 1790000000},
+    {"id": "5b1c0f5e-0000-4000-8000-000000000002", "name": "Anna", "email": "anna@example.org", "role": "user", "profile_image_url": "/user.png", "last_active_at": 1790000100},
+    {"id": "5b1c0f5e-0000-4000-8000-000000000003", "name": "Boris", "email": "boris@example.org", "role": "pending", "profile_image_url": "/user.png", "last_active_at": 1790000200}
+  ],
+  "total": 3
+}

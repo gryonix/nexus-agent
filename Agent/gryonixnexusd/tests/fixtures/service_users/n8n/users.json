@@ -1,0 +1,8 @@
+{
+  "data": [
+    {"id": "9a1b0000-0000-4000-8000-000000000001", "email": "operator@example.org", "firstName": "Operator", "lastName": "Admin", "isPending": false, "createdAt": "2026-11-01T10:00:00.000Z", "role": "global:owner", "mfaEnabled": false},
+    {"id": "9a1b0000-0000-4000-8000-000000000002", "email": "anna@example.org", "firstName": "Anna", "lastName": "Example", "isPending": false, "role": "global:member", "mfaEnabled": false},
+    {"id": "9a1b0000-0000-4000-8000-000000000003", "email": "boris@example.org", "firstName": null, "lastName": null, "isPending": true, "role": "global:admin", "mfaEnabled": false}
+  ],
+  "nextCursor": null
+}

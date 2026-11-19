@@ -1,0 +1,1 @@
+{"id": 2, "type": "result", "success": true, "result": {"user": {"id": "0123456789abcdef0123456789abcd05", "name": "clara", "is_owner": false, "is_active": true, "group_ids": ["system-users"]}}}

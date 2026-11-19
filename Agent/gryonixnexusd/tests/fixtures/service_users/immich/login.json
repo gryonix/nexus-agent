@@ -1,0 +1,10 @@
+{
+  "accessToken": "tok-abc",
+  "userId": "3d2f6c1a-8b7e-4a59-9c10-2e4f6a8b0c01",
+  "userEmail": "operator@example.org",
+  "name": "Operator",
+  "profileImagePath": "",
+  "isAdmin": true,
+  "shouldChangePassword": false,
+  "isOnboarded": true
+}

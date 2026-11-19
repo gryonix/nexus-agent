@@ -49,7 +49,11 @@ use super::mosquitto;
 use super::zigbee2mqtt;
 use super::compat;
 use super::cec_volume;
+use super::container_names;
+use super::speaker_power;
+use super::packaged_power;
 use super::shairport_sync;
+use super::usb_level;
 use super::packaged;
 use super::uxplay;
 use super::odio;
@@ -667,6 +671,10 @@ pub enum Rejection {
     InstallAlreadyRunning(String),
     /// No run by that name on this host
     UnknownJob(String),
+    /// A hand-made container holds a needed name
+    ContainerNameTaken(String),
+    /// Another project's container holds a needed name
+    ContainerNameInProject { container: String, project: String },
 }
 
 const NO_REVERSE_PROXY_TEXT: &str = "this host has no Caddy and the agent cannot install one here — every \
@@ -714,6 +722,26 @@ impl Rejection {
                      take over an install it did not make. To manage it from here: back its \
                      data up, remove it on the machine, and install it again from the app. \
                      Nothing has been changed"
+                ),
+            ),
+            Rejection::ContainerNameTaken(name) => (
+                StatusCode::UNPROCESSABLE_ENTITY,
+                "failed_precondition",
+                format!(
+                    "a container named '{}' already exists on this host and was not made for this service. \
+                     Docker cannot create a second one with the same name. Remove that container, \
+                     then install again",
+                    truncate(name)
+                ),
+            ),
+            Rejection::ContainerNameInProject { container, project } => (
+                StatusCode::UNPROCESSABLE_ENTITY,
+                "failed_precondition",
+                format!(
+                    "the container name '{}' is used by the compose project '{}' on this host. \
+                     Remove that project first, then install again",
+                    truncate(container),
+                    truncate(project)
                 ),
             ),
             Rejection::SiteNameTaken(names) => (
@@ -864,6 +892,10 @@ impl Rejection {
             Rejection::OverlapsAudioHub(service) => ("install.player_in_hub", one(service)),
             Rejection::HubOverlapsPlayer(player) => ("install.hub_has_player", one(player)),
             Rejection::SiteNameTaken(names) => ("install.site_name_taken", names.clone()),
+            Rejection::ContainerNameTaken(name) => ("install.container_name_taken", one(name)),
+            Rejection::ContainerNameInProject { container, project } => {
+                ("install.container_name_in_project", vec![container.clone(), project.clone()])
+            }
             Rejection::Incompatible(_) => ("install.incompatible", Vec::new()),
             Rejection::InstallAlreadyRunning(job) => ("install.already_running", one(job)),
             Rejection::UnknownJob(_) => ("install.unknown_job", Vec::new()),
@@ -1224,6 +1256,9 @@ fn apply_shairport(input: &mut Input, req: &pb::InstallServiceRequest) {
     input.shairport_options = setting_or(req, "shairport_options", &input.shairport_options);
     input.uxplay_name = setting_or(req, "uxplay_name", &input.uxplay_name);
     input.speaker_name = setting_or(req, "speaker_name", &input.speaker_name);
+    input.spotify_output = setting_or(req, "spotify_output", &input.spotify_output);
+    input.spotify_mixer = setting_or(req, "spotify_mixer", &input.spotify_mixer);
+    input.power_options = setting_or(req, "power_options", &input.power_options);
 }
 
 /// Names, versions and lists: absent means empty, never a default
@@ -1626,7 +1661,19 @@ async fn refuse_conflicts(
     if !taken.is_empty() {
         return Err(Rejection::SiteNameTaken(taken));
     }
-    Ok(())
+    refuse_taken_container_names(label, input, existing_projects).await
+}
+
+/// Container names that a foreign container already holds
+async fn refuse_taken_container_names(label: &str, input: &Input, existing_projects: &[String]) -> Result<(), Rejection> {
+    let Some(compose) = compose_text_of(label, input) else { return Ok(()) };
+    match container_names::check(&compose, existing_projects).await.into_iter().next() {
+        Some(container_names::Holder::Manual(name)) => Err(Rejection::ContainerNameTaken(name)),
+        Some(container_names::Holder::Project { container, project }) => {
+            Err(Rejection::ContainerNameInProject { container, project })
+        }
+        None => Ok(()),
+    }
 }
 
 pub async fn run_watch_install(codec: Codec, req: pb::WatchInstallRequest,
@@ -1896,7 +1943,7 @@ async fn dispatch_install_1(
         "shairport-sync" => Some(install_shairport_sync_steps(input, sink).await),
         "uxplay" => Some(install_uxplay_steps(input, sink).await),
         "odio" => Some(install_odio_steps(input, sink).await),
-        id if packaged::find(id).is_some() => Some(install_packaged_steps(id, &input.speaker_name, sink).await),
+        id if packaged::find(id).is_some() => Some(install_packaged_steps(id, input, sink).await),
         "ollama" => Some(install_ollama_steps(input, sink).await),
         "open-webui" => Some({
             let services = host_service_ids(label, protocols).await;
@@ -3911,14 +3958,25 @@ async fn install_shairport_sync_steps(input: &Input, sink: &EventSink) -> Result
 
     open_service_firewall_ports(shairport_sync::SERVICE_ID, &shairport_sync::firewall_ports(input), sink).await;
     packages::run_outside_sandbox(&cec_volume::setup_script(input), "setting up the speaker's HDMI volume", sink).await?;
+    packages::run_outside_sandbox(&speaker_power::setup_script(input), "setting up the speaker's power control", sink).await?;
+    let level_script = usb_level::setup_script(shairport_sync::SERVICE_ID, &shairport_sync::output_device(input), &shairport_sync::mixer_control(input));
+    packages::run_outside_sandbox(&level_script, "keeping the USB speaker at full level", sink).await?;
 
     Ok(())
 }
 
 /// A port of `PackagedAudioService.setupSteps`
-async fn install_packaged_steps(id: &str, speaker_name: &str, sink: &EventSink) -> Result<(), String> {
+async fn install_packaged_steps(id: &str, input: &Input, sink: &EventSink) -> Result<(), String> {
     let Some(spec) = packaged::find(id) else { return Err(format!("unknown service {id}")) };
-    packages::run_outside_sandbox(&packaged::named_setup_script(spec, speaker_name), &format!("installing {}", spec.display), sink).await?;
+    let output = packaged::SpeakerOutput { device: &input.spotify_output, mixer: &input.spotify_mixer, power: &input.power_options };
+    packages::run_outside_sandbox(&packaged::named_setup_script(spec, &input.speaker_name, &output), &format!("installing {}", spec.display), sink).await?;
+    if id == "raspotify" {
+        let level_script = usb_level::setup_script(id, &shairport_sync::device_name(&input.spotify_output), &input.spotify_mixer);
+        packages::run_outside_sandbox(&level_script, "keeping the USB speaker at full level", sink).await?;
+    }
+    if let Some(script) = packaged_power::sync_script(id, input) {
+        packages::run_outside_sandbox(&script, "setting up the speaker's power control", sink).await?;
+    }
     open_service_firewall_ports(spec.id, spec.ports, sink).await;
     Ok(())
 }
@@ -3943,10 +4001,15 @@ async fn install_odio_steps(input: &Input, sink: &EventSink) -> Result<(), Strin
     create_dir_0755(&dir).map_err(|err| format!("could not create {}: {err}", dir.display()))?;
     let airplay_taken = input.installed_services.iter().any(|id| id == "shairport-sync")
         || Path::new(&input.shairport_path).join("docker-compose.yml").exists();
-    let _ = sink.step("running the pinned odio installer — this takes several minutes").await;
-    odio::run_installer(&odio::installer_script(airplay_taken), sink).await?;
+    if Path::new(odio::CONTROL_PATH).exists() {
+        let _ = sink.step("the audio hub is already installed; applying its settings").await;
+    } else {
+        let _ = sink.step("running the pinned odio installer — this takes several minutes").await;
+        odio::run_installer(&odio::installer_script(airplay_taken), sink).await?;
+    }
     let _ = sink.step("binding odio to this machine and setting its password").await;
     packages::run_outside_sandbox(&odio::finish_script(input), "finishing the audio hub", sink).await?;
+    packages::run_outside_sandbox(&odio::power_script(input), "setting up the speaker's power control", sink).await?;
     write_caddy_site(&odio::caddy_site_names(input), &odio::caddy_site(input))?;
     reload_caddy(sink).await?;
     Ok(())
@@ -8201,6 +8264,22 @@ mod tests {
     }
 
     #[test]
+    fn a_taken_container_name_carries_the_name_and_a_stable_reason() {
+        let taken = Rejection::ContainerNameTaken("shairport-sync".to_string());
+        assert_eq!(taken.reason(), ("install.container_name_taken", vec!["shairport-sync".to_string()]));
+        let (status, code, message) = taken.parts();
+        assert_eq!((status, code), (StatusCode::UNPROCESSABLE_ENTITY, "failed_precondition"));
+        assert!(message.contains("'shairport-sync'") && message.contains("Remove that container"), "{message}");
+    }
+
+    #[test]
+    fn a_name_held_by_another_project_names_both() {
+        let held = Rejection::ContainerNameInProject { container: "db".into(), project: "stack".into() };
+        assert_eq!(held.reason(), ("install.container_name_in_project", vec!["db".to_string(), "stack".to_string()]));
+        assert!(held.message().contains("'stack'"));
+    }
+
+    #[test]
     fn a_hand_installed_copy_is_refused_with_the_way_forward() {
         let (status, code, message) = Rejection::AlreadyInstalledOutside {
             service: "Ollama".to_string(),
@@ -8478,7 +8557,7 @@ mod tests {
         "home_assistant_hostname", "home_assistant_path", "machine_at_home",
         "home_assistant_usb_device", "mosquitto_path",
         "shairport_path", "shairport_mode", "shairport_name", "shairport_output",
-        "shairport_options", "zigbee2mqtt_path", "zigbee2mqtt_hostname", "uxplay_name", "speaker_name", "odio_path", "odio_hostname",
+        "shairport_options", "zigbee2mqtt_path", "zigbee2mqtt_hostname", "uxplay_name", "speaker_name", "spotify_output", "spotify_mixer", "power_options", "odio_path", "odio_hostname",
         "minecraft_java_path", "minecraft_java_version", "minecraft_java_flavour",
         "minecraft_java_memory_mb", "minecraft_java_port", "minecraft_java_accepts_eula",
         "minecraft_java_whitelist", "minecraft_java_operators", "minecraft_java_mods",

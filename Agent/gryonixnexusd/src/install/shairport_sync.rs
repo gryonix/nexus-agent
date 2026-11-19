@@ -34,17 +34,33 @@ pub fn speaker_name(input: &Input) -> String {
 
 /// A port of `ShairportSyncService.outputDevice(_:)`
 pub fn output_device(input: &Input) -> String {
-    let device: String = input.shairport_output.chars().filter(|c| ALLOWED_OUTPUT.contains(*c)).collect();
-    if device.is_empty() { DEFAULT_OUTPUT.to_string() } else { playable(&device) }
+    device_name(&input.shairport_output)
 }
 
-/// Pi HDMI through hdmi, other cards through plughw for rates
+/// An ALSA device name a player can open
+pub fn device_name(asked: &str) -> String {
+    let device: String = asked.chars().filter(|c| ALLOWED_OUTPUT.contains(*c)).collect();
+    if device.is_empty() { DEFAULT_OUTPUT.to_string() } else { plugged(&playable(&device)) }
+}
+
+/// The volume control the user chose, if it is valid
+pub fn mixer_control(input: &Input) -> String {
+    let given = parsed_options(&input.shairport_options);
+    let chosen = given.iter().rev().find(|(name, _)| name == "mixer_control_name").map(|(_, value)| value.as_str());
+    chosen.filter(|value| rendered(Kind::Control, value).is_some()).unwrap_or_default().to_string()
+}
+
+/// Pi HDMI cards play only through their hdmi name
 fn playable(device: &str) -> String {
-    match device.strip_prefix("hw:") {
-        Some(rest) if rest.starts_with("CARD=vc4hdmi") => format!("hdmi:{rest}"),
-        Some(rest) => format!("plughw:{rest}"),
+    match device.strip_prefix("hw:").filter(|rest| rest.starts_with("CARD=vc4hdmi")) {
+        Some(rest) => format!("hdmi:{rest}"),
         None => device.to_string(),
     }
+}
+
+/// Raw cards go through plughw, which converts the rate
+fn plugged(device: &str) -> String {
+    if device.starts_with("hw:") { format!("plug{device}") } else { device.to_string() }
 }
 
 /// HDMI volume is on and output is Pi HDMI
@@ -57,7 +73,10 @@ pub fn compose_contents(input: &Input) -> String {
     let image = image(input);
     let name = speaker_name(input);
     let device = output_device(input);
-    let mount = if cec_active(input) { format!("\n      - {CEC_PIPE_DIRECTORY}:{CEC_PIPE_DIRECTORY}") } else { String::new() };
+    let mut mount = if cec_active(input) { format!("\n      - {CEC_PIPE_DIRECTORY}:{CEC_PIPE_DIRECTORY}") } else { String::new() };
+    if power_active(input) {
+        mount.push_str(&format!("\n      - {POWER_DIRECTORY}:{POWER_MOUNT}"));
+    }
     format!(
         "services:\n  shairport-sync:\n    image: {image}\n    container_name: {CONTAINER}\n    restart: unless-stopped\n    # Finding the speaker and streaming to it use the host's network.\n    network_mode: host\n    devices:\n      - /dev/snd\n    volumes:\n      - ./{CONFIG_FILE}:/etc/shairport-sync.conf:ro{mount}\n    command: -a \"{name}\" -o alsa -- -d {device}"
     )
@@ -98,6 +117,9 @@ const OPTIONS: &[(&str, &str, Kind)] = &[
     ("cec", "cec_keep_connected", Kind::Choice(&["yes", "no"])),
     ("cec", "cec_off_delay", Kind::Number(1.0, 60.0)),
     ("cec", "cec_grace", Kind::Number(5.0, 120.0)),
+    ("power", "power_on_connect", Kind::Choice(&["yes", "no"])),
+    ("power", "power_off_disconnect", Kind::Choice(&["yes", "no"])),
+    ("power", "power_off_delay", Kind::Number(30.0, 1800.0)),
 ];
 
 /// The written form of a valid value, or None
@@ -177,8 +199,75 @@ pub fn cec_volume(input: &Input) -> CecVolume {
     }
 }
 
+/// Power settings of the speaker
+pub struct SpeakerPower {
+    pub on_connect: bool,
+    pub off_disconnect: bool,
+    pub off_delay: u32,
+}
+
+pub const POWER_DIRECTORY: &str = "/run/gryonixnexus/speaker-power";
+pub const POWER_MOUNT: &str = "/run/speaker-power";
+const POWER_DEFAULT_DELAY: u32 = 120;
+const POWER_SERVICE: &str = "airplay";
+
+/// Speaker power settings; waking defaults on with HDMI volume
+pub fn speaker_power(input: &Input) -> SpeakerPower {
+    power_from_options(&input.shairport_options, cec_active(input))
+}
+
+/// Power settings from an options string
+pub fn power_from_options(options: &str, on_default: bool) -> SpeakerPower {
+    let given = parsed_options(options);
+    let find = |key: &str| given.iter().rev().find(|(name, _)| name == key).map(|(_, value)| value.as_str());
+    let delay = find("power_off_delay").filter(|text| rendered(Kind::Number(30.0, 1800.0), text).is_some());
+    SpeakerPower {
+        on_connect: match find("power_on_connect") {
+            Some("yes") => true,
+            Some("no") => false,
+            _ => on_default,
+        },
+        off_disconnect: find("power_off_disconnect") == Some("yes"),
+        off_delay: delay.and_then(|text| text.parse().ok()).unwrap_or(POWER_DEFAULT_DELAY),
+    }
+}
+
+/// Whether the player reports its sessions to the power service
+pub fn power_active(input: &Input) -> bool {
+    let power = speaker_power(input);
+    power.on_connect || power.off_disconnect
+}
+
+/// The player's session hooks, written into the config
+fn session_block() -> String {
+    let file = format!("{POWER_MOUNT}/{POWER_SERVICE}");
+    format!("sessioncontrol = {{\n  run_this_before_entering_active_state = \"/bin/sh -c 'echo on > {file}'\";\n  run_this_after_exiting_active_state = \"/bin/sh -c 'echo off > {file}'\";\n  active_state_timeout = 10.0;\n}};\n")
+}
+
 /// A short ALSA buffer keeps plughw cards in sync
 const PLUG_BUFFER: &str = "  buffer_size = 9600;\n  period_size = 1200;\n";
+
+/// Shortest buffer a plughw output stays filled with
+const PLUG_MIN_BUFFER: f64 = 0.1;
+const BUFFER_KEY: &str = "audio_backend_buffer_desired_length_in_seconds";
+
+/// Where the output's volume is set, and what limits follow
+#[derive(Clone, Copy)]
+struct Volume {
+    plug: bool,
+    hardware: bool,
+    cec: bool,
+}
+
+/// The value after output limits; None drops the line
+fn limited(key: &str, value: &str, volume: Volume) -> Option<String> {
+    let number: f64 = value.parse().unwrap_or(0.0);
+    match key {
+        BUFFER_KEY if volume.plug && number < PLUG_MIN_BUFFER => Some("0.1".to_string()),
+        "volume_max_db" if !volume.cec && number > 0.0 => (!volume.hardware).then(|| "0".to_string()),
+        _ => Some(value.to_string()),
+    }
+}
 
 const METADATA_BLOCK: &str = "metadata = {\n  enabled = \"yes\";\n  include_cover_art = \"no\";\n  pipe_name = \"/run/shairport-sync/metadata\";\n  pipe_timeout = 5000;\n};\n";
 
@@ -187,6 +276,7 @@ pub fn config_contents(input: &Input) -> String {
     let given = parsed_options(&input.shairport_options);
     let cec = cec_active(input);
     let plug = output_device(input).starts_with("plughw:");
+    let volume = Volume { plug, hardware: !mixer_control(input).is_empty(), cec };
     let mut out = String::new();
     for section in ["general", "alsa"] {
         out.push_str(&format!("{section} = {{\n"));
@@ -196,7 +286,8 @@ pub fn config_contents(input: &Input) -> String {
         for (_, key, kind) in OPTIONS.iter().filter(|(owner, _, _)| *owner == section) {
             let forced = (cec && *key == "ignore_volume_control").then_some("yes");
             let value = forced.or_else(|| given.iter().rev().find(|(name, _)| name == key).map(|(_, value)| value.as_str()));
-            if let Some(line) = value.and_then(|value| rendered(*kind, value)) {
+            let value = value.filter(|value| rendered(*kind, value).is_some()).and_then(|value| limited(key, value, volume));
+            if let Some(line) = value.and_then(|value| rendered(*kind, &value)) {
                 out.push_str(&format!("  {key} = {line};\n"));
             }
         }
@@ -204,6 +295,9 @@ pub fn config_contents(input: &Input) -> String {
     }
     if cec {
         out.push_str(METADATA_BLOCK);
+    }
+    if power_active(input) {
+        out.push_str(&session_block());
     }
     out
 }
@@ -251,8 +345,8 @@ mod tests {
         usb.shairport_output = "hw:CARD=T8,DEV=0".to_string();
         assert_eq!(config_contents(&usb), "general = {\n};\nalsa = {\n  buffer_size = 9600;\n  period_size = 1200;\n};\n");
         assert!(!compose_contents(&usb).contains("/run/shairport-sync:"));
-        assert_eq!(config_contents(&input), "general = {\n  ignore_volume_control = \"yes\";\n};\nalsa = {\n};\nmetadata = {\n  enabled = \"yes\";\n  include_cover_art = \"no\";\n  pipe_name = \"/run/shairport-sync/metadata\";\n  pipe_timeout = 5000;\n};\n");
-        assert!(compose_contents(&input).contains(":/etc/shairport-sync.conf:ro\n      - /run/shairport-sync:/run/shairport-sync\n    command:"));
+        assert_eq!(config_contents(&input), "general = {\n  ignore_volume_control = \"yes\";\n};\nalsa = {\n};\nmetadata = {\n  enabled = \"yes\";\n  include_cover_art = \"no\";\n  pipe_name = \"/run/shairport-sync/metadata\";\n  pipe_timeout = 5000;\n};\n".to_string() + &session_block());
+        assert!(compose_contents(&input).contains(":/etc/shairport-sync.conf:ro\n      - /run/shairport-sync:/run/shairport-sync\n      - /run/gryonixnexus/speaker-power:/run/speaker-power\n    command:"));
         input.shairport_options = "cec_volume=no".to_string();
         assert_eq!(config_contents(&input), "general = {\n};\nalsa = {\n};\n");
         input.shairport_options = "cec_volume=yes;cec_volume_min=50;cec_volume_max=10".to_string();
@@ -266,6 +360,41 @@ mod tests {
         input.shairport_options = "cec_volume=yes;cec_tv_wait=30;cec_off_delay=5;cec_grace=999;cec_keep_connected=yes".to_string();
         let custom = cec_volume(&input);
         assert_eq!((custom.tv_wait, custom.off_delay, custom.grace, custom.disconnect), (30, 5, 15, false));
+    }
+
+    fn usb_input(options: &str) -> Input {
+        let mut input = base();
+        input.shairport_output = "hw:CARD=T8,DEV=0".to_string();
+        input.shairport_options = options.to_string();
+        input
+    }
+
+    #[test]
+    fn a_plughw_buffer_never_drops_below_a_tenth() {
+        let short = config_contents(&usb_input("audio_backend_buffer_desired_length_in_seconds=0.03"));
+        assert!(short.contains("  audio_backend_buffer_desired_length_in_seconds = 0.1;\n"), "{short}");
+        let long = config_contents(&usb_input("audio_backend_buffer_desired_length_in_seconds=0.3"));
+        assert!(long.contains("= 0.3;\n"), "{long}");
+        let mut other = base();
+        other.shairport_options = "audio_backend_buffer_desired_length_in_seconds=0.03".to_string();
+        assert!(config_contents(&other).contains("= 0.03;\n"));
+    }
+
+    #[test]
+    fn a_hardware_mixer_never_gets_a_positive_loudest_volume() {
+        let positive = config_contents(&usb_input("mixer_control_name=PCM;volume_max_db=24"));
+        assert!(!positive.contains("volume_max_db"), "{positive}");
+        assert!(positive.contains("mixer_control_name = \"PCM\";"), "{positive}");
+        let negative = config_contents(&usb_input("mixer_control_name=PCM;volume_max_db=-6"));
+        assert!(negative.contains("volume_max_db = -6;"), "{negative}");
+    }
+
+    #[test]
+    fn software_volume_clamps_the_loudest_volume_to_zero() {
+        assert!(config_contents(&usb_input("volume_max_db=24")).contains("volume_max_db = 0;"));
+        assert!(config_contents(&usb_input("volume_max_db=-3")).contains("volume_max_db = -3;"));
+        assert_eq!(mixer_control(&usb_input("mixer_control_name=PCM")), "PCM");
+        assert_eq!(mixer_control(&usb_input("mixer_control_name=a\"b")), "");
     }
 
     #[test]

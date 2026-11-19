@@ -20,6 +20,10 @@ pub enum Check {
     Toggle,
     Number(f64, f64),
     Whole(i64, i64),
+    /// An ALSA device name
+    Device,
+    /// A sound card volume control name
+    Control,
 }
 
 pub struct Setting {
@@ -59,7 +63,10 @@ pub const SETTINGS: &[Setting] = &[
     spotify("spotify.pregain", "normalisation_pregain", false, Check::Number(-10.0, 10.0)),
     spotify("spotify.volume", "initial_volume", false, Check::Whole(0, 100)),
     spotify("spotify.device_type", "device_type", true, Check::Choice(&["speaker", "avr", "tv", "computer", "stb", "audiodongle"])),
-    spotify("spotify.volume_controller", "volume_controller", true, Check::Choice(&["softvol", "none"])),
+    spotify("spotify.volume_controller", "volume_controller", true, Check::Choice(&["softvol", "alsa", "none"])),
+    spotify("spotify.device", "device", true, Check::Device),
+    spotify("spotify.control", "control", true, Check::Device),
+    spotify("spotify.mixer", "mixer", true, Check::Control),
     spotify("spotify.autoplay", "autoplay", false, Check::Toggle),
     airplay("airplay.name", "general", "name", true, Check::Name),
     airplay("airplay.interpolation", "general", "interpolation", true, Check::Choice(&["auto", "basic", "soxr"])),
@@ -107,6 +114,8 @@ fn fits(check: Check, value: &str) -> bool {
         Check::Choice(choices) => choices.contains(&value),
         Check::Toggle => value == "yes",
         Check::Number(low, high) => is_plain_number(value) && value.parse::<f64>().is_ok_and(|n| (low..=high).contains(&n)),
+        Check::Device => !value.is_empty() && value.len() <= 80 && value.chars().all(|c| c.is_ascii_alphanumeric() || ":,._=-".contains(c)),
+        Check::Control => !value.is_empty() && value.len() <= 40 && value.chars().all(|c| c.is_ascii_alphanumeric() || " _-".contains(c)),
         Check::Whole(low, high) => value.parse::<i64>().is_ok_and(|n| (low..=high).contains(&n)),
     }
 }

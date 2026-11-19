@@ -1,0 +1,22 @@
+---
+users:
+  operator:
+    disabled: false
+    displayname: 'operator'
+    password: '$2b$12$abcdefghijklmnopqrstuuABCDEFGHIJKLMNOPQRSTUVWXYZ0123456'
+    email: 'operator@example.org'
+    groups:
+      - admins
+  anna:
+    disabled: false
+    displayname: "Anna \"A\" Example"
+    password: '$2b$12$abcdefghijklmnopqrstuuZYXWVUTSRQPONMLKJIHGFEDCBA9876543'
+    email: anna@example.org
+    groups: []
+  boris:
+    disabled: true
+    displayname: 'Boris'
+    password: '$2b$12$abcdefghijklmnopqrstuu0123456789abcdefghijklmnopqrstuvw'
+    email: 'boris@example.org'
+    groups: [family, admins]
+    given_name: 'Boris'

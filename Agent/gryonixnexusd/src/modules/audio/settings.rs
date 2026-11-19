@@ -11,6 +11,7 @@ mod catalog;
 use catalog::{Setting, Syntax, SETTINGS};
 
 const ACCOUNT: &str = "odio";
+const SPOTIFY_OUTPUT_IDS: [&str; 4] = ["spotify.device", "spotify.control", "spotify.mixer", "spotify.volume_controller"];
 const RUN_LIMIT: std::time::Duration = std::time::Duration::from_secs(15);
 
 const PRELUDE: &str = "set -eu\nhome=\"$(getent passwd odio | cut -d: -f6)\"\n[ -n \"$home\" ] || { echo 'the odio user is missing' >&2; exit 1; }\nfield() { sed -n \"s/^[[:space:]]*$2[[:space:]]*=[[:space:]]*\\\"\\{0,1\\}\\([^\\\";]*\\)\\\"\\{0,1\\};\\{0,1\\}[[:space:]]*$/\\1/p\" \"$1\" | head -n 1; }\nmpd_field() { sed -n \"s/^[[:space:]]*$2[[:space:]][[:space:]]*\\\"\\([^\\\"]*\\)\\\".*$/\\1/p\" \"$1\" | head -n 1; }\nas_odio() { runuser -u odio -- \"$@\"; }\n";
@@ -85,6 +86,9 @@ pub fn write_script(asked: &BTreeMap<String, String>) -> Result<String, String> 
         if !units.contains(&setting.unit) {
             units.push(setting.unit);
         }
+    }
+    if asked.keys().any(|id| SPOTIFY_OUTPUT_IDS.contains(&id.as_str())) {
+        script.push_str(&crate::usb_level::config_script("spotifyd", &format!("$home/{}", catalog::SPOTIFY_FILE)));
     }
     script.push_str(&format!("uid=\"$(id -u {ACCOUNT})\"\n"));
     for unit in units {
@@ -207,6 +211,25 @@ mod tests {
         let airplay = write_script(&asked(&[("airplay.name", "Hall")])).unwrap();
         assert!(airplay.contains("s||\\tname = \"Hall\";|"), "{airplay}");
         assert!(airplay.contains("try-restart shairport-sync.service"), "{airplay}");
+    }
+
+    #[test]
+    fn spotify_output_keys_are_written_and_keep_the_usb_level() {
+        let script = write_script(&asked(&[
+            ("spotify.device", "plughw:CARD=T8,DEV=0"),
+            ("spotify.control", "hw:CARD=T8"),
+            ("spotify.mixer", "PCM"),
+            ("spotify.volume_controller", "alsa"),
+        ]))
+        .unwrap();
+        assert!(script.contains("s||device = \"plughw:CARD=T8,DEV=0\"|"), "{script}");
+        assert!(script.contains("s||control = \"hw:CARD=T8\"|"), "{script}");
+        assert!(script.contains("s||mixer = \"PCM\"|"), "{script}");
+        assert!(script.contains("s||volume_controller = \"alsa\"|"), "{script}");
+        assert!(script.contains("/proc/asound/$card/usbid"), "{script}");
+        assert!(!write_script(&asked(&[("spotify.name", "x")])).unwrap().contains("usbid"));
+        assert!(write_script(&asked(&[("spotify.device", "a b")])).is_err());
+        assert!(write_script(&asked(&[("spotify.mixer", "a'b")])).is_err());
     }
 
     #[test]

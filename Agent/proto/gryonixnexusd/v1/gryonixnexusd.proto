@@ -1239,6 +1239,9 @@ service Dkim {
 // and the reason there is still no generic exec here.
 service Containers {
   rpc ListContainers(ListContainersRequest) returns (ContainerInventory);
+  // Removes one container that was started by hand, outside every compose
+  // project. The agent looks the name up in its own listing first.
+  rpc RemoveForeignContainer(RemoveForeignContainerRequest) returns (RemoveForeignContainerResult);
   // Rename one group. The owner's name is stored ON THE SERVER so a second
   // paired device sees the same list; the derived name always travels with it
   // so the UI can offer the way back.
@@ -4497,4 +4500,117 @@ message PruneUnusedResult {
   uint64 reclaimed_bytes = 3;
   // Items the engine refused, one line each.
   repeated string failures = 4;
+}
+
+message RemoveForeignContainerRequest {
+  string name = 1;
+}
+
+message RemoveForeignContainerResult {
+  string removed = 1;
+}
+
+// ─────────────────────────── Service users ───────────────────────────
+
+// Users of a catalog service, managed through the service's own CLI or API.
+// Every mutation answers with the freshly re-read list; a refusal is a stable
+// code in the list, not a transport error.
+service ServiceUsers {
+  rpc GetUserCapabilities(ServiceUsersRequest) returns (UserCapabilities);
+  rpc ListServiceUsers(ServiceUsersRequest) returns (ServiceUserList);
+  rpc CreateServiceUser(CreateServiceUserRequest) returns (ServiceUserList);
+  rpc DeleteServiceUser(ServiceUserTarget) returns (ServiceUserList);
+  rpc SetServiceUserPassword(SetServiceUserPasswordRequest) returns (ServiceUserList);
+  rpc SetServiceUserRole(SetServiceUserRoleRequest) returns (ServiceUserList);
+  rpc SetServiceUserEnabled(SetServiceUserEnabledRequest) returns (ServiceUserList);
+  rpc SetServiceUserQuota(SetServiceUserQuotaRequest) returns (ServiceUserList);
+  // Stores the admin token or API key a service needs, then answers with the list.
+  rpc SetServiceAdminToken(SetServiceAdminTokenRequest) returns (ServiceUserList);
+}
+
+message ServiceUsersRequest {
+  string service_id = 1;
+}
+
+message ServiceUserTarget {
+  string service_id = 1;
+  string user_id = 2;
+}
+
+message UserCapabilities {
+  // False when the service has no users of its own.
+  bool supported = 1;
+  bool can_create = 2;
+  bool can_delete = 3;
+  bool can_set_password = 4;
+  bool can_set_enabled = 5;
+  bool can_set_quota = 6;
+  // For example ["admin", "user"]; empty when the service has no roles.
+  repeated string roles = 7;
+  bool needs_email = 8;
+  bool user_id_is_email = 9;
+  // Key of a hint for the screen, for example "invite_only".
+  string note = 10;
+}
+
+message ServiceUser {
+  // What the service itself calls the id.
+  string id = 1;
+  string login = 2;
+  string display_name = 3;
+  string email = 4;
+  // One of UserCapabilities.roles.
+  string role = 5;
+  bool enabled = 6;
+  // Zero: no quota or not supported.
+  int64 quota_bytes = 7;
+  // Zero: unknown.
+  int64 used_bytes = 8;
+  // The admin the agent itself uses: it is never removed.
+  bool is_self = 9;
+}
+
+message ServiceUserList {
+  repeated ServiceUser users = 1;
+  // Stable refusal code; empty when the call went through.
+  string refusal = 2;
+}
+
+message CreateServiceUserRequest {
+  string service_id = 1;
+  string login = 2;
+  string display_name = 3;
+  string email = 4;
+  string password = 5;
+  string role = 6;
+  int64 quota_bytes = 7;
+}
+
+message SetServiceUserPasswordRequest {
+  string service_id = 1;
+  string user_id = 2;
+  string password = 3;
+}
+
+message SetServiceUserRoleRequest {
+  string service_id = 1;
+  string user_id = 2;
+  string role = 3;
+}
+
+message SetServiceUserEnabledRequest {
+  string service_id = 1;
+  string user_id = 2;
+  bool enabled = 3;
+}
+
+message SetServiceUserQuotaRequest {
+  string service_id = 1;
+  string user_id = 2;
+  int64 quota_bytes = 3;
+}
+
+message SetServiceAdminTokenRequest {
+  string service_id = 1;
+  string token = 2;
 }

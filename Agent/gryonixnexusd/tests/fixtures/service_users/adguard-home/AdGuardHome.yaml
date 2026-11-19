@@ -1,0 +1,14 @@
+http:
+  pprof:
+    port: 6060
+    enabled: false
+  address: 0.0.0.0:3000
+  session_ttl: 720h
+users:
+  - name: operator
+    password: $2a$10$abcdefghijklmnopqrstuuABCDEFGHIJKLMNOPQRSTUVWXYZ01234
+  - name: anna
+    password: $2a$10$abcdefghijklmnopqrstuuZYXWVUTSRQPONMLKJIHGFEDCBA98765
+auth_attempts: 5
+block_auth_min: 15
+language: ""

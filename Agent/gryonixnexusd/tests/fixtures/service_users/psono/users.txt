@@ -1,0 +1,3 @@
+operator@example.org|t|t
+anna@example.org|t|f
+boris@example.org|f|f
