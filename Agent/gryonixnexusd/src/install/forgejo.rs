@@ -1,6 +1,7 @@
 //! Forgejo's declarative install artifacts — a port of `Packages/gryonixNexus/Sources/ServiceCatalog/Services/ForgejoService.swift`, declarative half only
 
 use super::caddy::{self, WebIngress};
+use super::app_settings;
 use super::context::Input;
 
 pub const SERVICE_ID: &str = "forgejo";
@@ -40,8 +41,14 @@ pub fn compose_contents(input: &Input) -> String {
         ),
         None => ("      FORGEJO__server__START_SSH_SERVER: \"false\"\n".to_string(), String::new()),
     };
+    let registration_closed = if app_settings::is_on(input, "forgejo_open_registration") { "false" } else { "true" };
+    let signin_line = if app_settings::is_on(input, "forgejo_require_signin") {
+        "\n      FORGEJO__service__REQUIRE_SIGNIN_VIEW: \"true\""
+    } else {
+        ""
+    };
     format!(
-        "services:\n  db:\n    image: {DATABASE_IMAGE}\n    restart: unless-stopped\n    environment:\n      POSTGRES_USER: forgejo\n      POSTGRES_PASSWORD: ${{POSTGRES_PASSWORD}}\n      POSTGRES_DB: forgejo\n    volumes:\n      - {path}/db:/var/lib/postgresql/data\n  server:\n    image: {IMAGE}\n    container_name: {CONTAINER}\n    restart: unless-stopped\n    depends_on:\n      - db\n    environment:\n      USER_UID: 1000\n      USER_GID: 1000\n      FORGEJO__database__DB_TYPE: postgres\n      FORGEJO__database__HOST: db:5432\n      FORGEJO__database__NAME: forgejo\n      FORGEJO__database__USER: forgejo\n      FORGEJO__database__PASSWD: ${{POSTGRES_PASSWORD}}\n      FORGEJO__server__DOMAIN: {host}\n      FORGEJO__server__ROOT_URL: https://{host}/\n      FORGEJO__server__HTTP_PORT: \"3000\"\n{ssh_settings}      # No web installer: the setup script has already provided the\n      # database and the administrator, and an unlocked instance\n      # hands its own configuration to whoever opens the page first.\n      FORGEJO__security__INSTALL_LOCK: \"true\"\n      # Closed by default — this is a personal forge on a public\n      # URL. Further users are invited from Site Administration.\n      FORGEJO__service__DISABLE_REGISTRATION: \"true\"\n    volumes:\n      - {path}/data:/var/lib/gitea\n      - /etc/localtime:/etc/localtime:ro\n    ports:\n      - \"127.0.0.1:{WEB_UI_PORT}:3000\"{ssh_publish}"
+        "services:\n  db:\n    image: {DATABASE_IMAGE}\n    restart: unless-stopped\n    environment:\n      POSTGRES_USER: forgejo\n      POSTGRES_PASSWORD: ${{POSTGRES_PASSWORD}}\n      POSTGRES_DB: forgejo\n    volumes:\n      - {path}/db:/var/lib/postgresql/data\n  server:\n    image: {IMAGE}\n    container_name: {CONTAINER}\n    restart: unless-stopped\n    depends_on:\n      - db\n    environment:\n      USER_UID: 1000\n      USER_GID: 1000\n      FORGEJO__database__DB_TYPE: postgres\n      FORGEJO__database__HOST: db:5432\n      FORGEJO__database__NAME: forgejo\n      FORGEJO__database__USER: forgejo\n      FORGEJO__database__PASSWD: ${{POSTGRES_PASSWORD}}\n      FORGEJO__server__DOMAIN: {host}\n      FORGEJO__server__ROOT_URL: https://{host}/\n      FORGEJO__server__HTTP_PORT: \"3000\"\n{ssh_settings}      # No web installer: the setup script has already provided the\n      # database and the administrator, and an unlocked instance\n      # hands its own configuration to whoever opens the page first.\n      FORGEJO__security__INSTALL_LOCK: \"true\"\n      # Closed by default — this is a personal forge on a public\n      # URL. Further users are invited from Site Administration.\n      FORGEJO__service__DISABLE_REGISTRATION: \"{registration_closed}\"{signin_line}\n    volumes:\n      - {path}/data:/var/lib/gitea\n      - /etc/localtime:/etc/localtime:ro\n    ports:\n      - \"127.0.0.1:{WEB_UI_PORT}:3000\"{ssh_publish}"
     )
 }
 
@@ -98,6 +105,27 @@ mod tests {
 
     fn base(domain: &str) -> Input {
         Input { domain: domain.to_string(), ..Input::default() }
+    }
+
+    fn with_setting(key: &str, value: &str) -> Input {
+        let mut input = base("example.com");
+        input.app_settings.insert(key.to_string(), value.to_string());
+        input
+    }
+
+    #[test]
+    fn registration_stays_closed_and_browsing_open_by_default() {
+        let compose = compose_contents(&base("example.com"));
+        assert!(compose.contains("DISABLE_REGISTRATION: \"true\""));
+        assert!(!compose.contains("REQUIRE_SIGNIN_VIEW"));
+    }
+
+    #[test]
+    fn opening_registration_and_requiring_sign_in_change_only_their_lines() {
+        let open = compose_contents(&with_setting("forgejo_open_registration", "true"));
+        assert!(open.contains("DISABLE_REGISTRATION: \"false\""));
+        let walled = compose_contents(&with_setting("forgejo_require_signin", "true"));
+        assert!(walled.contains("DISABLE_REGISTRATION: \"true\"\n      FORGEJO__service__REQUIRE_SIGNIN_VIEW: \"true\"\n    volumes"));
     }
 
     #[test]

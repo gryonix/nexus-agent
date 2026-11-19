@@ -6,6 +6,7 @@
 //! `execute.rs`, next to AdGuard's, because that is where the executor is.
 
 use super::caddy::{self, WebIngress};
+use super::app_settings;
 use super::context::Input;
 
 pub const SERVICE_ID: &str = "vaultwarden";
@@ -34,14 +35,24 @@ fn signups(input: &Input) -> &'static str {
     }
 }
 
+/// Written only when invitations are switched off
+fn invitations_line(input: &Input) -> &'static str {
+    if app_settings::is_on(input, "vaultwarden_invitations_allowed") {
+        ""
+    } else {
+        "      INVITATIONS_ALLOWED: \"false\"\n"
+    }
+}
+
 /// A port of `VaultwardenService.composeFile(_:).composeContents`
 pub fn compose_contents(input: &Input) -> String {
     let container = &input.vaultwarden_container;
     let data_path = &input.vaultwarden_data_path;
     let signups = signups(input);
     let host = hostname(input);
+    let invitations = invitations_line(input);
     format!(
-        "services:\n  vaultwarden:\n    image: {IMAGE}\n    container_name: {container}\n    restart: unless-stopped\n    environment:\n      DOMAIN: \"https://{host}\"\n      SIGNUPS_ALLOWED: \"{signups}\"\n      ADMIN_TOKEN: ${{ADMIN_TOKEN}}\n      IP_HEADER: X-Forwarded-For\n    volumes:\n      - {data_path}:/data\n    ports:\n      - \"127.0.0.1:{WEB_UI_PORT}:80\""
+        "services:\n  vaultwarden:\n    image: {IMAGE}\n    container_name: {container}\n    restart: unless-stopped\n    environment:\n      DOMAIN: \"https://{host}\"\n      SIGNUPS_ALLOWED: \"{signups}\"\n{invitations}      ADMIN_TOKEN: ${{ADMIN_TOKEN}}\n      IP_HEADER: X-Forwarded-For\n    volumes:\n      - {data_path}:/data\n    ports:\n      - \"127.0.0.1:{WEB_UI_PORT}:80\""
     )
 }
 
@@ -107,6 +118,21 @@ mod tests {
 
     fn base(domain: &str) -> Input {
         Input { domain: domain.to_string(), ..Input::default() }
+    }
+
+    fn with_setting(key: &str, value: &str) -> Input {
+        let mut input = base("example.com");
+        input.app_settings.insert(key.to_string(), value.to_string());
+        input
+    }
+
+    #[test]
+    fn invitations_are_left_to_the_image_default_unless_switched_off() {
+        assert!(!compose_contents(&base("example.com")).contains("INVITATIONS_ALLOWED"));
+        let off = with_setting("vaultwarden_invitations_allowed", "false");
+        assert!(compose_contents(&off).contains("      INVITATIONS_ALLOWED: \"false\"\n      ADMIN_TOKEN"));
+        let on = with_setting("vaultwarden_invitations_allowed", "true");
+        assert_eq!(compose_contents(&on), compose_contents(&base("example.com")));
     }
 
     #[test]

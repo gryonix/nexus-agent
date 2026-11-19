@@ -1137,6 +1137,7 @@ fn build_input(req: &pb::InstallServiceRequest) -> Result<Input, String> {
     apply_shairport(&mut input, req);
     apply_texts(&mut input, req);
     apply_flags(&mut input, req);
+    input.app_settings = super::app_settings::accept(&req.settings);
     apply_numbers(&mut input, req);
     Ok(input)
 }
@@ -6323,11 +6324,19 @@ pub fn sync_vaultwarden_config(config_path: &Path, input: &Input) -> Result<bool
         None | Some(serde_json::Value::Null) | Some(serde_json::Value::Bool(false)) => true,
         Some(stored) => stored.as_str() == Some(desired_domain.as_str()),
     };
-    if signups_match && domain_match {
+    let invitations = super::app_settings::is_on(input, "vaultwarden_invitations_allowed");
+    let invitations_match = match object.get("invitations_allowed") {
+        Some(serde_json::Value::Bool(stored)) => *stored == invitations,
+        _ => true,
+    };
+    if signups_match && domain_match && invitations_match {
         return Ok(false);
     }
 
     object.insert("signups_allowed".to_string(), serde_json::Value::Bool(input.vaultwarden_allow_signups));
+    if !invitations_match {
+        object.insert("invitations_allowed".to_string(), serde_json::Value::Bool(invitations));
+    }
     if object.contains_key("domain") {
         object.insert("domain".to_string(), serde_json::Value::String(desired_domain));
     }
@@ -9644,6 +9653,31 @@ mod tests {
         assert_eq!(stored["icon_service"], serde_json::Value::String("internal".into()));
         assert!(stored.get("domain").is_none(), "domain must not be added when it was absent");
         assert_eq!(std::fs::metadata(&path).unwrap().permissions().mode() & 0o777, 0o600);
+    }
+
+    #[test]
+    fn a_stored_invitations_flag_follows_the_apps_setting() {
+        let dir = tmp("vw-invitations");
+        let path = dir.join("config.json");
+        std::fs::write(&path, "{\"signups_allowed\":true,\"invitations_allowed\":true}").unwrap();
+        let mut input = vw_input();
+        input.app_settings.insert("vaultwarden_invitations_allowed".to_string(), "false".to_string());
+
+        assert_eq!(sync_vaultwarden_config(&path, &input), Ok(true));
+        let stored: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(stored["invitations_allowed"], serde_json::Value::Bool(false));
+    }
+
+    #[test]
+    fn an_absent_invitations_flag_is_not_added() {
+        let dir = tmp("vw-no-invitations");
+        let path = dir.join("config.json");
+        let original = "{\"signups_allowed\":true}";
+        std::fs::write(&path, original).unwrap();
+        let mut input = vw_input();
+        input.app_settings.insert("vaultwarden_invitations_allowed".to_string(), "false".to_string());
+        assert_eq!(sync_vaultwarden_config(&path, &input), Ok(false));
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), original);
     }
 
     #[test]

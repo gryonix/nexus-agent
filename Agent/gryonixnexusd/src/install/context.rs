@@ -52,6 +52,8 @@ pub struct Input {
     pub vaultwarden_container: String,
     pub vaultwarden_data_path: String,
     pub vaultwarden_allow_signups: bool,
+    /// Post-install app settings by key; see `app_settings`
+    pub app_settings: std::collections::BTreeMap<String, String>,
     pub jellyfin_hostname: String,
     pub jellyfin_path: String,
     pub jellyfin_media_path: String,
@@ -197,7 +199,7 @@ impl Default for Input {
             tailscale_login_server: String::new(), tailscale_auth_key: String::new(),
             cloudflared_path: "/opt/cloudflared".to_string(), cloudflared_token: String::new(),
             vaultwarden_hostname: String::new(), vaultwarden_container: "vaultwarden".to_string(),
-            vaultwarden_data_path: "/opt/vaultwarden/data".to_string(), vaultwarden_allow_signups: false,
+            vaultwarden_data_path: "/opt/vaultwarden/data".to_string(), vaultwarden_allow_signups: false, app_settings: Default::default(),
             jellyfin_hostname: String::new(), jellyfin_path: "/opt/jellyfin".to_string(),
             jellyfin_media_path: "/srv/media".to_string(),
             home_assistant_path: "/opt/home-assistant".to_string(), home_assistant_hostname: String::new(),

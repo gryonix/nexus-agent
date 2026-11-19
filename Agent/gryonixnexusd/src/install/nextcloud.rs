@@ -1,6 +1,7 @@
 //! Nextcloud's declarative install artifacts — a port of `Packages/gryonixNexus/Sources/ServiceCatalog/Services/NextcloudService.swift`, declarative half only
 
 use super::caddy::{self, WebIngress};
+use super::app_settings;
 use super::context::Input;
 
 pub const SERVICE_ID: &str = "nextcloud";
@@ -33,13 +34,23 @@ pub fn compose_contents(input: &Input) -> String {
     let admin = &input.admin_username;
     let trusted = served_hostnames(input).join(" ");
     let proxy = proxy_environment(input);
+    let limits = php_limits(input);
     format!(
-        "services:\n  db:\n    image: {DATABASE_IMAGE}\n    restart: unless-stopped\n    command: --transaction-isolation=READ-COMMITTED --log-bin=binlog --binlog-format=ROW\n    environment:\n      MYSQL_ROOT_PASSWORD: ${{MYSQL_ROOT_PASSWORD}}\n      MYSQL_PASSWORD: ${{MYSQL_PASSWORD}}\n      MYSQL_DATABASE: nextcloud\n      MYSQL_USER: nextcloud\n    volumes:\n      - {path}/db:/var/lib/mysql\n  redis:\n    image: {CACHE_IMAGE}\n    restart: unless-stopped\n  app:\n    image: {IMAGE}\n    restart: unless-stopped\n    depends_on:\n      - db\n      - redis\n    environment:\n      MYSQL_HOST: db\n      MYSQL_PASSWORD: ${{MYSQL_PASSWORD}}\n      MYSQL_DATABASE: nextcloud\n      MYSQL_USER: nextcloud\n      REDIS_HOST: redis\n      NEXTCLOUD_ADMIN_USER: {admin}\n      NEXTCLOUD_ADMIN_PASSWORD: ${{NEXTCLOUD_ADMIN_PASSWORD}}\n      NEXTCLOUD_TRUSTED_DOMAINS: {trusted}\n      {proxy}\n    volumes:\n      - {path}/data:/var/www/html\n    ports:\n      - \"127.0.0.1:{WEB_UI_PORT}:80\"\n  cron:\n    image: {IMAGE}\n    restart: unless-stopped\n    entrypoint: /cron.sh\n    depends_on:\n      - app\n    volumes:\n      - {path}/data:/var/www/html"
+        "services:\n  db:\n    image: {DATABASE_IMAGE}\n    restart: unless-stopped\n    command: --transaction-isolation=READ-COMMITTED --log-bin=binlog --binlog-format=ROW\n    environment:\n      MYSQL_ROOT_PASSWORD: ${{MYSQL_ROOT_PASSWORD}}\n      MYSQL_PASSWORD: ${{MYSQL_PASSWORD}}\n      MYSQL_DATABASE: nextcloud\n      MYSQL_USER: nextcloud\n    volumes:\n      - {path}/db:/var/lib/mysql\n  redis:\n    image: {CACHE_IMAGE}\n    restart: unless-stopped\n  app:\n    image: {IMAGE}\n    restart: unless-stopped\n    depends_on:\n      - db\n      - redis\n    environment:\n      MYSQL_HOST: db\n      MYSQL_PASSWORD: ${{MYSQL_PASSWORD}}\n      MYSQL_DATABASE: nextcloud\n      MYSQL_USER: nextcloud\n      REDIS_HOST: redis\n      NEXTCLOUD_ADMIN_USER: {admin}\n      NEXTCLOUD_ADMIN_PASSWORD: ${{NEXTCLOUD_ADMIN_PASSWORD}}\n      NEXTCLOUD_TRUSTED_DOMAINS: {trusted}\n      {proxy}{limits}\n    volumes:\n      - {path}/data:/var/www/html\n    ports:\n      - \"127.0.0.1:{WEB_UI_PORT}:80\"\n  cron:\n    image: {IMAGE}\n    restart: unless-stopped\n    entrypoint: /cron.sh\n    depends_on:\n      - app\n    volumes:\n      - {path}/data:/var/www/html"
     )
 }
 
 /// Caddy and the Docker network it reaches the container through
 pub const TRUSTED_PROXIES: &str = "127.0.0.1 172.16.0.0/12 192.168.0.0/16";
+
+/// PHP limits, written only when changed
+fn php_limits(input: &Input) -> String {
+    [("PHP_UPLOAD_LIMIT", "nextcloud_upload_limit"), ("PHP_MEMORY_LIMIT", "nextcloud_memory_limit")]
+        .iter()
+        .filter(|(_, key)| app_settings::is_changed(input, key))
+        .map(|(variable, key)| format!("\n      {variable}: \"{}\"", app_settings::value(input, key)))
+        .collect()
+}
 
 /// Trusts Caddy, and says HTTPS unless the server is home-only
 fn proxy_environment(input: &Input) -> String {
@@ -86,6 +97,24 @@ mod tests {
 
     fn base(domain: &str) -> Input {
         Input { domain: domain.to_string(), ..Input::default() }
+    }
+
+    fn with_setting(key: &str, value: &str) -> Input {
+        let mut input = base("example.com");
+        input.app_settings.insert(key.to_string(), value.to_string());
+        input
+    }
+
+    #[test]
+    fn php_limits_appear_only_when_they_differ_from_the_image_default() {
+        let plain = compose_contents(&base("example.com"));
+        assert!(!plain.contains("PHP_"));
+        assert_eq!(compose_contents(&with_setting("nextcloud_upload_limit", "512M")), plain);
+        let big = compose_contents(&with_setting("nextcloud_upload_limit", "16G"));
+        assert!(big.contains("      PHP_UPLOAD_LIMIT: \"16G\"\n    volumes"));
+        assert!(!big.contains("PHP_MEMORY_LIMIT"));
+        let memory = compose_contents(&with_setting("nextcloud_memory_limit", "2G"));
+        assert!(memory.contains("PHP_MEMORY_LIMIT: \"2G\""));
     }
 
     #[test]
