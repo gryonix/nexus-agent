@@ -1,6 +1,7 @@
 //! Jellyfin's declarative install artifacts — a port of `Packages/gryonixNexus/Sources/ServiceCatalog/Services/JellyfinService.swift`, declarative half only
 
 use super::caddy::{self, WebIngress};
+use super::app_settings_extra as extra;
 use super::context::Input;
 
 pub const SERVICE_ID: &str = "jellyfin";
@@ -24,9 +25,9 @@ pub fn hostname(input: &Input) -> String {
 pub fn compose_contents(input: &Input) -> String {
     let path = &input.jellyfin_path;
     let media = &input.jellyfin_media_path;
-    let host = hostname(input);
+    let published = extra::jellyfin_url(input, &hostname(input));
     format!(
-        "services:\n  jellyfin:\n    image: {IMAGE}\n    container_name: {CONTAINER}\n    restart: unless-stopped\n    environment:\n      # Jellyfin builds absolute URLs for clients from this.\n      JELLYFIN_PublishedServerUrl: \"https://{host}\"\n    volumes:\n      - {path}/config:/config\n      - {path}/cache:/cache\n      # Read-only: a media server has no business writing to the\n      # library, and a mistake in the UI would delete originals.\n      - {media}:/media:ro\n    ports:\n      - \"127.0.0.1:{WEB_UI_PORT}:8096\""
+        "services:\n  jellyfin:\n    image: {IMAGE}\n    container_name: {CONTAINER}\n    restart: unless-stopped\n    environment:\n      # Jellyfin builds absolute URLs for clients from this.\n      JELLYFIN_PublishedServerUrl: \"{published}\"\n    volumes:\n      - {path}/config:/config\n      - {path}/cache:/cache\n      # Read-only: a media server has no business writing to the\n      # library, and a mistake in the UI would delete originals.\n      - {media}:/media:ro\n    ports:\n      - \"127.0.0.1:{WEB_UI_PORT}:8096\""
     )
 }
 

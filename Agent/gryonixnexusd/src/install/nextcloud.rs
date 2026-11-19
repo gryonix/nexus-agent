@@ -45,7 +45,11 @@ pub const TRUSTED_PROXIES: &str = "127.0.0.1 172.16.0.0/12 192.168.0.0/16";
 
 /// PHP limits, written only when changed
 fn php_limits(input: &Input) -> String {
-    [("PHP_UPLOAD_LIMIT", "nextcloud_upload_limit"), ("PHP_MEMORY_LIMIT", "nextcloud_memory_limit")]
+    [
+        ("PHP_UPLOAD_LIMIT", "nextcloud_upload_limit"),
+        ("PHP_MEMORY_LIMIT", "nextcloud_memory_limit"),
+        ("APACHE_BODY_LIMIT", "nextcloud_body_limit"),
+    ]
         .iter()
         .filter(|(_, key)| app_settings::is_changed(input, key))
         .map(|(variable, key)| format!("\n      {variable}: \"{}\"", app_settings::value(input, key)))

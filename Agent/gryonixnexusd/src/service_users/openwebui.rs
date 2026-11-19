@@ -106,7 +106,35 @@ pub fn update_body(current: &Value, changes: Value) -> Value {
     body
 }
 
+/// The admin config with registration and the new-user role set
+pub fn admin_config_update(current: &Value, signup: bool, role: &str) -> Option<Value> {
+    let mut config = current.as_object()?.clone();
+    config.insert("ENABLE_SIGNUP".into(), json!(signup));
+    config.insert("DEFAULT_USER_ROLE".into(), json!(role));
+    Some(Value::Object(config))
+}
+
 impl OpenWebui {
+    /// Writes registration settings into the running service
+    pub async fn set_registration(&self, signup: bool, role: &str, toggles: &[(&str, bool)]) -> Done {
+        let answer = self.call("GET", "/auths/admin/config", None).await?;
+        let current: Value = serde_json::from_str(answer.body.trim()).map_err(|_| Refusal::Failed)?;
+        let mut body = admin_config_update(&current, signup, role).ok_or(Refusal::Failed)?;
+        crate::install::runtime_apply_cmds::apply_toggles(&mut body, toggles);
+        self.call("POST", "/auths/admin/config", Some(body)).await.map(|_| ())
+    }
+
+    pub async fn sign_in(email: &str, password: &str) -> Result<OpenWebui, Refusal> {
+        let answer = http::send(&login_request(email, password)).await?;
+        if matches!(answer.status, 400 | 401 | 403) {
+            return Err(Refusal::AdminLoginFailed);
+        }
+        if !answer.ok() {
+            return Err(Refusal::Failed);
+        }
+        Ok(OpenWebui { token: parse_login(&answer.body)?, admin_email: email.to_string() })
+    }
+
     pub async fn find(login: Option<(String, String)>) -> Result<Option<OpenWebui>, Refusal> {
         let containers = discover::containers_of_service(SERVICE_ID).await.map_err(|_| Refusal::ServiceDown)?;
         if containers.is_empty() {
@@ -247,6 +275,17 @@ mod tests {
             assert!(!item.url.contains("s3cr3t") && !item.url.contains("tok-abcdef"));
         }
         assert!(http::arguments().iter().all(|arg| !arg.contains("s3cr3t") && !arg.contains("tok-abcdef")));
+    }
+
+    #[test]
+    fn the_admin_config_keeps_every_field_and_sets_two() {
+        let current = json!({ "ENABLE_SIGNUP": false, "DEFAULT_USER_ROLE": "pending", "WEBUI_URL": "https://x", "JWT_EXPIRES_IN": "4w" });
+        let body = admin_config_update(&current, true, "user").unwrap();
+        assert_eq!(body["ENABLE_SIGNUP"], true);
+        assert_eq!(body["DEFAULT_USER_ROLE"], "user");
+        assert_eq!(body["WEBUI_URL"], "https://x");
+        assert_eq!(body["JWT_EXPIRES_IN"], "4w");
+        assert!(admin_config_update(&json!([1]), true, "user").is_none());
     }
 
     #[test]

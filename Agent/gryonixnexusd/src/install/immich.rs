@@ -1,6 +1,7 @@
 //! Immich's declarative install artifacts — a port of `Packages/gryonixNexus/Sources/ServiceCatalog/Services/ImmichService.swift`, declarative half only
 
 use super::caddy::{self, WebIngress};
+use super::app_settings_extra as extra;
 use super::context::Input;
 
 pub const SERVICE_ID: &str = "immich";
@@ -27,8 +28,9 @@ pub fn hostname(input: &Input) -> String {
 pub fn compose_contents(input: &Input) -> String {
     let path = &input.immich_path;
     let host = hostname(input);
+    let settings = extra::immich_lines(input);
     format!(
-        "services:\n  immich-server:\n    image: {IMAGE}\n    restart: unless-stopped\n    depends_on:\n      - redis\n      - database\n    environment:\n      DB_HOSTNAME: database\n      DB_USERNAME: postgres\n      DB_PASSWORD: ${{DB_PASSWORD}}\n      DB_DATABASE_NAME: immich\n      REDIS_HOSTNAME: redis\n      IMMICH_SERVER_URL: https://{host}\n    volumes:\n      - {path}/library:/usr/src/app/upload\n      - /etc/localtime:/etc/localtime:ro\n    ports:\n      - \"127.0.0.1:{WEB_UI_PORT}:2283\"\n  immich-machine-learning:\n    image: {MACHINE_LEARNING_IMAGE}\n    restart: unless-stopped\n    volumes:\n      - {path}/ml-cache:/cache\n  redis:\n    image: {CACHE_IMAGE}\n    restart: unless-stopped\n  database:\n    image: {DATABASE_IMAGE}\n    restart: unless-stopped\n    environment:\n      POSTGRES_PASSWORD: ${{DB_PASSWORD}}\n      POSTGRES_USER: postgres\n      POSTGRES_DB: immich\n    volumes:\n      - {path}/postgres:/var/lib/postgresql/data"
+        "services:\n  immich-server:\n    image: {IMAGE}\n    restart: unless-stopped\n    depends_on:\n      - redis\n      - database\n    environment:\n      DB_HOSTNAME: database\n      DB_USERNAME: postgres\n      DB_PASSWORD: ${{DB_PASSWORD}}\n      DB_DATABASE_NAME: immich\n      REDIS_HOSTNAME: redis\n      IMMICH_SERVER_URL: https://{host}{settings}\n    volumes:\n      - {path}/library:/usr/src/app/upload\n      - /etc/localtime:/etc/localtime:ro\n    ports:\n      - \"127.0.0.1:{WEB_UI_PORT}:2283\"\n  immich-machine-learning:\n    image: {MACHINE_LEARNING_IMAGE}\n    restart: unless-stopped\n    volumes:\n      - {path}/ml-cache:/cache\n  redis:\n    image: {CACHE_IMAGE}\n    restart: unless-stopped\n  database:\n    image: {DATABASE_IMAGE}\n    restart: unless-stopped\n    environment:\n      POSTGRES_PASSWORD: ${{DB_PASSWORD}}\n      POSTGRES_USER: postgres\n      POSTGRES_DB: immich\n    volumes:\n      - {path}/postgres:/var/lib/postgresql/data"
     )
 }
 

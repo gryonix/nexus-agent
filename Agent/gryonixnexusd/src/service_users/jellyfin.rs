@@ -95,6 +95,16 @@ pub fn policy_with(user: &str, key: &str, value: bool) -> Result<Value, Refusal>
     Ok(Value::Object(policy.clone()))
 }
 
+/// The server configuration with boolean fields set
+pub fn config_with_flags(config: &str, flags: &[(&str, bool)]) -> Result<Value, Refusal> {
+    let mut parsed: Value = serde_json::from_str(config.trim()).map_err(|_| Refusal::Failed)?;
+    let map = parsed.as_object_mut().ok_or(Refusal::Failed)?;
+    for (name, on) in flags {
+        map.insert((*name).to_string(), Value::Bool(*on));
+    }
+    Ok(parsed)
+}
+
 impl Jellyfin {
     pub async fn find(login: Option<(String, String)>) -> Result<Option<Jellyfin>, Refusal> {
         let containers = discover::containers_of_service(SERVICE_ID).await.map_err(|_| Refusal::ServiceDown)?;
@@ -115,6 +125,13 @@ impl Jellyfin {
     async fn call(&self, method: &'static str, path: &str, body: Option<Value>) -> Result<Response, Refusal> {
         let answer = http::send(&request(Some(&self.token), method, path, body)).await?;
         if answer.ok() { Ok(answer) } else { Err(Refusal::Failed) }
+    }
+
+    /// Sets flags in the server configuration, keeping the rest
+    pub async fn set_server_flags(&self, flags: &[(&str, bool)]) -> Done {
+        let current = self.call("GET", "/System/Configuration", None).await?;
+        let body = config_with_flags(&current.body, flags)?;
+        self.call("POST", "/System/Configuration", Some(body)).await.map(|_| ())
     }
 
     async fn set_flag(&self, user_id: &str, key: &str, value: bool) -> Done {
@@ -175,6 +192,14 @@ mod tests {
     const USERS: &str = include_str!("../../tests/fixtures/service_users/jellyfin/users.json");
     const LOGIN: &str = include_str!("../../tests/fixtures/service_users/jellyfin/login.json");
     const USER: &str = include_str!("../../tests/fixtures/service_users/jellyfin/user.json");
+
+    #[test]
+    fn the_server_configuration_keeps_its_fields_and_sets_flags() {
+        let body = config_with_flags("{\"ServerName\":\"x\",\"QuickConnectAvailable\":true}", &[("QuickConnectAvailable", false)]).unwrap();
+        assert_eq!(body["ServerName"], "x");
+        assert_eq!(body["QuickConnectAvailable"], false);
+        assert!(config_with_flags("[]", &[]).is_err());
+    }
 
     #[test]
     fn the_user_list_parses() {

@@ -2067,6 +2067,7 @@ async fn install(
     }
 
     drop_stale_sites(label, &sink).await;
+    super::runtime_apply::after_install(label, &input, &store, &sink).await;
     let status = read_status(&service_id, &store).await;
     crate::vpn_dns::wake();
     let _ = sink.completed(status).await;
@@ -4522,7 +4523,7 @@ async fn install_gitlab_steps(input: &Input, sink: &EventSink) -> Result<(), Str
     let _ = sink.step("starting GitLab — the first boot takes several minutes").await;
     compose_up(gitlab::COMPOSE_PROJECT, &dir, sink).await?;
 
-    configure_gitlab(&dir, sink).await;
+    configure_gitlab(&dir, app_settings_open_gitlab(input), sink).await;
 
     let ssh_ports: Vec<firewall::Port> =
         gitlab::ssh_port(input).map(|port| vec![firewall::Port::tcp(port)]).unwrap_or_default();
@@ -4534,9 +4535,15 @@ async fn install_gitlab_steps(input: &Input, sink: &EventSink) -> Result<(), Str
     Ok(())
 }
 
-async fn configure_gitlab(dir: &Path, sink: &EventSink) {
+fn app_settings_open_gitlab(input: &Input) -> bool {
+    super::app_settings::is_on(input, "gitlab_open_registration")
+}
+
+async fn configure_gitlab(dir: &Path, open: bool, sink: &EventSink) {
     let marker = dir.join(GITLAB_SIGNUP_MARKER);
-    if marker.exists() {
+    if open {
+        let _ = std::fs::remove_file(&marker);
+    } else if marker.exists() {
         return;
     }
 
@@ -4559,19 +4566,20 @@ async fn configure_gitlab(dir: &Path, sink: &EventSink) {
     if !ready {
         let _ = sink
             .warn(format!(
-                "GitLab: public sign-up is still OPEN — it was not closed because GitLab was still starting; close it in the Admin Area now ({})",
+                "GitLab: public sign-up was not set to {} because GitLab was still starting; set it in the Admin Area ({})",
+                if open { "open" } else { "closed" },
                 why(&probe.1)
             ))
             .await;
         return;
     }
 
-    let (ok, output) = gitlab_exec(
-        &["gitlab-rails", "runner", "ApplicationSetting.last.update!(signup_enabled: false)"],
-        GITLAB_RUNNER_TIMEOUT_SECS,
-    )
-    .await;
-    if ok {
+    let args = super::runtime_apply::gitlab_signup_args(open);
+    let args: Vec<&str> = args.iter().map(String::as_str).collect();
+    let (ok, output) = gitlab_exec(&args, GITLAB_RUNNER_TIMEOUT_SECS).await;
+    if ok && open {
+        let _ = sink.step("opened public sign-up").await;
+    } else if ok {
         if let Err(err) = std::fs::write(&marker, "") {
             let _ = sink.step(format!("closed sign-up, but could not record it ({err})")).await;
         } else {
@@ -4579,7 +4587,11 @@ async fn configure_gitlab(dir: &Path, sink: &EventSink) {
         }
     } else {
         let _ = sink
-            .warn(format!("GitLab: public sign-up is still OPEN — it could not be closed; close it in the Admin Area now ({})", why(&output)))
+            .warn(if open {
+                format!("GitLab: sign-up could not be opened; open it in the Admin Area ({})", why(&output))
+            } else {
+                format!("GitLab: public sign-up is still OPEN — it could not be closed; close it in the Admin Area now ({})", why(&output))
+            })
             .await;
     }
 }

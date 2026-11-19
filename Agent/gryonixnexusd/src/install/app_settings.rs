@@ -17,13 +17,16 @@ pub enum Allowed {
 pub enum Validator {
     Host,
     Line,
+    HostList,
+    Name,
+    Region,
 }
 
 /// A secret value that removes the stored one
 pub const SECRET_CLEAR: &str = "\u{0}clear";
 const SECRET_MAX_LEN: usize = 256;
-const SECURITY: &[&str] = &["starttls", "ssl", "none"];
-const SMTP_PORTS: &[&str] = &["25", "465", "587"];
+pub(super) const SECURITY: &[&str] = &["starttls", "ssl", "none"];
+pub(super) const SMTP_PORTS: &[&str] = &["25", "465", "587"];
 
 pub struct Spec {
     pub key: &'static str,
@@ -33,6 +36,12 @@ pub struct Spec {
 
 const UPLOAD_LIMITS: &[&str] = &["512M", "1G", "2G", "4G", "16G"];
 const MEMORY_LIMITS: &[&str] = &["512M", "1G", "2G", "4G"];
+const WEBUI_ROLES: &[&str] = &["pending", "user"];
+pub const TIMEZONES: &[&str] = &[
+    "Etc/UTC", "Europe/London", "Europe/Berlin", "Europe/Kyiv", "Europe/Moscow", "America/New_York",
+    "America/Chicago", "America/Denver", "America/Los_Angeles", "Asia/Dubai", "Asia/Kolkata", "Asia/Tokyo",
+    "Australia/Sydney",
+];
 const PRIVACY_LEVELS: &[&str] = &["0", "1", "2", "3"];
 
 pub const SPECS: &[Spec] = &[
@@ -59,13 +68,21 @@ pub const SPECS: &[Spec] = &[
     Spec { key: "n8n_smtp_username", default: "", allowed: Allowed::Text(254, Validator::Line) },
     Spec { key: "n8n_smtp_password", default: "", allowed: Allowed::Secret },
     Spec { key: "n8n_smtp_from", default: "", allowed: Allowed::Text(254, Validator::Line) },
+    Spec { key: "open_webui_default_role", default: "pending", allowed: Allowed::Choices(WEBUI_ROLES) },
+    Spec { key: "gitlab_open_registration", default: "false", allowed: Allowed::Switch },
+    Spec { key: "crafty_timezone", default: "Etc/UTC", allowed: Allowed::Choices(TIMEZONES) },
     Spec { key: "pihole_dnssec", default: "false", allowed: Allowed::Switch },
     Spec { key: "pihole_privacy_level", default: "0", allowed: Allowed::Choices(PRIVACY_LEVELS) },
     Spec { key: "pihole_query_logging", default: "true", allowed: Allowed::Switch },
 ];
 
+/// Every spec, main and extra
+pub fn all_specs() -> impl Iterator<Item = &'static Spec> {
+    SPECS.iter().chain(super::app_settings_extra::SPECS.iter()).chain(super::app_settings_games::SPECS).chain(super::app_settings_runtime::SPECS.iter())
+}
+
 fn spec(key: &str) -> Option<&'static Spec> {
-    SPECS.iter().find(|spec| spec.key == key)
+    all_specs().find(|spec| spec.key == key)
 }
 
 fn is_valid(spec: &Spec, value: &str) -> bool {
@@ -80,7 +97,10 @@ fn is_valid(spec: &Spec, value: &str) -> bool {
 fn text_is_safe(validator: Validator, value: &str) -> bool {
     match validator {
         Validator::Host => value.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | ':' | '_')),
+        Validator::HostList => value.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | ',' | '_')),
+        Validator::Name => value.chars().all(|c| c.is_ascii_alphanumeric() || " .,!?-_:()[]+&/".contains(c)),
         Validator::Line => !value.chars().any(|c| c.is_control() || matches!(c, '"' | '\'' | '\\' | '$' | '`' | '#')),
+        Validator::Region => value.is_empty() || (value.len() == 2 && value.chars().all(|c| c.is_ascii_uppercase())),
     }
 }
 
@@ -95,8 +115,7 @@ fn clean<'a>(spec: &Spec, value: &'a str) -> &'a str {
 
 /// The known, valid settings out of a request's key-value map
 pub fn accept(settings: &HashMap<String, String>) -> BTreeMap<String, String> {
-    SPECS
-        .iter()
+    all_specs()
         .filter_map(|spec| {
             let value = clean(spec, settings.get(spec.key)?);
             is_valid(spec, value).then(|| (spec.key.to_string(), value.to_string()))
@@ -165,6 +184,18 @@ mod tests {
             "nextcloud" => super::super::nextcloud::compose_contents(input),
             "n8n" => super::super::n8n::compose_contents(input),
             "pihole" => super::super::pihole::compose_contents(input),
+            "open-webui" => super::super::open_webui::compose_contents(input, &input.installed_services),
+            "gitlab" => super::super::gitlab::compose_contents(input),
+            "crafty-controller" => super::super::crafty::compose_contents(input),
+            "ollama" => super::super::ollama::compose_contents(input),
+            "passbolt" => super::super::passbolt::compose_contents(input),
+            "photoprism" => super::super::photoprism::compose_contents(input),
+            "immich" => super::super::immich::compose_contents(input),
+            "jellyfin" => super::super::jellyfin::compose_contents(input),
+            "anythingllm" => super::super::anythingllm::compose_contents(input),
+            "minecraft-java" => super::super::minecraft::java_compose_contents(input),
+            "minecraft-bedrock" => super::super::minecraft::bedrock_compose_contents(input),
+            "adguard-home" => super::super::adguard::compose_contents(input),
             other => panic!("no compose for {other}"),
         }
     }
@@ -179,6 +210,8 @@ mod tests {
         let (key, value) = (variant["key"].as_str().unwrap(), variant["value"].as_str().unwrap());
         if key == "vaultwarden_allow_signups" {
             input.vaultwarden_allow_signups = value == "true";
+        } else if key == "open_webui_allow_signups" {
+            input.open_webui_allow_signups = value == "true";
         } else {
             let mut pairs = vec![(key, value)];
             let given = variant["given"].as_object().cloned().unwrap_or_default();
@@ -203,7 +236,7 @@ mod tests {
     #[test]
     fn the_catalog_and_the_agent_agree_on_keys_and_defaults() {
         let variants = super::super::golden::app_setting_variants();
-        for spec in SPECS {
+        for spec in all_specs() {
             let seen: Vec<_> = variants.iter().filter(|v| v["key"] == spec.key).collect();
             assert!(!seen.is_empty(), "{} is missing from the catalog", spec.key);
             for variant in seen {

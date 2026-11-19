@@ -1,5 +1,6 @@
 //! The Minecraft servers' declarative install artifacts — a port of `MinecraftJavaService.swift` and `MinecraftBedrockService.swift`, declarative halves only
 
+use super::app_settings_games as games;
 use super::context::Input;
 
 pub const JAVA_IMAGE: &str = "itzg/minecraft-server:2026.8.1-java25";
@@ -38,6 +39,7 @@ pub fn java_compose_contents(input: &Input) -> String {
         environment.push_str(&format!("\n      MODRINTH_PROJECTS: \"{mods}\""));
         environment.push_str("\n      MODRINTH_DOWNLOAD_DEPENDENCIES: \"required\"");
     }
+    environment.push_str(&games::env_lines(input, games::JAVA_ENV));
     format!(
         "services:\n  minecraft-java:\n    image: {JAVA_IMAGE}\n    container_name: {JAVA_CONTAINER}\n    restart: unless-stopped\n    # The server reads commands from its own stdin, and that is how\n    # both a clean stop and the panel's console work. Without these\n    # two the container can only be killed, which is how a world\n    # gets corrupted.\n    stdin_open: true\n    tty: true\n    environment:\n{environment}\n    volumes:\n      - {path}/data:/data\n      # The image's own drop-in directories, and this is where an\n      # uploaded file lands: content here is SYNCHRONISED into\n      # /data/mods (and /data/plugins) at every start, so a jar the\n      # owner sent from the app survives a restart, an image update\n      # and every change to the Modrinth list — which manages only\n      # what it installed itself. Read-only: the server has no\n      # business writing back into what somebody uploaded.\n      #\n      # Both, always, because the answer to \"mods or plugins?\" is\n      # the TYPE, and the TYPE is a setting that can change on a\n      # server that already exists.\n      - {path}/mods:/mods:ro\n      - {path}/plugins:/plugins:ro\n    ports:\n      - \"{port}:25565\"\n      # RCON stays on loopback: its password is the whole of its\n      # security, and the panel reaches it from the same host.\n      - \"127.0.0.1:{JAVA_RCON_PORT}:25575\""
     )
@@ -58,6 +60,7 @@ pub fn bedrock_compose_contents(input: &Input) -> String {
     if !version.is_empty() {
         environment.push_str(&format!("\n      VERSION: \"{version}\""));
     }
+    environment.push_str(&games::env_lines(input, games::BEDROCK_ENV));
     format!(
         "services:\n  minecraft-bedrock:\n    image: {BEDROCK_IMAGE}\n    container_name: {BEDROCK_CONTAINER}\n    restart: unless-stopped\n    # Same reason as the Java server: a clean stop is a command\n    # written to the server's stdin, and without a terminal the\n    # only way out is a kill.\n    stdin_open: true\n    tty: true\n    environment:\n{environment}\n    volumes:\n      - {path}/data:/data\n    ports:\n      # UDP, and that is the whole protocol — Bedrock is RakNet\n      # over UDP, so a TCP rule here would open nothing at all.\n      - \"{port}:{port}/udp\""
     )

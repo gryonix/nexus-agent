@@ -1,5 +1,6 @@
 //! Open WebUI's declarative install artifacts — a port of `OpenWebUIService.swift`, declarative half only
 
+use super::app_settings;
 use super::caddy::{self, WebIngress};
 use super::context::Input;
 use super::litellm;
@@ -66,6 +67,14 @@ pub fn stored_address_keys(services: &[String]) -> Vec<&'static str> {
 pub const FORGET_KEYS_SCRIPT: &str = "import sqlite3, sys; db = sqlite3.connect(sys.argv[1]); \
 db.executemany(\"delete from config where key = ?\", [(k,) for k in sys.argv[2:]]); db.commit()";
 
+/// The role line, only when not the default
+fn default_role_line(input: &Input) -> String {
+    match app_settings::value(input, "open_webui_default_role") {
+        "pending" => String::new(),
+        role => format!("\n      DEFAULT_USER_ROLE: \"{role}\""),
+    }
+}
+
 /// A port of `OpenWebUIService.composeFile(_:).composeContents`.
 pub fn compose_contents(input: &Input, services: &[String]) -> String {
     compose_services(input, services) + super::ai_network::COMPOSE_TAIL
@@ -76,6 +85,7 @@ fn compose_services(input: &Input, services: &[String]) -> String {
     let path = &input.open_webui_path;
     let host = hostname(input);
     let signups = if input.open_webui_allow_signups { "true" } else { "false" };
+    let role = default_role_line(input);
     let engine = engine_url(services)
         .map(|url| format!("\n      OLLAMA_BASE_URL: \"{url}\""))
         .unwrap_or_default();
@@ -86,7 +96,7 @@ fn compose_services(input: &Input, services: &[String]) -> String {
         .map(|url| format!("\n      ENABLE_WEB_SEARCH: \"true\"\n      WEB_SEARCH_ENGINE: \"searxng\"\n      SEARXNG_QUERY_URL: \"{url}\""))
         .unwrap_or_default();
     format!(
-        "services:\n  open-webui:\n    image: {IMAGE}\n    container_name: {CONTAINER}\n    restart: unless-stopped\n    environment:\n      WEBUI_URL: \"https://{host}\"\n      # Session signing key. Generated on the server — regenerating\n      # it on every start would sign every existing session out.\n      WEBUI_SECRET_KEY: ${{WEBUI_SECRET_KEY}}\n      ENABLE_SIGNUP: \"{signups}\"{engine}{gateway}{search}\n    volumes:\n      - {path}/data:/app/backend/data\n    ports:\n      - \"127.0.0.1:{WEB_UI_PORT}:{CONTAINER_WEB_PORT}\""
+        "services:\n  open-webui:\n    image: {IMAGE}\n    container_name: {CONTAINER}\n    restart: unless-stopped\n    environment:\n      WEBUI_URL: \"https://{host}\"\n      # Session signing key. Generated on the server — regenerating\n      # it on every start would sign every existing session out.\n      WEBUI_SECRET_KEY: ${{WEBUI_SECRET_KEY}}\n      ENABLE_SIGNUP: \"{signups}\"{role}{engine}{gateway}{search}\n    volumes:\n      - {path}/data:/app/backend/data\n    ports:\n      - \"127.0.0.1:{WEB_UI_PORT}:{CONTAINER_WEB_PORT}\""
     )
 }
 
@@ -294,6 +304,16 @@ mod fixture_parity {
             "searxng".to_string(),
         ];
         assert_parity(&base(), &services, "owui-search-public-en");
+    }
+
+    #[test]
+    fn the_new_user_role_shows_only_when_it_is_not_pending() {
+        let services = vec!["open-webui".to_string()];
+        assert!(!compose_contents(&base(), &services).contains("DEFAULT_USER_ROLE"));
+        let mut input = base();
+        input.app_settings.insert("open_webui_default_role".to_string(), "user".to_string());
+        let compose = compose_contents(&input, &services);
+        assert!(compose.contains("ENABLE_SIGNUP: \"false\"\n      DEFAULT_USER_ROLE: \"user\"\n    volumes"));
     }
 
     #[test]

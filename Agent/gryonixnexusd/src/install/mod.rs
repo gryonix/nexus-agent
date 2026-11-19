@@ -1,5 +1,10 @@
 pub mod adguard;
 pub mod app_settings;
+pub mod app_settings_extra;
+pub mod app_settings_games;
+pub mod app_settings_runtime;
+pub mod runtime_apply_cmds;
+pub mod runtime_apply_run;
 pub mod smtp;
 pub mod authelia;
 pub mod ai_network;
@@ -30,6 +35,7 @@ pub mod home_only_ports;
 pub mod context;
 pub mod hostnames;
 pub mod execute;
+pub mod runtime_apply;
 pub mod journal;
 pub mod plan;
 pub mod packages;

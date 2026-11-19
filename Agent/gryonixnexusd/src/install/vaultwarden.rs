@@ -57,7 +57,7 @@ pub fn compose_contents(input: &Input) -> String {
     let data_path = &input.vaultwarden_data_path;
     let signups = signups(input);
     let host = hostname(input);
-    let invitations = invitations_line(input);
+    let invitations = format!("{}{}", invitations_line(input), super::app_settings_games::env_lines_trailing(input, super::app_settings_games::VAULTWARDEN_ENV));
     let mail = smtp::env_lines(input, &SMTP);
     format!(
         "services:\n  vaultwarden:\n    image: {IMAGE}\n    container_name: {container}\n    restart: unless-stopped\n    environment:\n      DOMAIN: \"https://{host}\"\n      SIGNUPS_ALLOWED: \"{signups}\"\n{invitations}      ADMIN_TOKEN: ${{ADMIN_TOKEN}}\n      IP_HEADER: X-Forwarded-For{mail}\n    volumes:\n      - {data_path}:/data\n    ports:\n      - \"127.0.0.1:{WEB_UI_PORT}:80\""

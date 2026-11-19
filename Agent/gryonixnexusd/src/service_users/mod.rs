@@ -381,7 +381,7 @@ pub async fn container_env(container: &str) -> Option<String> {
     output.status.success().then(|| String::from_utf8_lossy(&output.stdout).to_string())
 }
 
-fn vault_login(store: &Arc<Mutex<Store>>, title: &str) -> Option<(String, String)> {
+pub(crate) fn vault_login(store: &Arc<Mutex<Store>>, title: &str) -> Option<(String, String)> {
     let snapshot = store.lock().unwrap_or_else(|err| err.into_inner()).vault_snapshot().ok()?;
     snapshot
         .entries

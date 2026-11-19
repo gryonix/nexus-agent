@@ -1,5 +1,6 @@
 //! Ollama's declarative install artifacts — a port of `OllamaService.swift`, declarative half only
 
+use super::app_settings_extra as extra;
 use super::context::Input;
 
 /// The catalog id this module installs
@@ -37,8 +38,9 @@ pub fn compose_contents(input: &Input) -> String {
 /// The services block, before the shared network joins it
 fn compose_services(input: &Input) -> String {
     let path = &input.ollama_path;
+    let settings = extra::ollama_lines(input);
     format!(
-        "services:\n  ollama:\n    image: {IMAGE}\n    container_name: {CONTAINER}\n    restart: unless-stopped\n    environment:\n      # Answer requests from the other containers on this host, not\n      # only from inside its own. The port is still bound to\n      # loopback below, so this widens nothing the outside can see.\n      OLLAMA_HOST: \"0.0.0.0:{API_PORT}\"\n    volumes:\n      # Models. The one bind mount in this catalog that is expected\n      # to reach tens of gigabytes.\n      - {path}/models:/root/.ollama\n    ports:\n      - \"127.0.0.1:{API_PORT}:{API_PORT}\""
+        "services:\n  ollama:\n    image: {IMAGE}\n    container_name: {CONTAINER}\n    restart: unless-stopped\n    environment:\n      # Answer requests from the other containers on this host, not\n      # only from inside its own. The port is still bound to\n      # loopback below, so this widens nothing the outside can see.\n      OLLAMA_HOST: \"0.0.0.0:{API_PORT}\"{settings}\n    volumes:\n      # Models. The one bind mount in this catalog that is expected\n      # to reach tens of gigabytes.\n      - {path}/models:/root/.ollama\n    ports:\n      - \"127.0.0.1:{API_PORT}:{API_PORT}\""
     )
 }
 

@@ -1,5 +1,6 @@
 //! Crafty Controller's declarative install artifacts — a port of `CraftyControllerService.swift`, declarative half only
 
+use super::app_settings;
 use super::caddy::{self, WebIngress};
 use super::context::Input;
 
@@ -25,8 +26,9 @@ pub fn hostname(input: &Input) -> String {
 /// A port of `CraftyControllerService.composeFile(_:).composeContents`.
 pub fn compose_contents(input: &Input) -> String {
     let path = &input.crafty_path;
+    let zone = app_settings::value(input, "crafty_timezone");
     format!(
-        "services:\n  crafty:\n    image: {IMAGE}\n    container_name: {CONTAINER}\n    restart: unless-stopped\n    environment:\n      TZ: \"Etc/UTC\"\n    volumes:\n      - {path}/backups:/crafty/backups\n      - {path}/logs:/crafty/logs\n      - {path}/servers:/crafty/servers\n      - {path}/config:/crafty/app/config\n      - {path}/import:/crafty/import\n    ports:\n      # Loopback only — Caddy publishes the name, and the panel is\n      # an admin surface like every other one in this catalog.\n      - \"127.0.0.1:{WEB_UI_PORT}:8443\""
+        "services:\n  crafty:\n    image: {IMAGE}\n    container_name: {CONTAINER}\n    restart: unless-stopped\n    environment:\n      TZ: \"{zone}\"\n    volumes:\n      - {path}/backups:/crafty/backups\n      - {path}/logs:/crafty/logs\n      - {path}/servers:/crafty/servers\n      - {path}/config:/crafty/app/config\n      - {path}/import:/crafty/import\n    ports:\n      # Loopback only — Caddy publishes the name, and the panel is\n      # an admin surface like every other one in this catalog.\n      - \"127.0.0.1:{WEB_UI_PORT}:8443\""
     )
 }
 
@@ -59,6 +61,14 @@ mod tests {
 
     fn base() -> Input {
         Input { domain: "example.com".to_string(), ..Input::default() }
+    }
+
+    #[test]
+    fn the_time_zone_defaults_to_utc_and_follows_the_setting() {
+        assert!(compose_contents(&base()).contains("TZ: \"Etc/UTC\""));
+        let mut input = base();
+        input.app_settings.insert("crafty_timezone".to_string(), "Europe/Berlin".to_string());
+        assert!(compose_contents(&input).contains("TZ: \"Europe/Berlin\""));
     }
 
     #[test]

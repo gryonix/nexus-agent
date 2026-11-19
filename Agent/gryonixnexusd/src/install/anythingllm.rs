@@ -1,5 +1,6 @@
 //! AnythingLLM's declarative install artifacts — a port of `AnythingLLMService.swift`, declarative half only
 
+use super::app_settings_extra as extra;
 use super::context::Input;
 use super::litellm;
 use super::ollama;
@@ -92,7 +93,8 @@ pub fn compose_contents(input: &Input) -> String {
 /// The services block, before the shared network joins it
 fn compose_services(input: &Input) -> String {
     let path = &input.anythingllm_path;
-    format!("services:\n  anythingllm:\n    image: {IMAGE}\n    container_name: {CONTAINER}\n    restart: unless-stopped\n    # uid 1000, matching the directories the setup step creates.\n    # Spelled out rather than left to the image so that the host\n    # side and the container side cannot drift apart.\n    user: \"1000:1000\"\n    environment:\n      # The only two settings the UI must not be able to move.\n      # Everything else lives in the mounted settings file, which\n      # the container owns — see the type comment.\n      STORAGE_DIR: \"/app/server/storage\"\n      SERVER_PORT: {CONTAINER_PORT}\n      # Chromium's own sandbox needs namespace calls docker's\n      # default seccomp profile blocks, so upstream's documented\n      # runs all add a capability instead. This buys the same\n      # feature for a far smaller grant — see the service comment.\n      ANYTHINGLLM_CHROMIUM_ARGS: \"--no-sandbox\"\n    volumes:\n      - {path}/storage:/app/server/storage\n      - {path}/anythingllm.env:/app/server/.env\n    ports:\n      - \"127.0.0.1:{WEB_UI_PORT}:{CONTAINER_PORT}\"")
+    let settings = extra::anythingllm_lines(input);
+    format!("services:\n  anythingllm:\n    image: {IMAGE}\n    container_name: {CONTAINER}\n    restart: unless-stopped\n    # uid 1000, matching the directories the setup step creates.\n    # Spelled out rather than left to the image so that the host\n    # side and the container side cannot drift apart.\n    user: \"1000:1000\"\n    environment:\n      # The only two settings the UI must not be able to move.\n      # Everything else lives in the mounted settings file, which\n      # the container owns — see the type comment.\n      STORAGE_DIR: \"/app/server/storage\"\n      SERVER_PORT: {CONTAINER_PORT}\n      # Chromium's own sandbox needs namespace calls docker's\n      # default seccomp profile blocks, so upstream's documented\n      # runs all add a capability instead. This buys the same\n      # feature for a far smaller grant — see the service comment.\n      ANYTHINGLLM_CHROMIUM_ARGS: \"--no-sandbox\"{settings}\n    volumes:\n      - {path}/storage:/app/server/storage\n      - {path}/anythingllm.env:/app/server/.env\n    ports:\n      - \"127.0.0.1:{WEB_UI_PORT}:{CONTAINER_PORT}\"")
 }
 
 #[allow(dead_code)]
