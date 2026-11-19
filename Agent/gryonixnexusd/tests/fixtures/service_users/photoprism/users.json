@@ -1,6 +1,2 @@
-[
-  {"ID": 1, "UID": "uqxetse3cy5eo9z2", "Name": "operator", "DisplayName": "Operator", "Email": "operator@example.org", "Role": "admin", "SuperAdmin": true, "CanLogin": true},
-  {"ID": 2, "UID": "uqxetse3cy5eo9z3", "Name": "anna", "DisplayName": "Anna", "Email": "anna@example.org", "Role": "user", "SuperAdmin": false, "CanLogin": true},
-  {"ID": 3, "UID": "uqxetse3cy5eo9z4", "Name": "boris", "DisplayName": "Boris", "Email": "", "Role": "user", "SuperAdmin": false, "CanLogin": false},
-  {"ID": 4, "UID": "uqxetse3cy5eo9z5", "Name": "", "DisplayName": "Guest", "Email": "", "Role": "guest", "SuperAdmin": false, "CanLogin": false}
-]
+time="2026-11-19T15:11:03Z" level=info msg="found 3 users"
+[{"authentication":"Local","role":"Guest","super_admin":"No","uid":"uqxetse3cy5eo9z3","upload_path":"","username":"boris","web_login":"Disabled","webdav":"Disabled"},{"authentication":"Local","role":"Admin","super_admin":"Yes","uid":"uqxetse3cy5eo9z2","upload_path":"","username":"operator","web_login":"Enabled","webdav":"Enabled"},{"authentication":"Local","role":"Guest","super_admin":"No","uid":"uqxetse3cy5eo9z1","upload_path":"","username":"anna","web_login":"Enabled","webdav":"Disabled"}]

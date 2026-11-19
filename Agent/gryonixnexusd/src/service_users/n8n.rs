@@ -17,7 +17,7 @@ pub fn capabilities() -> pb::UserCapabilities {
         supported: true,
         can_create: true,
         can_delete: true,
-        roles: vec![ADMIN_ROLE.to_string(), ROLE_USER.to_string()],
+        roles: Vec::new(),
         needs_email: true,
         user_id_is_email: true,
         note: super::TOKEN_NOTE.to_string(),
@@ -172,6 +172,11 @@ mod tests {
         let (_, cursor) = parse_page("{\"data\":[],\"nextCursor\":\"abc==\"}").unwrap();
         assert_eq!(cursor.as_deref(), Some("abc=="));
         assert_eq!(parse_page("{\"message\":\"unauthorized\"}"), Err(Refusal::Failed));
+    }
+
+    #[test]
+    fn the_free_edition_offers_no_role_choice() {
+        assert!(capabilities().roles.is_empty());
     }
 
     #[test]

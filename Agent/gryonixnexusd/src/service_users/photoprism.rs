@@ -1,15 +1,18 @@
-//! PhotoPrism accounts through its REST API
+//! PhotoPrism accounts through its own command line
 
-use serde_json::{json, Value};
+use serde_json::Value;
 
-use super::http::{self, Request, Response};
+use super::docker::{self, Call};
 use super::{NewUser, Refusal, UserBackend, ADMIN_ROLE};
-use crate::install::photoprism::{CONTAINER, WEB_UI_PORT};
-use crate::{discover, pb};
+use crate::discover;
+use crate::install::photoprism::CONTAINER;
+use crate::pb;
 
 pub const SERVICE_ID: &str = "photoprism";
-const ROLE_USER: &str = "user";
-const COUNT: usize = 1000;
+const ROLE_GUEST: &str = "guest";
+const LIST_LIMIT: &str = "1000";
+const ADD_SCRIPT: &str = "p=\"$(cat)\"; exec photoprism users add -p \"$p\" \"$@\"";
+const PASSWORD_SCRIPT: &str = "p=\"$(cat)\"; exec photoprism users mod -p \"$p\" \"$1\"";
 
 type Done = Result<(), Refusal>;
 
@@ -20,58 +23,36 @@ pub fn capabilities() -> pb::UserCapabilities {
         can_delete: true,
         can_set_password: true,
         can_set_enabled: true,
-        roles: vec![ADMIN_ROLE.to_string(), ROLE_USER.to_string()],
+        roles: vec![ADMIN_ROLE.to_string(), ROLE_GUEST.to_string()],
         ..Default::default()
     }
 }
 
 pub struct Photoprism {
-    token: String,
     admin: String,
 }
 
-fn base() -> String {
-    format!("http://127.0.0.1:{WEB_UI_PORT}/api/v1")
+/// The first JSON array in the command's output
+fn json_of(output: &str) -> Option<Value> {
+    let start = output.find("[{").or_else(|| output.find("[]"))?;
+    serde_json::Deserializer::from_str(&output[start..]).into_iter::<Value>().next()?.ok()
 }
 
-pub fn request(token: Option<&str>, method: &'static str, path: &str, body: Option<Value>) -> Request {
-    let mut headers = vec![("Content-Type".to_string(), "application/json".to_string())];
-    if let Some(token) = token {
-        headers.push(("Authorization".into(), format!("Bearer {token}")));
-    }
-    Request { method, url: format!("{}{path}", base()), headers, body: body.map(|v| v.to_string()) }
-}
-
-pub fn login_request(user: &str, password: &str) -> Request {
-    request(None, "POST", "/session", Some(json!({ "username": user, "password": password })))
-}
-
-/// The access token of a session answer
-pub fn parse_session(body: &str) -> Result<String, Refusal> {
-    let value: Value = serde_json::from_str(body.trim()).map_err(|_| Refusal::Failed)?;
-    match value.get("access_token").and_then(Value::as_str) {
-        Some(token) if !token.is_empty() => Ok(token.to_string()),
-        _ => Err(Refusal::Failed),
-    }
-}
-
-pub fn parse_users(json: &str, admin: &str) -> Result<Vec<pb::ServiceUser>, Refusal> {
-    let value: Value = serde_json::from_str(json.trim()).map_err(|_| Refusal::Failed)?;
+pub fn parse_users(output: &str, admin: &str) -> Result<Vec<pb::ServiceUser>, Refusal> {
+    let value = json_of(output).ok_or(Refusal::Failed)?;
     let rows = value.as_array().ok_or(Refusal::Failed)?;
     let mut users: Vec<pb::ServiceUser> = rows
         .iter()
         .filter_map(|row| {
-            let text = |key: &str| row.get(key).and_then(Value::as_str).unwrap_or_default().to_string();
-            let (id, login) = (text("UID"), text("Name"));
-            let is_admin = row.get("SuperAdmin").and_then(Value::as_bool).unwrap_or(false) || text("Role") == ADMIN_ROLE;
-            (!id.is_empty() && !login.is_empty()).then(|| pb::ServiceUser {
-                id,
-                display_name: text("DisplayName"),
-                email: text("Email"),
-                role: if is_admin { ADMIN_ROLE } else { ROLE_USER }.to_string(),
-                enabled: row.get("CanLogin").and_then(Value::as_bool).unwrap_or(true),
+            let text = |key: &str| row.get(key).and_then(Value::as_str).unwrap_or_default();
+            let login = text("username");
+            let is_admin = text("role").eq_ignore_ascii_case("admin") || text("super_admin") == "Yes";
+            (!login.is_empty()).then(|| pb::ServiceUser {
+                id: login.to_string(),
+                login: login.to_string(),
+                role: if is_admin { ADMIN_ROLE } else { ROLE_GUEST }.to_string(),
+                enabled: text("web_login") != "Disabled",
                 is_self: login.eq_ignore_ascii_case(admin),
-                login,
                 ..Default::default()
             })
         })
@@ -80,53 +61,71 @@ pub fn parse_users(json: &str, admin: &str) -> Result<Vec<pb::ServiceUser>, Refu
     Ok(users)
 }
 
-pub fn create_body(new: &NewUser) -> Value {
-    let name = if new.display_name.is_empty() { new.login.clone() } else { new.display_name.clone() };
-    json!({
-        "Name": new.login,
-        "DisplayName": name,
-        "Email": new.email,
-        "Role": new.role,
-        "Password": new.password,
-        "CanLogin": true,
-    })
+fn exec(words: &[&str]) -> Call {
+    let mut args = vec!["exec", CONTAINER, "photoprism", "users"];
+    args.extend_from_slice(words);
+    Call::new(&args)
 }
 
-/// The admin the installer created, from the container's environment
-async fn installer_login() -> Option<(String, String)> {
-    let env = super::container_env(CONTAINER).await?;
-    let user = super::env_value(&env, "PHOTOPRISM_ADMIN_USER")?;
-    let password = super::env_value(&env, "PHOTOPRISM_ADMIN_PASSWORD")?;
-    Some((user, password))
+pub fn list_call() -> Call {
+    exec(&["ls", "--json", "-n", LIST_LIMIT])
+}
+
+/// A call whose password arrives on stdin
+fn shell_call(script: &str, words: &[&str], password: &str) -> Call {
+    let mut args = vec!["exec", "-i", CONTAINER, "sh", "-c", script, "sh"];
+    args.extend_from_slice(words);
+    Call::new(&args).with_stdin(password.to_string())
+}
+
+pub fn create_call(new: &NewUser) -> Call {
+    let name = if new.display_name.is_empty() { new.login.as_str() } else { new.display_name.as_str() };
+    let mut words = vec!["-n", name];
+    if !new.email.is_empty() {
+        words.extend(["-m", new.email.as_str()]);
+    }
+    if new.role == ADMIN_ROLE {
+        words.extend(["-r", ADMIN_ROLE, "--superadmin"]);
+    } else {
+        words.extend(["-r", ROLE_GUEST]);
+    }
+    words.push(new.login.as_str());
+    shell_call(ADD_SCRIPT, &words, &new.password)
+}
+
+pub fn password_call(login: &str, password: &str) -> Call {
+    shell_call(PASSWORD_SCRIPT, &[login], password)
+}
+
+pub fn role_call(login: &str, role: &str) -> Call {
+    if role == ADMIN_ROLE {
+        exec(&["mod", "-r", ADMIN_ROLE, "--superadmin=true", login])
+    } else {
+        exec(&["mod", "-r", ROLE_GUEST, "--superadmin=false", login])
+    }
+}
+
+pub fn enabled_call(login: &str, enabled: bool) -> Call {
+    exec(&["mod", if enabled { "--no-login=false" } else { "--no-login=true" }, login])
+}
+
+pub fn delete_call(login: &str) -> Call {
+    exec(&["rm", "-f", login])
 }
 
 impl Photoprism {
-    pub async fn find(vault: Option<(String, String)>) -> Result<Option<Photoprism>, Refusal> {
+    pub async fn find() -> Result<Option<Photoprism>, Refusal> {
         let containers = discover::containers_of_service(SERVICE_ID).await.map_err(|_| Refusal::ServiceDown)?;
         if containers.is_empty() {
             return Ok(None);
         }
-        let (admin, password) = match vault {
-            Some(login) => login,
-            None => installer_login().await.ok_or(Refusal::AdminNotSetUp)?,
-        };
-        let answer = http::send(&login_request(&admin, &password)).await?;
-        if matches!(answer.status, 400 | 401 | 403) {
-            return Err(Refusal::AdminLoginFailed);
-        }
-        if !answer.ok() {
-            return Err(Refusal::Failed);
-        }
-        Ok(Some(Photoprism { token: parse_session(&answer.body)?, admin }))
+        let env = super::container_env(CONTAINER).await.unwrap_or_default();
+        let admin = super::env_value(&env, "PHOTOPRISM_ADMIN_USER").unwrap_or_default();
+        Ok(Some(Photoprism { admin }))
     }
 
-    async fn call(&self, method: &'static str, path: &str, body: Option<Value>) -> Result<Response, Refusal> {
-        let answer = http::send(&request(Some(&self.token), method, path, body)).await?;
-        if answer.ok() { Ok(answer) } else { Err(Refusal::Failed) }
-    }
-
-    async fn update(&self, user_id: &str, changes: Value) -> Done {
-        self.call("PUT", &format!("/users/{user_id}"), Some(changes)).await.map(|_| ())
+    async fn run(&self, call: Call) -> Done {
+        docker::run(&call).await.map(|_| ())
     }
 }
 
@@ -136,28 +135,27 @@ impl UserBackend for Photoprism {
     }
 
     async fn list(&self) -> Result<Vec<pb::ServiceUser>, Refusal> {
-        let answer = self.call("GET", &format!("/users?count={COUNT}&offset=0"), None).await?;
-        parse_users(&answer.body, &self.admin)
+        parse_users(&docker::run(&list_call()).await?, &self.admin)
     }
 
     async fn create(&self, new: &NewUser) -> Done {
-        self.call("POST", "/users", Some(create_body(new))).await.map(|_| ())
+        self.run(create_call(new)).await
     }
 
     async fn delete(&self, user_id: &str) -> Done {
-        self.call("DELETE", &format!("/users/{user_id}"), None).await.map(|_| ())
+        self.run(delete_call(user_id)).await
     }
 
     async fn set_password(&self, user_id: &str, password: &str) -> Done {
-        self.update(user_id, json!({ "Password": password })).await
+        self.run(password_call(user_id, password)).await
     }
 
     async fn set_role(&self, user_id: &str, role: &str) -> Done {
-        self.update(user_id, json!({ "Role": role })).await
+        self.run(role_call(user_id, role)).await
     }
 
     async fn set_enabled(&self, user_id: &str, enabled: bool) -> Done {
-        self.update(user_id, json!({ "CanLogin": enabled })).await
+        self.run(enabled_call(user_id, enabled)).await
     }
 
     async fn set_quota(&self, _: &str, _: i64) -> Done {
@@ -170,64 +168,78 @@ mod tests {
     use super::*;
 
     const USERS: &str = include_str!("../../tests/fixtures/service_users/photoprism/users.json");
-    const SESSION: &str = include_str!("../../tests/fixtures/service_users/photoprism/session.json");
 
-    fn new_user() -> NewUser {
+    fn new_user(role: &str) -> NewUser {
         NewUser {
             login: "clara".into(),
             display_name: String::new(),
             email: String::new(),
             password: "s3cr3t-pass-word".into(),
-            role: "user".into(),
+            role: role.into(),
             quota_bytes: 0,
         }
     }
 
     #[test]
-    fn the_user_list_parses_and_skips_nameless_guests() {
+    fn the_listing_gives_logins_roles_and_the_off_switch() {
         let users = parse_users(USERS, "Operator").unwrap();
-        let logins: Vec<&str> = users.iter().map(|u| u.login.as_str()).collect();
-        assert_eq!(logins, ["anna", "boris", "operator"]);
-        assert_eq!(users[2].id, "uqxetse3cy5eo9z2");
-        assert_eq!((users[2].role.as_str(), users[2].is_self), ("admin", true));
-        assert!(users[0].enabled && !users[1].enabled);
-        assert_eq!(users[0].email, "anna@example.org");
+        let rows: Vec<(&str, &str, bool, bool)> =
+            users.iter().map(|u| (u.login.as_str(), u.role.as_str(), u.enabled, u.is_self)).collect();
+        assert_eq!(
+            rows,
+            [("anna", "guest", true, false), ("boris", "guest", false, false), ("operator", "admin", true, true)]
+        );
     }
 
     #[test]
-    fn an_error_object_is_a_failure() {
-        assert_eq!(parse_users("{\"error\":\"Unauthorized\"}", ""), Err(Refusal::Failed));
+    fn log_lines_before_the_listing_are_skipped_and_garbage_fails() {
+        assert_eq!(parse_users("time=1 level=info msg=\"x\"\n[]\n", "").unwrap(), Vec::new());
+        assert_eq!(parse_users("not json", ""), Err(Refusal::Failed));
     }
 
     #[test]
-    fn the_session_answer_gives_the_token() {
-        assert_eq!(parse_session(SESSION).unwrap(), "0123456789abcdef0123456789abcdef0123456789abcdef");
-        assert_eq!(parse_session("{\"error\":\"x\"}"), Err(Refusal::Failed));
-    }
-
-    #[test]
-    fn passwords_and_tokens_stay_out_of_the_arguments_and_url() {
-        let sent = [
-            login_request("operator", "s3cr3t-pass-word"),
-            request(Some("tok-abcdef"), "POST", "/users", Some(create_body(&new_user()))),
-        ];
-        for item in &sent {
-            assert!(!item.url.contains("s3cr3t") && !item.url.contains("tok-abcdef"));
+    fn a_password_goes_through_stdin_and_never_through_the_arguments() {
+        let calls = [create_call(&new_user("guest")), password_call("clara", "s3cr3t-pass-word")];
+        for call in &calls {
+            assert!(call.args.iter().all(|arg| !arg.contains("s3cr3t")));
+            assert_eq!(call.stdin.as_deref(), Some("s3cr3t-pass-word"));
+            assert!(call.args.contains(&"-i".to_string()));
         }
-        assert!(http::arguments().iter().all(|arg| !arg.contains("s3cr3t") && !arg.contains("tok-abcdef")));
     }
 
     #[test]
-    fn a_new_account_can_sign_in_and_is_named_after_its_login() {
-        let body = create_body(&new_user());
-        assert_eq!(body["Name"], "clara");
-        assert_eq!(body["DisplayName"], "clara");
-        assert_eq!(body["CanLogin"], true);
+    fn a_new_account_is_named_after_its_login_and_has_the_role_asked_for() {
+        let guest = create_call(&new_user("guest")).args;
+        assert!(guest.windows(2).any(|pair| pair == ["-n", "clara"]) && guest.windows(2).any(|pair| pair == ["-r", "guest"]));
+        assert_eq!(guest.last().map(String::as_str), Some("clara"));
+        let admin = create_call(&new_user("admin")).args;
+        assert!(admin.contains(&"--superadmin".to_string()));
     }
 
     #[test]
-    fn this_service_has_roles_and_an_off_switch_but_no_quota_or_mail() {
+    fn the_flags_come_before_the_login_as_the_tool_requires() {
+        let mut new = new_user("guest");
+        new.email = "clara@example.org".into();
+        let args = create_call(&new).args;
+        let login = args.iter().rposition(|arg| arg == "clara").unwrap();
+        let email = args.iter().position(|arg| arg == "-m").unwrap();
+        assert!(email < login && login == args.len() - 1);
+    }
+
+    #[test]
+    fn role_off_switch_and_removal_name_the_login() {
+        assert!(role_call("clara", "admin").args.contains(&"--superadmin=true".to_string()));
+        assert!(role_call("clara", "guest").args.contains(&"--superadmin=false".to_string()));
+        assert!(enabled_call("clara", false).args.contains(&"--no-login=true".to_string()));
+        assert!(enabled_call("clara", true).args.contains(&"--no-login=false".to_string()));
+        assert_eq!(delete_call("clara").args.last().map(String::as_str), Some("clara"));
+        assert!(delete_call("clara").args.contains(&"-f".to_string()));
+    }
+
+    #[test]
+    fn this_service_has_two_roles_and_an_off_switch_but_no_quota_or_mail() {
         let caps = capabilities();
+        assert_eq!(caps.roles, ["admin", "guest"]);
         assert!(caps.can_set_enabled && caps.can_set_password && !caps.can_set_quota && !caps.needs_email);
     }
 }
