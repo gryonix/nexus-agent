@@ -3710,7 +3710,9 @@ async fn install_mosquitto_steps(input: &Input, sink: &EventSink) -> Result<(), 
         Err(err) => return Err(format!("could not write {}/.env: {err}", dir.display())),
     }
     let conf = config.join("mosquitto.conf");
-    write_managed_text(&conf, mosquitto::BROKER_CONFIGURATION)
+    let broker_conf = super::config_apply_a::mosquitto_conf(input);
+    let conf_changed = std::fs::read_to_string(&conf).is_ok_and(|old| old.trim_end() != broker_conf);
+    write_managed_text(&conf, &broker_conf)
         .map_err(|err| format!("could not write {}: {err}", conf.display()))?;
 
     let compose_path = dir.join("docker-compose.yml");
@@ -3722,6 +3724,9 @@ async fn install_mosquitto_steps(input: &Input, sink: &EventSink) -> Result<(), 
     create_mosquitto_accounts(&config, &broker_password(&dir)?, sink).await?;
     let _ = sink.step("starting Mosquitto").await;
     compose_up(mosquitto::COMPOSE_PROJECT, &dir, sink).await?;
+    if conf_changed {
+        super::config_apply_a::restart(mosquitto::CONTAINER, sink).await;
+    }
 
     Ok(())
 }
@@ -4034,7 +4039,9 @@ async fn install_searxng_steps(input: &Input, sink: &EventSink) -> Result<(), St
 
     let settings_path = PathBuf::from(searxng::settings_path(input));
     let _ = sink.step("writing the search settings").await;
-    write_managed_text(&settings_path, searxng::settings_file())
+    let settings_before = std::fs::read_to_string(&settings_path).ok();
+    let settings_text = super::config_apply_c::searxng_settings(searxng::settings_file(), input);
+    write_managed_text(&settings_path, settings_text.clone())
         .map_err(|err| format!("could not write {}: {err}", settings_path.display()))?;
     set_mode(&settings_path, 0o644)
         .map_err(|err| format!("could not chmod {}: {err}", settings_path.display()))?;
@@ -4054,6 +4061,7 @@ async fn install_searxng_steps(input: &Input, sink: &EventSink) -> Result<(), St
     let _ = sink.step("starting SearXNG").await;
     ensure_ai_network(sink).await;
     compose_up(searxng::COMPOSE_PROJECT, &dir, sink).await?;
+    super::config_apply_c::restart_if_changed(searxng::CONTAINER, "SearXNG", settings_before.as_deref(), &settings_text, sink).await;
 
     Ok(())
 }
@@ -4258,7 +4266,9 @@ async fn install_litellm_steps(
         .map_err(|err| format!("could not create the provider keys file: {err:#}"))?;
 
     let config_path = dir.join("config.yaml");
-    std::fs::write(&config_path, litellm::config_yaml(services))
+    let config_before = std::fs::read_to_string(&config_path).ok();
+    let config_text = super::config_apply_c::litellm_config(litellm::config_yaml(services), input);
+    std::fs::write(&config_path, &config_text)
         .map_err(|err| format!("could not write {}: {err}", config_path.display()))?;
 
     let compose_path = dir.join("docker-compose.yml");
@@ -4274,6 +4284,7 @@ async fn install_litellm_steps(
     let _ = sink.step("starting LiteLLM").await;
     ensure_ai_network(sink).await;
     compose_up(litellm::COMPOSE_PROJECT, &dir, sink).await?;
+    super::config_apply_c::restart_if_changed(litellm::CONTAINER, "LiteLLM", config_before.as_deref(), &config_text, sink).await;
     for app in litellm::KEYED_APPS.iter().filter(|app| services.iter().any(|id| id == *app)) {
         ensure_app_key(app, sink).await?;
     }

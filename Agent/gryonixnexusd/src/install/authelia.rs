@@ -71,6 +71,10 @@ pub fn protected_hostnames(input: &Input, services: &[String]) -> Vec<String> {
 }
 
 pub fn configuration_yaml(input: &Input, services: &[String]) -> String {
+    super::config_apply_b::authelia_yaml(default_configuration_yaml(input, services), input)
+}
+
+fn default_configuration_yaml(input: &Input, services: &[String]) -> String {
     let portal = hostname(input);
     let names = protected_hostnames(input, services);
     let default_policy = if names.is_empty() { "two_factor" } else { "deny" };

@@ -23,7 +23,7 @@ pub fn compose_contents(input: &Input) -> String {
     let path = &input.home_assistant_path;
     let devices = device_lines(input);
     format!(
-        "services:\n  homeassistant:\n    image: {IMAGE}\n    container_name: {CONTAINER}\n    restart: unless-stopped\n    # Discovery (mDNS, SSDP) only works on the home network itself.\n    network_mode: host\n    volumes:\n      - {path}/config:/config\n      - /etc/localtime:/etc/localtime:ro\n      # Bluetooth devices, through the host's BlueZ.\n      - /run/dbus:/run/dbus:ro{devices}"
+        "services:\n  homeassistant:\n    image: {IMAGE}\n    container_name: {CONTAINER}\n    restart: unless-stopped\n    # Discovery (mDNS, SSDP) only works on the home network itself.\n    network_mode: host\n    # Bluetooth adapter management, through the host's BlueZ.\n    cap_add:\n      - NET_ADMIN\n      - NET_RAW\n    volumes:\n      - {path}/config:/config\n      - /etc/localtime:/etc/localtime:ro\n      # Bluetooth devices, through the host's BlueZ.\n      - /run/dbus:/run/dbus:ro{devices}"
     )
 }
 

@@ -59,6 +59,10 @@ pub fn compose_contents(input: &Input) -> String {
 
 /// The server's own `config.yaml`
 pub fn config_yaml(input: &Input) -> String {
+    super::config_apply_b::headscale_yaml(default_config_yaml(input), input)
+}
+
+fn default_config_yaml(input: &Input) -> String {
     let host = hostname(input);
     let base = base_domain(input);
     format!(

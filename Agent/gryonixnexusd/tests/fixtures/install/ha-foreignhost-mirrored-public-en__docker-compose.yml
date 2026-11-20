@@ -5,6 +5,10 @@ services:
     restart: unless-stopped
     # Discovery (mDNS, SSDP) only works on the home network itself.
     network_mode: host
+    # Bluetooth adapter management, through the host's BlueZ.
+    cap_add:
+      - NET_ADMIN
+      - NET_RAW
     volumes:
       - /opt/home-assistant/config:/config
       - /etc/localtime:/etc/localtime:ro

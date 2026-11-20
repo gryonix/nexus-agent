@@ -75,8 +75,10 @@ pub fn caddy_site(input: &Input) -> String {
 
 pub fn webclient_config_json(input: &Input) -> String {
     let host = hostname(input);
+    let registration = super::app_settings::is_on(input, "psono_allow_registration");
+    let lost_password = super::app_settings::is_on(input, "psono_allow_lost_password");
     format!(
-        "{{\n  \"backend_servers\": [{{\"title\": \"Psono\", \"url\": \"https://{host}/server\"}}],\n  \"base_url\": \"https://{host}/\",\n  \"allow_custom_server\": false,\n  \"allow_registration\": false,\n  \"allow_lost_password\": false,\n  \"disable_download_bar\": false,\n  \"remember_me_default\": false,\n  \"trust_device_default\": false,\n  \"authentication_methods\": [\"AUTHKEY\"],\n  \"saml_provider\": []\n}}\n"
+        "{{\n  \"backend_servers\": [{{\"title\": \"Psono\", \"url\": \"https://{host}/server\"}}],\n  \"base_url\": \"https://{host}/\",\n  \"allow_custom_server\": false,\n  \"allow_registration\": {registration},\n  \"allow_lost_password\": {lost_password},\n  \"disable_download_bar\": false,\n  \"remember_me_default\": false,\n  \"trust_device_default\": false,\n  \"authentication_methods\": [\"AUTHKEY\"],\n  \"saml_provider\": []\n}}\n"
     )
 }
 
@@ -136,6 +138,15 @@ mod tests {
         // Valid JSON, not just a string that looks like it.
         let parsed: serde_json::Value = serde_json::from_str(&json).expect("config.json must parse");
         assert_eq!(parsed["allow_registration"], serde_json::Value::Bool(false));
+    }
+
+    #[test]
+    fn the_client_config_follows_the_registration_and_reset_settings() {
+        let mut input = base("example.com");
+        input.app_settings.insert("psono_allow_registration".to_string(), "true".to_string());
+        let parsed: serde_json::Value = serde_json::from_str(&webclient_config_json(&input)).unwrap();
+        assert_eq!(parsed["allow_registration"], serde_json::Value::Bool(true));
+        assert_eq!(parsed["allow_lost_password"], serde_json::Value::Bool(false));
     }
 
     #[test]

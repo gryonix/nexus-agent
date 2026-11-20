@@ -21,7 +21,8 @@ pub fn compose_contents(input: &Input) -> String {
 /// The services block, before the shared network joins it
 fn compose_services(input: &Input) -> String {
     let path = &input.qdrant_path;
-    format!("services:\n  qdrant:\n    image: {IMAGE}\n    container_name: {CONTAINER}\n    restart: unless-stopped\n    environment:\n      # Read from the shared key file by the setup step below. Set\n      # here rather than baked into a config file so that rotating\n      # it is one file and one restart.\n      QDRANT__SERVICE__API_KEY: ${{QDRANT_API_KEY}}\n    volumes:\n      - {path}/storage:/qdrant/storage\n    ports:\n      # Loopback, and only the REST port. The dashboard rides on\n      # the same port; whoever reaches it has the documents.\n      - \"127.0.0.1:{API_PORT}:6333\"")
+    let env = super::app_settings_games::env_lines(input, super::app_settings_config_a::QDRANT_ENV);
+    format!("services:\n  qdrant:\n    image: {IMAGE}\n    container_name: {CONTAINER}\n    restart: unless-stopped\n    environment:\n      # Read from the shared key file by the setup step below. Set\n      # here rather than baked into a config file so that rotating\n      # it is one file and one restart.\n      QDRANT__SERVICE__API_KEY: ${{QDRANT_API_KEY}}{env}\n    volumes:\n      - {path}/storage:/qdrant/storage\n    ports:\n      # Loopback, and only the REST port. The dashboard rides on\n      # the same port; whoever reaches it has the documents.\n      - \"127.0.0.1:{API_PORT}:6333\"")
 }
 
 #[cfg(test)]

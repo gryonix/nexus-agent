@@ -78,7 +78,7 @@ pub const SPECS: &[Spec] = &[
 
 /// Every spec, main and extra
 pub fn all_specs() -> impl Iterator<Item = &'static Spec> {
-    SPECS.iter().chain(super::app_settings_extra::SPECS.iter()).chain(super::app_settings_games::SPECS).chain(super::app_settings_runtime::SPECS.iter())
+    SPECS.iter().chain(super::app_settings_extra::SPECS.iter()).chain(super::app_settings_games::SPECS).chain(super::app_settings_runtime::SPECS.iter()).chain(super::app_settings_config_a::SPECS.iter()).chain(super::app_settings_config_b::SPECS.iter()).chain(super::app_settings_config_c::SPECS.iter())
 }
 
 fn spec(key: &str) -> Option<&'static Spec> {
@@ -196,6 +196,14 @@ mod tests {
             "minecraft-java" => super::super::minecraft::java_compose_contents(input),
             "minecraft-bedrock" => super::super::minecraft::bedrock_compose_contents(input),
             "adguard-home" => super::super::adguard::compose_contents(input),
+            "mosquitto" => super::super::mosquitto::compose_contents(input),
+            "zigbee2mqtt" => super::super::zigbee2mqtt::compose_contents(input),
+            "home-assistant" => super::super::home_assistant::compose_contents(input),
+            "qdrant" => super::super::qdrant::compose_contents(input),
+            "seafile" => super::super::seafile::compose_contents(input),
+            "psono" => super::super::psono::compose_contents(input),
+            "searxng" => super::super::searxng::compose_contents(input),
+            "litellm" => super::super::litellm::compose_contents(input),
             other => panic!("no compose for {other}"),
         }
     }
@@ -227,6 +235,9 @@ mod tests {
         let variants = super::super::golden::app_setting_variants();
         assert!(!variants.is_empty());
         for variant in &variants {
+            if variant["group"] == "configFile" {
+                continue;
+            }
             let service = variant["service"].as_str().unwrap();
             let label = format!("{}={}", variant["key"], variant["value"]);
             assert_eq!(compose_for(service, &input_for(variant)), variant["composeContents"].as_str().unwrap(), "{label}");

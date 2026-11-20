@@ -28,7 +28,7 @@ pub async fn after_install(label: &str, input: &Input, store: &Arc<Mutex<Store>>
         "gitlab" => run::gitlab(input, sink).await,
         "adguard-home" => run::adguard(input, store, sink).await,
         "jellyfin" => run::jellyfin(input, store, sink).await,
-        _ => {}
+        _ => super::config_apply::after_install(label, input, sink).await,
     }
 }
 
