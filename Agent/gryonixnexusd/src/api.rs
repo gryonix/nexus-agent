@@ -599,6 +599,10 @@ async fn route_update_2(path: &str, codec: Codec, bytes: Bytes) -> anyhow::Resul
             let req: pb::AppModuleSet = codec.decode(&bytes)?;
             Ok(crate::app_modules::set_app_modules(codec, req).await)
         }).map(Some),
+        "/gryonixnexusd.v1.AppSettings/GetAppSettings" => ({
+            let req: pb::GetAppSettingsRequest = codec.decode(&bytes)?;
+            Ok(crate::app_settings_store::get_app_settings(codec, req).await)
+        }).map(Some),
         "/gryonixnexusd.v1.ServiceNames/GetServiceNames" => ({
             let req: pb::GetServiceNamesRequest = codec.decode(&bytes)?;
             Ok(crate::service_names::get_service_names(codec, req).await)

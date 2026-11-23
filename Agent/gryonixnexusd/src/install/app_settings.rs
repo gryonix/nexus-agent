@@ -87,6 +87,14 @@ fn spec(key: &str) -> Option<&'static Spec> {
     all_specs().find(|spec| spec.key == key)
 }
 
+pub fn is_known(key: &str) -> bool {
+    spec(key).is_some()
+}
+
+pub fn is_secret(key: &str) -> bool {
+    spec(key).is_some_and(|spec| matches!(spec.allowed, Allowed::Secret))
+}
+
 fn is_valid(spec: &Spec, value: &str) -> bool {
     match spec.allowed {
         Allowed::Switch => value == "true" || value == "false",

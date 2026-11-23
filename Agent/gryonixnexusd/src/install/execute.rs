@@ -2076,6 +2076,7 @@ async fn install(
 
     drop_stale_sites(label, &sink).await;
     super::runtime_apply::after_install(label, &input, &store, &sink).await;
+    crate::app_settings_store::remember(label, &input.app_settings);
     let status = read_status(&service_id, &store).await;
     crate::vpn_dns::wake();
     let _ = sink.completed(status).await;

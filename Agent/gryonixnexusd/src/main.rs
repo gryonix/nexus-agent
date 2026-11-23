@@ -66,6 +66,7 @@ mod system_settings;
 mod restore;
 mod serial;
 mod service_names;
+mod app_settings_store;
 mod setup_guard;
 mod trusted_sources;
 mod state;

@@ -442,6 +442,19 @@ message ServiceNameSet {
   map<string, string> names = 1;
 }
 
+// App settings last applied on this server, shared by every device.
+service AppSettings {
+  // Stored values plus what the server serves now (DNS over HTTPS).
+  rpc GetAppSettings(GetAppSettingsRequest) returns (AppSettingValues);
+}
+
+message GetAppSettingsRequest {}
+
+message AppSettingValues {
+  // Setting key to value; secrets are never stored or returned.
+  map<string, string> values = 1;
+}
+
 // Sound hardware of the machine, for the AirPlay speaker.
 service Audio {
   // Playback devices ALSA knows, read from /proc/asound.
