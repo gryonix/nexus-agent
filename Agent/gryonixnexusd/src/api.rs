@@ -635,6 +635,10 @@ async fn route_update_2(path: &str, codec: Codec, bytes: Bytes) -> anyhow::Resul
             let req: pb::SetMcpAccessRequest = codec.decode(&bytes)?;
             Ok(crate::mcp_access::set_mcp_access(codec, req).await)
         }).map(Some),
+        "/gryonixnexusd.v1.Exposure/GetDohAddress" => ({
+            let req: pb::GetDohAddressRequest = codec.decode(&bytes)?;
+            Ok(crate::exposure::get_doh_address(codec, req).await)
+        }).map(Some),
         "/gryonixnexusd.v1.Exposure/GetLocalRootCA" => ({
             let req: pb::GetLocalRootCaRequest = codec.decode(&bytes)?;
             Ok(crate::exposure::get_local_root_ca(codec, req).await)

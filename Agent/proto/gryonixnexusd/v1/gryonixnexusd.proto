@@ -359,6 +359,8 @@ service Exposure {
   rpc ProbePublicPorts(ProbePublicPortsRequest) returns (ProbePublicPortsResponse);
   // The public key of the local certificate authority Caddy signs internal sites with.
   rpc GetLocalRootCA(GetLocalRootCARequest) returns (GetLocalRootCAResponse);
+  // The secret DNS-over-HTTPS address of a DNS filter, read from the Caddyfile.
+  rpc GetDohAddress(GetDohAddressRequest) returns (GetDohAddressResponse);
   // Sites that also answer at a .local name on the home network.
   rpc GetLocalAliases(GetLocalAliasesRequest) returns (LocalAliasesState);
   // Adds or removes a site's .local name; the answer is read back from the Caddyfile.
@@ -496,6 +498,16 @@ message ProbePublicPortsResponse {
 }
 
 message GetLocalRootCARequest {}
+
+message GetDohAddressRequest {
+  // Service id: "pihole" or "adguard-home".
+  string service = 1;
+}
+
+message GetDohAddressResponse {
+  // https://host/dns-query/secret; empty while DNS-over-HTTPS is off.
+  string url = 1;
+}
 
 message GetLocalAliasesRequest {}
 

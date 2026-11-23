@@ -118,6 +118,13 @@ pub async fn get_local_root_ca(codec: Codec, _req: pb::GetLocalRootCaRequest) ->
     encode(codec, &pb::GetLocalRootCaResponse { pem })
 }
 
+/// A DNS filter's secret DNS-over-HTTPS address, empty while off
+pub async fn get_doh_address(codec: Codec, req: pb::GetDohAddressRequest) -> Resp {
+    let caddyfile = crate::install::execute::current_caddyfile();
+    let url = crate::install::doh::address_in(&caddyfile, req.service.trim()).unwrap_or_default();
+    encode(codec, &pb::GetDohAddressResponse { url })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

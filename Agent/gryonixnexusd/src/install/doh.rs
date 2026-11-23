@@ -113,6 +113,25 @@ pub fn url(host: &str, token: &str) -> String {
     format!("https://{host}/dns-query/{token}")
 }
 
+/// The live address of a service's bridge, from the Caddyfile
+pub fn address_in(caddyfile: &str, service: &str) -> Option<String> {
+    let marker = format!("# gryonixnexus: {service}");
+    let secret = format!("@{MATCHER} path /dns-query/");
+    let mut host: Option<&str> = None;
+    let mut ours = false;
+    for line in caddyfile.lines() {
+        if !line.starts_with(char::is_whitespace) && line.trim_end().ends_with('{') {
+            host = line.split([',', ' ']).find(|part| !part.is_empty());
+            ours = false;
+        } else if line.trim() == marker {
+            ours = true;
+        } else if let (true, Some(host), Some(token)) = (ours, host, line.trim().strip_prefix(secret.as_str())) {
+            return Some(url(host, token.trim()));
+        }
+    }
+    None
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -156,6 +175,16 @@ mod tests {
         let compose = compose_contents("pihole");
         assert!(compose.contains("DOH_SERVER_LISTEN: 127.0.0.1:8104"));
         assert!(compose.contains("container_name: pihole-doh"));
+    }
+
+    #[test]
+    fn the_live_address_is_read_back_from_the_caddyfile() {
+        let other = "vault.example.com {\n    # gryonixnexus: vaultwarden\n    reverse_proxy 127.0.0.1:8080\n}";
+        let ours = wrap_site(&SITE.replace("dns.example.com", "dns.example.com, dns.example.org"), "abc");
+        let caddyfile = format!("{other}\n\n{ours}\n");
+        assert_eq!(address_in(&caddyfile, "pihole").as_deref(), Some("https://dns.example.com/dns-query/abc"));
+        assert_eq!(address_in(&caddyfile, "adguard-home"), None);
+        assert_eq!(address_in(SITE, "pihole"), None);
     }
 
     #[test]
