@@ -74,6 +74,8 @@ pub const SPECS: &[Spec] = &[
     Spec { key: "pihole_dnssec", default: "false", allowed: Allowed::Switch },
     Spec { key: "pihole_privacy_level", default: "0", allowed: Allowed::Choices(PRIVACY_LEVELS) },
     Spec { key: "pihole_query_logging", default: "true", allowed: Allowed::Switch },
+    Spec { key: "pihole_doh", default: "false", allowed: Allowed::Switch },
+    Spec { key: "adguard_doh", default: "false", allowed: Allowed::Switch },
 ];
 
 /// Every spec, main and extra

@@ -890,10 +890,7 @@ fn service_block_11(id: &str, i: &Input, l: Language, facts: &dyn Facts, out: &m
                     "ADGUARD_ADMIN_PASSWORD"
                 )
             ));
-            out.push_str(&format!(
-                "  {}: https://{host}/dns-query\n",
-                l10n::adguard_do_h_note(l)
-            ));
+            out.push_str(&doh_line(facts, "adguard-home", i, &i.adguard_path, host, l));
             out.push_str(&format!("  {}\n", l10n::adguard_plain_dns_note(l)));
             true
         }
@@ -912,6 +909,7 @@ fn service_block_12(id: &str, input: &HostInput, i: &Input, l: Language, facts: 
                 l10n::password_generated_on_server_label(l),
                 env_value(facts, &format!("{}/.env", i.pihole_path), "PIHOLE_ADMIN_PASSWORD")
             ));
+            out.push_str(&doh_line(facts, "pihole", i, &i.pihole_path, host, l));
             out.push_str(&format!(
                 "  {}\n",
                 if i.pihole_serves_network {
@@ -1047,6 +1045,14 @@ fn service_block_14(id: &str, i: &Input, l: Language, facts: &dyn Facts, out: &m
 }
 
 // MARK: - Reading what the shell read
+
+fn doh_line(facts: &dyn Facts, service: &str, i: &Input, dir: &str, host: &str, l: Language) -> String {
+    if !crate::install::doh::wanted(service, i) {
+        return if service == "adguard-home" { format!("  {}: https://{host}/dns-query\n", l10n::adguard_do_h_note(l)) } else { String::new() };
+    }
+    let token = env_value(facts, &format!("{dir}/doh.env"), "DOH_TOKEN");
+    format!("  {}: {}\n", l10n::adguard_do_h_note(l), crate::install::doh::url(host, &token))
+}
 
 fn env_value(facts: &dyn Facts, path: &str, key: &str) -> String {
     let text = facts.read_file(path).unwrap_or_default();

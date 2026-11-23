@@ -167,6 +167,7 @@ pub fn site_for(id: &str, input: &Input, sso: bool) -> Option<(Vec<String>, Stri
         &ingress.public_paths,
         false,
     );
+    let text = super::doh::decorate(id, input, text);
     Some((names, super::caddy::with_setup_guard(id, &input.installed_services, text)))
 }
 

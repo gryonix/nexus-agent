@@ -1,4 +1,5 @@
 pub mod adguard;
+pub mod doh;
 pub mod app_settings;
 pub mod app_settings_config_a;
 pub mod app_settings_extra;

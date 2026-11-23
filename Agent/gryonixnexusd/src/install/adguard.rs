@@ -53,7 +53,8 @@ pub fn caddy_site_names(input: &Input) -> Vec<String> {
 pub fn caddy_site(input: &Input) -> String {
     let ingress = web_ingress(input);
     let joined = caddy_site_names(input).join(", ");
-    caddy::site(SERVICE_ID, &joined, ingress.upstream_port, ingress.admin_guard, ingress.upstream_https, input.local_only)
+    let site = caddy::site(SERVICE_ID, &joined, ingress.upstream_port, ingress.admin_guard, ingress.upstream_https, input.local_only);
+    super::doh::decorate(SERVICE_ID, input, site)
 }
 
 #[cfg(test)]

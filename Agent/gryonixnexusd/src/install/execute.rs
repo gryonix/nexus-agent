@@ -13,6 +13,7 @@ use tokio::sync::mpsc::Sender;
 
 use crate::state::Store;
 use super::adguard;
+use super::doh;
 use super::home_network;
 use super::caddy_check;
 use super::authelia;
@@ -250,6 +251,13 @@ fn compose_file_args(project: &str, dir: &Path) -> Vec<String> {
 pub fn compose_stop_args(project: &str, dir: &Path) -> Vec<String> {
     let mut args = compose_file_args(project, dir);
     args.push("stop".to_string());
+    args
+}
+
+/// `docker compose -p <project> -f <dir>/docker-compose.yml down`
+pub fn compose_down_args(project: &str, dir: &Path) -> Vec<String> {
+    let mut args = compose_file_args(project, dir);
+    args.push("down".to_string());
     args
 }
 
@@ -3225,6 +3233,27 @@ async fn enable_plain_http_doh(dir: &Path, conf_yaml_path: &Path, sink: &EventSi
     }
 }
 
+/// Starts or removes the DNS-over-HTTPS bridge of a DNS filter
+async fn apply_doh(service: &str, input: &Input, dir: &Path, sink: &EventSink) -> Result<(), String> {
+    let bridge = doh::bridge_dir(dir);
+    let project = doh::project(service);
+    if !doh::wanted(service, input) {
+        if bridge.join("docker-compose.yml").exists() {
+            let _ = sink.step("stopping DNS-over-HTTPS").await;
+            run_docker_streaming(&compose_down_args(&project, &bridge), sink).await?;
+            let _ = std::fs::remove_dir_all(&bridge);
+        }
+        return Ok(());
+    }
+    create_dir_0755(&bridge).map_err(|err| format!("could not create {}: {err}", bridge.display()))?;
+    doh::token_or_create(dir).map_err(|err| format!("could not write the DNS-over-HTTPS secret: {err}"))?;
+    write_managed_text(&bridge.join("docker-compose.yml"), doh::compose_contents(service))
+        .map_err(|err| format!("could not write the DNS-over-HTTPS compose file: {err}"))?;
+    let _ = sink.step("starting DNS-over-HTTPS").await;
+    run_docker_streaming(&compose_pull_args(&project, &bridge), sink).await?;
+    compose_up(&project, &bridge, sink).await
+}
+
 async fn install_adguard_steps(input: &Input, sink: &EventSink) -> Result<(), String> {
     let dir = PathBuf::from(&input.adguard_path);
     let conf_dir = dir.join("conf");
@@ -3268,6 +3297,7 @@ async fn install_adguard_steps(input: &Input, sink: &EventSink) -> Result<(), St
     }
 
     enable_plain_http_doh(&dir, &conf_yaml_path, sink).await;
+    apply_doh(adguard::SERVICE_ID, input, &dir, sink).await?;
 
     // 8. Caddy site.
     write_caddy_site(&adguard::caddy_site_names(input), &adguard::caddy_site(input))?;
@@ -3314,6 +3344,7 @@ async fn install_pihole_steps(input: &Input, sink: &EventSink) -> Result<(), Str
     }
 
     open_service_firewall_ports(PIHOLE_FIREWALL_LABEL, &pihole::firewall_ports(input), sink).await;
+    apply_doh(pihole::SERVICE_ID, input, &dir, sink).await?;
 
     // 7. Caddy site.
     write_caddy_site(&pihole::caddy_site_names(input), &pihole::caddy_site(input))?;
