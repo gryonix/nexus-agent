@@ -262,7 +262,7 @@ fn catalog_id(project: &ComposeProject) -> Option<(&'static str, &'static str)> 
     if is_vpn_project(project) {
         return Some(VPN_SERVICE);
     }
-    doh_bridge_owner(&project.name)
+    None
 }
 
 /// The service whose DoH bridge this project is
@@ -283,6 +283,7 @@ pub(crate) fn catalog_id_of_project(
         status: String::new(),
         config_files: config_files.to_string(),
     })
+    .or_else(|| doh_bridge_owner(name))
 }
 
 pub fn known_service(service_id: &str) -> Option<&'static str> {
@@ -420,6 +421,12 @@ mod tests {
         assert_eq!(catalog_id_of_project("adguard-home-doh", ""), Some(("adguard-home", "AdGuard Home")));
         assert_eq!(catalog_id_of_project("pihole-doh", ""), Some(("pihole", "Pi-hole")));
         assert_eq!(catalog_id_of_project("stranger-doh", ""), None);
+        let bridge = ComposeProject {
+            name: "adguard-home-doh".to_string(),
+            status: String::new(),
+            config_files: String::new(),
+        };
+        assert_eq!(catalog_id(&bridge), None);
     }
 
     use super::*;

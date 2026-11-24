@@ -7181,7 +7181,7 @@ async fn load_wireguard_module() {
     }
 }
 
-/// Rewrites stale DNS-over-HTTPS bridge files and restarts them
+/// Brings DNS-over-HTTPS bridges to their current compose file
 pub async fn keep_doh_bridges_current() {
     let defaults = Input::default();
     for (service, dir) in [(adguard::SERVICE_ID, defaults.adguard_path), (super::pihole::SERVICE_ID, defaults.pihole_path)] {
@@ -7189,15 +7189,14 @@ pub async fn keep_doh_bridges_current() {
         let path = bridge.join("docker-compose.yml");
         let Ok(current) = std::fs::read_to_string(&path) else { continue };
         let wanted = doh::compose_contents(service);
-        if current == wanted {
-            continue;
-        }
-        if let Err(err) = write_managed_text(&path, &wanted) {
-            tracing::warn!(%err, service, "could not update the DNS-over-HTTPS bridge");
-            continue;
+        if current != wanted {
+            if let Err(err) = write_managed_text(&path, &wanted) {
+                tracing::warn!(%err, service, "could not update the DNS-over-HTTPS bridge");
+                continue;
+            }
         }
         match run_docker_captured(&compose_up_args(&doh::project(service), &bridge), Duration::from_secs(180)).await {
-            Ok(run) if run.success => tracing::info!(service, "the DNS-over-HTTPS bridge was updated"),
+            Ok(run) if run.success => tracing::info!(service, "the DNS-over-HTTPS bridge is current"),
             Ok(run) => tracing::warn!(why = %run.why(), service, "the DNS-over-HTTPS bridge did not restart"),
             Err(why) => tracing::warn!(%why, service, "the DNS-over-HTTPS bridge did not restart"),
         }
