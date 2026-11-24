@@ -22,6 +22,20 @@ async fn compose_projects() -> Result<Vec<ComposeProject>> {
     parse_compose_ls(&String::from_utf8_lossy(&output.stdout))
 }
 
+/// Running projects this agent knows, with their compose files
+pub async fn running_known_projects() -> Result<Vec<(String, Vec<String>)>> {
+    Ok(compose_projects()
+        .await?
+        .into_iter()
+        .filter(|project| project.status.contains("running"))
+        .filter(|project| catalog_id_of_project(&project.name, &project.config_files).is_some())
+        .map(|project| {
+            let files = project.config_files.split(',').map(str::trim).filter(|f| !f.is_empty()).map(String::from).collect();
+            (project.name, files)
+        })
+        .collect())
+}
+
 pub async fn containers_of_service(service_id: &str) -> Result<Vec<String>> {
     if let Some(native) = crate::native::find(service_id) {
         return Ok(native.containers().await.into_iter().map(|c| c.name).collect());

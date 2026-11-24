@@ -2,6 +2,7 @@
 
 mod agent_removal;
 mod agent_update;
+mod compose_drift;
 mod api;
 mod app_modules;
 mod audio_outputs;
@@ -227,6 +228,7 @@ fn spawn_background_work(store: &Arc<Mutex<state::Store>>) {
     agent_update::reconcile_on_startup();
     tokio::spawn(install::execute::keep_panel_without_module_right());
     tokio::spawn(install::execute::keep_doh_bridges_current());
+    tokio::spawn(compose_drift::heal_at_startup());
     tokio::spawn(async {
         loop {
             install::execute::keep_mesh_node_joined().await;
