@@ -12,6 +12,8 @@ pub const PORT: u16 = 8104;
 const TOKEN_FILE: &str = "doh.env";
 const TOKEN_KEY: &str = "DOH_TOKEN";
 const MATCHER: &str = "gryonixnexus_doh";
+/// The image's own check asks localhost, which is IPv6 here
+const HEALTH_PROBE: &str = "wget --tries=1 --timeout=10 -S -O /dev/null 'http://127.0.0.1:8104/dns-query?name=healthcheck.example&type=A' 2>&1 | grep -qE 'HTTP/1.[01] (200|503)'";
 
 pub fn setting_key(service: &str) -> Option<&'static str> {
     match service {
@@ -47,7 +49,7 @@ pub fn token_path(dir: &Path) -> PathBuf {
 
 pub fn compose_contents(service: &str) -> String {
     format!(
-        "services:\n  doh:\n    image: {IMAGE}\n    container_name: {}\n    restart: unless-stopped\n    network_mode: host\n    environment:\n      UPSTREAM_DNS_SERVER: udp:127.0.0.1:53\n      DOH_HTTP_PREFIX: /dns-query\n      DOH_HTTP_PREFIXES: \"\"\n      DOH_SERVER_LISTEN: 127.0.0.1:{PORT}\n",
+        "services:\n  doh:\n    image: {IMAGE}\n    container_name: {}\n    restart: unless-stopped\n    network_mode: host\n    environment:\n      UPSTREAM_DNS_SERVER: udp:127.0.0.1:53\n      DOH_HTTP_PREFIX: /dns-query\n      DOH_HTTP_PREFIXES: \"\"\n      DOH_SERVER_LISTEN: 127.0.0.1:{PORT}\n    healthcheck:\n      test: [\"CMD-SHELL\", \"{HEALTH_PROBE}\"]\n      interval: 60s\n      timeout: 30s\n      retries: 3\n",
         project(service)
     )
 }
@@ -174,6 +176,8 @@ mod tests {
     fn the_bridge_listens_on_loopback_only() {
         let compose = compose_contents("pihole");
         assert!(compose.contains("DOH_SERVER_LISTEN: 127.0.0.1:8104"));
+        assert!(compose.contains("http://127.0.0.1:8104/dns-query"));
+        assert!(HEALTH_PROBE.contains(&format!("127.0.0.1:{PORT}")));
         assert!(compose.contains("container_name: pihole-doh"));
     }
 

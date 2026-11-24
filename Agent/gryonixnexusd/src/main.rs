@@ -226,6 +226,7 @@ fn spawn_background_work(store: &Arc<Mutex<state::Store>>) {
     });
     agent_update::reconcile_on_startup();
     tokio::spawn(install::execute::keep_panel_without_module_right());
+    tokio::spawn(install::execute::keep_doh_bridges_current());
     tokio::spawn(async {
         loop {
             install::execute::keep_mesh_node_joined().await;
