@@ -170,6 +170,9 @@ fn qualifier(key: &str, service_id: &str, base: &str) -> String {
             return (*piece).to_string();
         }
     }
+    if key.ends_with("-doh") {
+        return "DoH".to_string();
+    }
     let derived = display_name_for(key);
     if !derived.is_empty() && !derived.eq_ignore_ascii_case(base) {
         return derived;

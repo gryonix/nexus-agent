@@ -262,7 +262,16 @@ fn catalog_id(project: &ComposeProject) -> Option<(&'static str, &'static str)> 
     if is_vpn_project(project) {
         return Some(VPN_SERVICE);
     }
-    None
+    doh_bridge_owner(&project.name)
+}
+
+/// The service whose DoH bridge this project is
+fn doh_bridge_owner(name: &str) -> Option<(&'static str, &'static str)> {
+    let service = name.strip_suffix("-doh")?;
+    CATALOG
+        .iter()
+        .find(|(_, id, _)| *id == service)
+        .map(|(_, id, display)| (*id, *display))
 }
 
 pub(crate) fn catalog_id_of_project(
@@ -406,6 +415,13 @@ fn version_of(id: &str, containers: &[pb::Container]) -> String {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_doh_bridge_belongs_to_its_dns_service() {
+        assert_eq!(catalog_id_of_project("adguard-home-doh", ""), Some(("adguard-home", "AdGuard Home")));
+        assert_eq!(catalog_id_of_project("pihole-doh", ""), Some(("pihole", "Pi-hole")));
+        assert_eq!(catalog_id_of_project("stranger-doh", ""), None);
+    }
+
     use super::*;
 
     const SAMPLE: &str = r#"[
