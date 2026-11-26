@@ -57,9 +57,40 @@ pub fn caddy_site(input: &Input) -> String {
     super::doh::decorate(SERVICE_ID, input, site)
 }
 
+/// Docker's bridges, where Caddy reaches the container from
+pub const DOCKER_PROXY_RANGE: &str = "172.16.0.0/12";
+
+/// Trusts Caddy's forwarded client address, or None if already
+pub fn with_trusted_docker_proxy(yaml: &str) -> Option<String> {
+    let lines: Vec<&str> = yaml.lines().collect();
+    let start = lines.iter().position(|line| line.trim_end() == "  trusted_proxies:")?;
+    let items = lines[start + 1..].iter().take_while(|line| line.trim_start().starts_with("- ")).count();
+    let listed = &lines[start + 1..start + 1 + items];
+    if listed.iter().any(|line| line.trim_start().trim_start_matches("- ").trim() == DOCKER_PROXY_RANGE) {
+        return None;
+    }
+    let indent = listed.first().map_or("    ", |line| &line[..line.len() - line.trim_start().len()]);
+    let mut out: Vec<String> = lines.iter().map(|line| line.to_string()).collect();
+    out.insert(start + 1 + items, format!("{indent}- {DOCKER_PROXY_RANGE}"));
+    let mut text = out.join("\n");
+    if yaml.ends_with('\n') {
+        text.push('\n');
+    }
+    Some(text)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_docker_bridges_become_trusted_proxies_once() {
+        let yaml = "dns:\n  trusted_proxies:\n    - 127.0.0.0/8\n    - ::1/128\n  cache_enabled: true\n";
+        let patched = with_trusted_docker_proxy(yaml).unwrap();
+        assert_eq!(patched, "dns:\n  trusted_proxies:\n    - 127.0.0.0/8\n    - ::1/128\n    - 172.16.0.0/12\n  cache_enabled: true\n");
+        assert_eq!(with_trusted_docker_proxy(&patched), None);
+        assert_eq!(with_trusted_docker_proxy("dns:\n  port: 53\n"), None);
+    }
 
     fn base(domain: &str) -> Input {
         Input { domain: domain.to_string(), ..Input::default() }

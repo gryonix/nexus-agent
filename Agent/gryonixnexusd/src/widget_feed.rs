@@ -61,9 +61,26 @@ fn body(server_id: &str, summary: Value, now: i64) -> Vec<u8> {
     json!({ "data": data }).to_string().into_bytes()
 }
 
+/// How long the widgets reuse one CrowdSec reading
+const SECURITY_REUSE: Duration = Duration::from_secs(600);
+
+static SECURITY: Mutex<Option<(std::time::Instant, pb::SecurityStatus)>> = Mutex::new(None);
+
+/// CrowdSec's status, read at most once per `SECURITY_REUSE`
+async fn security() -> pb::SecurityStatus {
+    if let Some((at, status)) = SECURITY.lock().unwrap().as_ref() {
+        if at.elapsed() < SECURITY_REUSE {
+            return status.clone();
+        }
+    }
+    let status = crate::security::status().await;
+    *SECURITY.lock().unwrap() = Some((std::time::Instant::now(), status.clone()));
+    status
+}
+
 async fn summary() -> Value {
     let (services, security, metrics, vpn) =
-        tokio::join!(services(), crate::security::status(), metrics(), crate::vpn_clients::device_counts());
+        tokio::join!(services(), security(), metrics(), crate::vpn_clients::device_counts());
     json!({
         "services": services,
         "security": security_part(&security),

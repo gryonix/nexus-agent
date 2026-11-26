@@ -3215,6 +3215,7 @@ async fn mint_mesh_join_key() -> Result<String, String> {
 async fn enable_plain_http_doh(dir: &Path, conf_yaml_path: &Path, sink: &EventSink) {
     if let Ok(yaml) = std::fs::read_to_string(conf_yaml_path) {
         let (patched, spelling) = patch_doh_insecure(&yaml);
+        let patched = adguard::with_trusted_docker_proxy(&patched).unwrap_or(patched);
         match spelling {
             Some(_) if patched != yaml => {
                 if let Err(err) = std::fs::write(conf_yaml_path, patched) {
@@ -3238,16 +3239,19 @@ async fn enable_plain_http_doh(dir: &Path, conf_yaml_path: &Path, sink: &EventSi
 async fn apply_doh(service: &str, input: &Input, dir: &Path, sink: &EventSink) -> Result<(), String> {
     let bridge = doh::bridge_dir(dir);
     let project = doh::project(service);
+    if !doh::bridge_wanted(service, input) && bridge.join("docker-compose.yml").exists() {
+        let _ = sink.step("stopping the DNS-over-HTTPS bridge").await;
+        run_docker_streaming(&compose_down_args(&project, &bridge), sink).await?;
+        let _ = std::fs::remove_dir_all(&bridge);
+    }
     if !doh::wanted(service, input) {
-        if bridge.join("docker-compose.yml").exists() {
-            let _ = sink.step("stopping DNS-over-HTTPS").await;
-            run_docker_streaming(&compose_down_args(&project, &bridge), sink).await?;
-            let _ = std::fs::remove_dir_all(&bridge);
-        }
+        return Ok(());
+    }
+    doh::token_or_create(dir).map_err(|err| format!("could not write the DNS-over-HTTPS secret: {err}"))?;
+    if !doh::bridge_wanted(service, input) {
         return Ok(());
     }
     create_dir_0755(&bridge).map_err(|err| format!("could not create {}: {err}", bridge.display()))?;
-    doh::token_or_create(dir).map_err(|err| format!("could not write the DNS-over-HTTPS secret: {err}"))?;
     write_managed_text(&bridge.join("docker-compose.yml"), doh::compose_contents(service))
         .map_err(|err| format!("could not write the DNS-over-HTTPS compose file: {err}"))?;
     let _ = sink.step("starting DNS-over-HTTPS").await;
@@ -7184,7 +7188,8 @@ async fn load_wireguard_module() {
 /// Brings DNS-over-HTTPS bridges to their current compose file
 pub async fn keep_doh_bridges_current() {
     let defaults = Input::default();
-    for (service, dir) in [(adguard::SERVICE_ID, defaults.adguard_path), (super::pihole::SERVICE_ID, defaults.pihole_path)] {
+    keep_adguard_doh_direct(Path::new(&defaults.adguard_path)).await;
+    for (service, dir) in [(super::pihole::SERVICE_ID, defaults.pihole_path)] {
         let bridge = doh::bridge_dir(Path::new(&dir));
         let path = bridge.join("docker-compose.yml");
         let Ok(current) = std::fs::read_to_string(&path) else { continue };
@@ -7200,6 +7205,46 @@ pub async fn keep_doh_bridges_current() {
             Ok(run) => tracing::warn!(why = %run.why(), service, "the DNS-over-HTTPS bridge did not restart"),
             Err(why) => tracing::warn!(%why, service, "the DNS-over-HTTPS bridge did not restart"),
         }
+    }
+}
+
+/// Moves AdGuard's DoH off the bridge, onto AdGuard itself
+async fn keep_adguard_doh_direct(dir: &Path) {
+    let conf = dir.join("conf/AdGuardHome.yaml");
+    let Ok(yaml) = std::fs::read_to_string(&conf) else { return };
+    if let Some(patched) = adguard::with_trusted_docker_proxy(&yaml) {
+        match std::fs::write(&conf, patched) {
+            Ok(()) => {
+                let _ = run_docker_captured(&compose_restart_args(adguard::COMPOSE_PROJECT, dir), Duration::from_secs(120)).await;
+                tracing::info!("AdGuard Home now sees DoH clients' own addresses");
+            }
+            Err(err) => tracing::warn!(%err, "could not trust the proxy in AdGuard Home"),
+        }
+    }
+    retarget_adguard_caddy_site().await;
+    let still_bridged = std::fs::read_to_string(CADDYFILE_PATH).ok().and_then(|text| doh::retarget_adguard(&text)).is_some();
+    let bridge = doh::bridge_dir(dir);
+    if !still_bridged && bridge.join("docker-compose.yml").exists() {
+        let _ = run_docker_captured(&compose_down_args(&doh::project(adguard::SERVICE_ID), &bridge), Duration::from_secs(120)).await;
+        let _ = std::fs::remove_dir_all(&bridge);
+        tracing::info!("removed AdGuard Home's DNS-over-HTTPS bridge");
+    }
+}
+
+/// Points AdGuard's DoH at AdGuard, undoing on failure
+async fn retarget_adguard_caddy_site() {
+    let Ok(before) = std::fs::read_to_string(CADDYFILE_PATH) else { return };
+    let Some(after) = doh::retarget_adguard(&before) else { return };
+    if let Err(err) = write_replacing(Path::new(CADDYFILE_PATH), &after) {
+        tracing::warn!(%err, "could not point DoH at AdGuard Home");
+        return;
+    }
+    if caddy_force_reload().await {
+        tracing::info!("DoH now goes straight to AdGuard Home");
+    } else {
+        let _ = write_replacing(Path::new(CADDYFILE_PATH), &before);
+        let _ = caddy_force_reload().await;
+        tracing::warn!("Caddy refused the direct DoH route, kept the bridge");
     }
 }
 
